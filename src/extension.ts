@@ -7,6 +7,7 @@ import { OwnershipLock } from './core/ownership';
 import { createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
 import { captureReview, reviewFiles } from './core/review';
 import { ReviewDocuments } from './extensionReview';
+import { AppearanceSettings } from './extensionSettings';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -69,8 +70,11 @@ class Manager {
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
   private readonly review: ReviewDocuments;
+  private readonly settings: AppearanceSettings;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
+    this.settings = new AppearanceSettings(context.extensionUri);
+    context.subscriptions.push(this.settings);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
@@ -86,6 +90,8 @@ class Manager {
     command('hydra.newTask', async () => { this.pendingNewTask = !this.panel; await this.openAgents(); await this.panel?.webview.postMessage({ type: 'newTask' }); });
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
+    command('hydra.openSettings', () => this.settings.show());
+    command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
     command('hydra.createTask', async (input?: unknown) => {
       if (input === undefined) { this.pendingNewTask = !this.panel; await this.openAgents(); await this.panel?.webview.postMessage({ type: 'newTask' }); return; }
       if (!input || typeof input !== 'object') throw new Error('Expected task options.');
@@ -293,7 +299,7 @@ class Manager {
     const message = parseMessage(value);
     if (message.type === 'ready') { await this.publish(); if (this.pendingNewTask) { this.pendingNewTask = false; await this.panel?.webview.postMessage({ type: 'newTask' }); } return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
-    if (message.type === 'settings') { await vscode.commands.executeCommand('workbench.action.openSettings', 'hydra'); return; }
+    if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
     if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider }; return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use task worktrees and terminals.');

@@ -6,7 +6,7 @@ Owner Nico Dunlap   |   17 September 2026   |   Proposed v1
 
 ### Product intent
 
-Build a Windows-first VS Code extension with two working modes: Editor and Agents. Editor mode keeps the familiar file explorer, tabs, code editor, source control, debugger, and terminal. Agents mode rearranges the workspace into a Zed-inspired agent manager with a task list, active conversation, code or diff view, and terminal. A persistent toggle lets Nico move between the two without losing work or restarting agents.
+Build a Windows-first Hydra desktop IDE with two working modes: Editor and Agents. Prove the agent workflow as a VS Code extension first, then bundle a maintained desktop editor distribution with a Windows installer. Editor mode keeps the familiar file explorer, tabs, code editor, source control, debugger, and terminal. Agents mode rearranges the workspace into a Zed-inspired agent manager with a task list, active conversation, code or diff view, and terminal. A persistent toggle lets Nico move between the two without losing work or restarting agents.
 
 Claude Code and Codex are the primary providers. Both their CLIs and their official VS Code extensions belong in the workflow. Each managed task gets its own Git branch and worktree so parallel agents can change separate checkouts and their results can be reviewed before integration.
 
@@ -16,7 +16,7 @@ One development environment for writing code yourself, delegating tasks, watchin
 
 ### Recommended starting point
 
-Start as a locally installed VS Code extension, delivered as a .vsix. Use native VS Code editing and terminal surfaces alongside a custom agent interface. Prove the toggle and worktree workflow before investing in a custom IDE. VS Code exposes extension views and webviews, but a perfect replacement of its workbench is not an extension API guarantee. [1]
+Start as a locally installed VS Code extension, delivered as a .vsix for development and early acceptance. The final bundled product is a standalone Hydra IDE installed through a Windows setup executable, following Nico's 17 September delivery decision. Use native editing and terminal surfaces alongside a custom agent interface. A maintained editor distribution is now an explicit delivery milestone; see [Desktop delivery and onboarding](Desktop_Delivery.md). VS Code exposes extension views and webviews, but a perfect replacement of its workbench is not an extension API guarantee. [1]
 
 ### Scope for the first release
 
@@ -60,7 +60,7 @@ Nico's selected direction is Cursor-style near-black with white text, with a dar
 | Muted text | `#999E9A` | Supporting labels |
 | Green text | `#A4C7B1` | Readable green accents on near-black |
 
-The manager uses this palette by default. Provide an optional **Hydra Dark** VS Code theme so the native workbench can match it; never change the user's editor theme automatically. Continue using VS Code font, focus, and accessibility conventions, and defer to native colors in high-contrast mode.
+The manager uses this dark palette by default and follows a native light theme when selected. Provide **Hydra Dark** and **Hydra Light** themes, with a Hydra Settings page that switches the native editor, terminals, and manager together. Apply changes only after an explicit appearance choice; importing settings preserves the imported theme until changed. Continue using native font, focus, and accessibility conventions, and defer to native colors in high-contrast mode.
 
 ### Toggle contract
 
@@ -194,6 +194,10 @@ Expose default provider, CLI paths, worktree root, maximum concurrent tasks, mer
 
 ## Build milestones and acceptance
 
+### Desktop delivery requirements
+
+The bundled release uses Hydra branding and the README logo for the application and shortcut. Its Windows installer includes an optional **Create a desktop shortcut** checkbox. First launch opens skippable onboarding with **Import from VS Code**, **Import from Cursor**, appearance, and provider-owned subscription sign-in actions. Import previews settings/keybindings/snippets and preserves source applications and existing Hydra preferences; it never copies credentials or private application databases. Anthropic subscription setup launches the unmodified official Claude Code authentication flow; OpenAI setup uses supported Codex ChatGPT sign-in. The in-IDE Settings page provides dark/light appearance and access to onboarding. Detailed gates and implementation order are in [Desktop delivery and onboarding](Desktop_Delivery.md).
+
 Deliver a usable terminal workflow early, then add structured integrations. Each milestone has a concrete release gate; unverified provider or layout assumptions should not become invisible dependencies.
 
 | Milestone | Acceptance gate |
@@ -204,6 +208,7 @@ Deliver a usable terminal workflow early, then add structured integrations. Each
 | M3  Structured sessions | For Claude Code and Codex, verify streaming, follow-up, permissions, stop, and resume for every advertised capability. Show actionable errors and preserve raw diagnostics on protocol failure. |
 | M4  Review and integration | Review committed, staged, unstaged, untracked, renamed, and deleted changes. Demonstrate clean integration, conflict recovery, dirty-target refusal, and safe discard. |
 | M5  Reliability and efficiency | Install the .vsix on Windows. Test multiple windows, paths with spaces, interrupted setup, stale sessions, and unsupported versions. Verify that UI operations make zero model requests. |
+| M6  Desktop delivery | Install/uninstall the standalone Windows IDE; test the desktop-shortcut checkbox both ways, branding, first-run and replayed onboarding, VS Code/Cursor import and rollback, dark/light settings, supported provider sign-in and cancellation, upgrades, and local-data preservation. A .vsix alone does not pass this gate. |
 
 ### Definition of done
 
@@ -211,7 +216,7 @@ Nico can open a Git project in VS Code, flip into the agent manager, start Claud
 
 ### Decisions to validate during implementation
 
-- Can supported VS Code APIs achieve an acceptable one-toggle layout and restore it reliably? A full editor fork is a separate product decision.
+- Can supported editor APIs achieve an acceptable one-toggle layout and restore it reliably? Nico has selected a maintained desktop editor distribution for final bundling; validate its build, updates, and extension compatibility separately from the prototype.
 
 - Which installed provider versions expose the required protocol, approval, resume, and usage features? Record tested versions and schemas.
 

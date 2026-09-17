@@ -4,14 +4,14 @@
 
 # Hydra
 
-A Windows-first VS Code extension for switching between ordinary editing and an agent manager. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md).
+A Windows-first IDE project for switching between ordinary editing and an agent manager, currently delivered as a VS Code extension prototype. The bundled release will be a standalone Windows installer with optional desktop shortcut and first-run onboarding. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md) and [desktop delivery requirements](docs/Desktop_Delivery.md).
 
 ## Available features
 
 - Open **Hydra: Toggle Editor / Agents** from the Command Palette or press **Ctrl+Alt+A**.
 - A persistent status-bar control switches modes.
 - The README's Hydra logo is used for the extension, sidebar, and agent-manager tab icons.
-- The manager uses near-black (`#141414`), white text (`#F5F5F5`), and dark green (`#173C2C`). Select **Hydra Dark** through VS Code's color-theme picker to apply it to native surfaces too.
+- The dark manager uses near-black (`#141414`), white text (`#F5F5F5`), and dark green (`#173C2C`). Open **Hydra: Open Settings**, or the manager's settings control, to select **Dark** or **Light** for the native editor, terminals, and manager. Both **Hydra Dark** and **Hydra Light** are available through the native theme picker too. Opening Hydra never changes your theme; an explicit appearance choice updates your user profile and disables automatic system dark/light switching. Workspace overrides are preserved with an explanation.
 - Returning to Editor restores the previously focused text document, selections, and visible range. The extension does not close text tabs or touch terminal processes.
 - Create titled Claude Code or Codex tasks from the manager or **Hydra: New Task**. Each starts at committed HEAD in a unique `agent/…` branch and sibling worktree; dirty main-checkout edits stay in place.
 - Open the provider in a native terminal at the exact worktree and use **Copy prompt** to paste the task when ready. Provider authentication, conversation, and permissions stay in the official CLI.
@@ -46,7 +46,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.7.1.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
+Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.8.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required. The standalone installer, VS Code/Cursor settings import, and subscription-account onboarding remain upcoming desktop features.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

@@ -7,7 +7,10 @@ export interface Task {
   sessionId?: string; sessionProvider?: Provider; providerVersion?: string;
   error?: string;
 }
-export interface TaskFile { path: string; status: string }
+export type DiffLayer = 'combined' | 'committed' | 'staged' | 'unstaged' | 'untracked';
+export const diffLabels: Record<DiffLayer, string> = { combined: 'Base → saved files', committed: 'Committed', staged: 'Staged', unstaged: 'Unstaged', untracked: 'Untracked' };
+export interface FileChange { path: string; beforePath?: string; status: string; layer: DiffLayer }
+export interface TaskFile { path: string; status: string; changes?: FileChange[] }
 export interface ProviderInfo { provider: Provider; executable?: string; available: boolean }
 export interface ProviderDiagnostic {
   provider: Provider; executable?: string; status: 'checking' | 'checked' | 'unavailable' | 'error';
@@ -43,6 +46,7 @@ export type ClientMessage =
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
+  | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
   | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string }
   | { type: 'draft'; title: string; prompt: string; provider: Provider };
 
@@ -82,9 +86,14 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return { type, id } as ClientMessage;
   }
-  if (type === 'openFile') {
+  if (type === 'openFile' || type === 'openDiff') {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'openDiff') {
+      const layer = string('layer');
+      if (!['combined', 'committed', 'staged', 'unstaged', 'untracked'].includes(layer)) throw new Error('Invalid diff layer.');
+      return { type, id, path: string('path', 4096), layer } as ClientMessage;
+    }
     return { type, id, path: string('path', 4096) };
   }
   if (type === 'create' || type === 'draft') {

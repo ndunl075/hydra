@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Handoff, Task, ProviderDiagnostic, SessionView } from '../src/core/model';
+import type { Handoff, Task, ProviderDiagnostic, SessionView, TaskFile, DiffLayer } from '../src/core/model';
+import { git } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -139,6 +140,7 @@ export async function run(): Promise<void> {
     assert.equal(path.relative(await realpath(requests[0].cwd), await realpath(tasks[0]!.worktree)), '');
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id), /managed process/);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffCodex', tasks[0]!.id), /managed process/);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openDiff', tasks[0]!.id, 'keep.txt', 'combined'), /Stop this task writer/);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id), /limit/);
     await vscode.commands.executeCommand('hydra.stopTask', tasks[0]!.id);
@@ -170,5 +172,54 @@ export async function run(): Promise<void> {
     assert.equal(codexRequests.find(message => message.method === 'thread/resume').params.threadId, '12345678-1234-7234-9234-123456789abc');
     assert.ok(codexRequests.find(message => message.method === 'turn/interrupt'));
     console.log('PASS: managed Codex streams, resumes its explicit thread, routes one approval, rejects stale approvals and overlapping writers, shares concurrency, and interrupts the active turn.');
+    const reviewTask = tasks[2]!;
+    const claudeRequestsBefore = await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8');
+    const codexRequestsBefore = await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8');
+    await writeFile(path.join(reviewTask.worktree, 'review.txt'), 'committed review\n');
+    await writeFile(path.join(reviewTask.worktree, 'old review.txt'), 'rename review\n');
+    await writeFile(path.join(reviewTask.worktree, 'deleted review.txt'), 'deletion review\n');
+    await git(reviewTask.worktree, ['add', 'review.txt', 'old review.txt', 'deleted review.txt']);
+    await git(reviewTask.worktree, ['commit', '-m', 'review fixture']);
+    await git(reviewTask.worktree, ['mv', 'old review.txt', 'renamed review ü.txt']);
+    await writeFile(path.join(reviewTask.worktree, 'review.txt'), 'staged review\n'); await git(reviewTask.worktree, ['add', 'review.txt']);
+    await writeFile(path.join(reviewTask.worktree, 'review.txt'), 'saved review\n');
+    const fs = await import('node:fs/promises'); await fs.rm(path.join(reviewTask.worktree, 'deleted review.txt'));
+    await writeFile(path.join(reviewTask.worktree, 'untracked review.txt'), 'untracked review\n');
+    await writeFile(path.join(reviewTask.worktree, 'binary review.bin'), Buffer.from([0, 1, 255]));
+    const editDocument = await vscode.workspace.openTextDocument(path.join(reviewTask.worktree, 'review.txt'));
+    const unsaved = new vscode.WorkspaceEdit(); unsaved.insert(editDocument.uri, new vscode.Position(0, 0), 'unsaved editor change\n');
+    assert.equal(await vscode.workspace.applyEdit(unsaved), true); assert.equal(editDocument.isDirty, true);
+    const statusBefore = await git(reviewTask.worktree, ['status', '--porcelain=v1', '-z']);
+    await vscode.commands.executeCommand('hydra.openAgents');
+    const changes = await vscode.commands.executeCommand<TaskFile[]>('hydra.getChanges', reviewTask.id);
+    assert.ok(changes?.find(file => file.path === 'review.txt')?.changes?.some(change => change.layer === 'staged'));
+    for (const [file, layer, left, right] of [
+      ['review.txt', 'combined', '', 'saved review\n'], ['review.txt', 'committed', '', 'committed review\n'],
+      ['review.txt', 'staged', 'committed review\n', 'staged review\n'], ['review.txt', 'unstaged', 'staged review\n', 'saved review\n'],
+      ['renamed review ü.txt', 'staged', 'rename review\n', 'rename review\n'], ['deleted review.txt', 'unstaged', 'deletion review\n', ''],
+      ['untracked review.txt', 'untracked', '', 'untracked review\n']
+    ] as [string, DiffLayer, string, string][]) {
+      await vscode.commands.executeCommand('hydra.openDiff', reviewTask.id, file, layer);
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      assert.ok(input instanceof vscode.TabInputTextDiff, 'Text changes open an actual native diff tab');
+      assert.equal(input.original.scheme, 'hydra-review'); assert.equal(input.modified.scheme, 'hydra-review');
+      assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), left);
+      assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), right);
+      assert.ok(managerOpen(), 'Native review leaves the manager open');
+      if (layer === 'unstaged' && file === 'review.txt') {
+        await writeFile(path.join(reviewTask.worktree, 'review.txt'), 'later saved review\n');
+        assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), right, 'Snapshot does not silently update after disk edits');
+      }
+    }
+    await vscode.commands.executeCommand('hydra.openDiff', reviewTask.id, 'binary review.bin', 'untracked');
+    const binaryInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    assert.ok(binaryInput instanceof vscode.TabInputText, 'Binary review opens a native metadata document instead of a text diff');
+    assert.ok((await vscode.workspace.openTextDocument(binaryInput.uri)).getText().includes('No text diff generated'));
+    assert.equal(editDocument.isDirty, true); assert.ok(editDocument.getText().startsWith('unsaved editor change\n'), 'Review preserves the unsaved live editor');
+    assert.equal(await git(reviewTask.worktree, ['status', '--porcelain=v1', '-z']), statusBefore);
+    assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore);
+    assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openDiff', reviewTask.id, '../../keep.txt', 'unstaged'), /relative/);
+    console.log('PASS: native read-only diff tabs show committed/staged/unstaged/untracked/renamed/deleted snapshots, preserve dirty buffers, show binary metadata, and make zero provider requests.');
   }
 }

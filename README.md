@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./hydra-logo.png" alt="Hydra — three-headed hydra logo" width="220" />
+</p>
+
 # Hydra
 
 A Windows-first VS Code extension for switching between ordinary editing and an agent manager. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md).

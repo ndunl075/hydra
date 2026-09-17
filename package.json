@@ -2,9 +2,12 @@
   "name": "hydra-agent-manager",
   "displayName": "Hydra",
   "description": "Editor and Agents modes with isolated Git worktrees and native provider terminals.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "nico-dunlap",
-  "repository": { "type": "git", "url": "https://github.com/ndunl075/hydra.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ndunl075/hydra.git"
+  },
   "private": true,
   "license": "UNLICENSED",
   "engines": {
@@ -29,8 +32,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
-    "test": "npm run build && npm run test:smoke",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.1.0.vsix",
+    "test": "node scripts/test.mjs",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.2.0.vsix",
     "vscode:prepublish": "npm run check && npm run build",
     "test:smoke": "node scripts/smoke.mjs"
   },
@@ -44,6 +47,24 @@
       {
         "command": "hydra.openAgents",
         "title": "Hydra: Open Agents"
+      },
+      {
+        "command": "hydra.newTask",
+        "title": "Hydra: New Task",
+        "icon": "$(add)"
+      },
+      {
+        "command": "hydra.openTask",
+        "title": "Hydra: Open Task"
+      },
+      {
+        "command": "hydra.refresh",
+        "title": "Hydra: Refresh Tasks",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "hydra.createTask",
+        "title": "Hydra: Create Task"
       }
     ],
     "keybindings": [
@@ -53,13 +74,80 @@
         "mac": "cmd+alt+a"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hydra",
+          "title": "Hydra",
+          "icon": "media/hydra.svg"
+        }
+      ]
+    },
+    "views": {
+      "hydra": [
+        {
+          "id": "hydra.tasks",
+          "name": "Tasks"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "hydra.newTask",
+          "when": "view == hydra.tasks",
+          "group": "navigation"
+        },
+        {
+          "command": "hydra.refresh",
+          "when": "view == hydra.tasks",
+          "group": "navigation"
+        }
+      ]
+    },
     "themes": [
       {
         "label": "Hydra Dark",
         "uiTheme": "vs-dark",
         "path": "themes/hydra-dark.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Hydra",
+      "properties": {
+        "hydra.defaultProvider": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "default": "claude",
+          "description": "Provider selected for new tasks."
+        },
+        "hydra.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute Claude CLI executable path. Empty searches PATH."
+        },
+        "hydra.codexPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute Codex CLI executable path. Empty searches PATH."
+        },
+        "hydra.maxConcurrentTasks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 2,
+          "description": "Maximum provider terminals Hydra can launch at once in this window."
+        },
+        "hydra.worktreeRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute directory for task worktrees, outside the repository. Empty uses a sibling <repository>.worktrees folder."
+        }
+      }
+    }
   },
   "dependencies": {
     "react": "^19.0.0",

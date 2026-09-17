@@ -44,6 +44,24 @@ The left side shows the normal Explorer and native navigation. The center contai
 
 Use the supplied Zed screenshot as the reference for density and hierarchy: narrow task rail, readable conversation, substantial code area, and terminal beneath. Match the active VS Code theme, typography, keyboard behavior, and accessibility conventions. Avoid dashboard cards and decorative chrome.
 
+### UI colors
+
+Nico's selected direction is Cursor-style near-black with white text, with a dark green secondary. These are Hydra's initial implementation values, not a claim to reproduce Cursor's exact theme tokens.
+
+| Token | Color | Use |
+| --- | --- | --- |
+| Primary | `#141414` | Main manager and editor background |
+| Primary text | `#F5F5F5` | Text on the primary background |
+| Secondary | `#173C2C` | Primary action buttons and active mode |
+| Secondary hover | `#24553F` | Hovered green actions |
+| Rail | `#111111` | Task rail and supporting chrome |
+| Surface | `#1B1B1B` | Inputs and inset surfaces |
+| Border | `#2B2B2B` | Quiet separators |
+| Muted text | `#999E9A` | Supporting labels |
+| Green text | `#A4C7B1` | Readable green accents on near-black |
+
+The manager uses this palette by default. Provide an optional **Hydra Dark** VS Code theme so the native workbench can match it; never change the user's editor theme automatically. Continue using VS Code font, focus, and accessibility conventions, and defer to native colors in high-contrast mode.
+
 ### Toggle contract
 
 - Preserve open files, unsaved buffers, editor selection, task selection, transcript position, terminal processes, and running agent sessions.

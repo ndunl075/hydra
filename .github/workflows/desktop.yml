@@ -62,6 +62,9 @@ jobs:
           "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
       - run: npm.cmd ci
       - run: npm.cmd run desktop:build
+        env:
+          # Upstream ripgrep uses GitHub's release API; avoid shared-runner anonymous limits.
+          GITHUB_TOKEN: ${{ github.token }}
       - run: npm.cmd run desktop:smoke
       - name: Upload standalone editor
         uses: actions/upload-artifact@v4
@@ -70,13 +73,4 @@ jobs:
           path: .desktop/VSCode-win32-x64/
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 7
-      - name: Upload dependency failure logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-dependency-logs
-          path: .desktop/npm-cache/_logs/*.log
-          include-hidden-files: true
-          if-no-files-found: ignore
           retention-days: 7

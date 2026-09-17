@@ -7,9 +7,10 @@ import { OwnershipLock } from './core/ownership';
 import { changedFiles, createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
-import { ManagedClaude } from './core/managedClaude';
+import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { testedClaudeVersion } from './core/claudeProtocol';
+import { testedCodexVersion } from './core/codexProtocol';
 import type { Provider, ProviderDiagnostic } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
@@ -64,14 +65,14 @@ class Manager {
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
-  private readonly managed: ManagedClaude;
+  private readonly managed: ManagedSessions;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
-    this.managed = new ManagedClaude(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.publish(); }, error => this.report(error));
+    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.publish(); }, error => this.report(error));
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -104,6 +105,7 @@ class Manager {
     command('hydra.startManaged', (id: string) => this.handle({ type: 'startManaged', id }));
     command('hydra.followUp', (id: string, prompt: string) => this.handle({ type: 'followUp', id, prompt }));
     command('hydra.getSession', (id: string) => structuredClone(this.managed.view(id)));
+    command('hydra.approve', (id: string, approvalId: string, decision: string) => this.handle({ type: 'approve', id, approvalId, decision }));
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
     this.status.show();
@@ -352,6 +354,7 @@ class Manager {
       terminal.dispose();
       return;
     }
+    if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }
     await this.verifyWorktree(task);
     if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'showSessionDiagnostics') {
@@ -362,7 +365,7 @@ class Manager {
     }
     if (message.type === 'startManaged' || message.type === 'followUp') {
       assertCliAllowed(task);
-      if (task.provider !== 'claude') throw new Error('Codex structured sessions are not connected yet. Use its terminal or official extension.');
+      if (task.sessionId && task.sessionProvider !== task.provider) throw new Error('The recorded session belongs to another provider. Create a separate task for this provider.');
       if (this.terminals.has(task.id) || task.state === 'external' || this.managed.has(task.id)) throw new Error('Stop this task writer before starting a managed turn.');
       if (message.type === 'startManaged' && task.sessionId) throw new Error('This task already has a session. Send a follow-up to resume it.');
       if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task first before sending a follow-up.');
@@ -372,13 +375,14 @@ class Manager {
       const controller = new AbortController(), generation = this.diagnosticGeneration;
       this.diagnosticChecks.add(controller);
       try {
-        const info = await findProvider('claude', vscode.workspace.getConfiguration('hydra').get<string>('claudePath'));
-        if (!info.executable) throw new Error('Claude CLI not found. Set its executable path first.');
+        const info = await findProvider(task.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${task.provider}Path`));
+        if (!info.executable) throw new Error(`${task.provider} CLI not found. Set its executable path first.`);
         // Re-probe immediately before a model request: cached help must not authorize a changed binary.
         const diagnostic = await checkProvider(info, task.worktree, controller.signal);
         if (controller.signal.aborted || this.closing || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because the window closed or provider configuration changed.');
-        this.diagnostics.set('claude', diagnostic);
-        if (diagnostic.status !== 'checked' || diagnostic.version !== testedClaudeVersion) throw new Error('Managed Claude supports verified version 2.1.270 only. Use the terminal for another version; see provider diagnostics.');
+        this.diagnostics.set(task.provider, diagnostic);
+        const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
+        if (diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Managed ${task.provider} supports tested CLI ${testedVersion} only. Use the terminal for another version; see provider diagnostics.`);
         task.providerVersion = diagnostic.version;
         await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt);
       } catch (error) {

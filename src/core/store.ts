@@ -21,7 +21,8 @@ export class LocalStore {
         !['claude', 'codex'].includes(task.provider) || !['interactive-cli', 'official-extension', 'managed-cli'].includes(task.interface) ||
         !['idle', 'external', 'running', 'interrupted', 'error'].includes(task.state) ||
         (task.sessionId !== undefined && (typeof task.sessionId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(task.sessionId))) ||
-        (task.providerVersion !== undefined && typeof task.providerVersion !== 'string')) throw new Error('Invalid task record. Original data has been retained.');
+        (task.providerVersion !== undefined && typeof task.providerVersion !== 'string') ||
+        (task.sessionProvider !== undefined && !['claude', 'codex'].includes(task.sessionProvider))) throw new Error('Invalid task record. Original data has been retained.');
       ids.add(task.id);
     }
     return data.tasks as Task[];

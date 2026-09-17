@@ -125,6 +125,24 @@ test('persisted cyclic dependencies block and explicit follow-up text survives c
   assert.deepEqual(tasks[0]!.schedule.request, { type: 'followUp', prompt: 'Resume with only this delta' });
 });
 
+test('integration activity or capacity changes during preparation hold intent for a later drain', async () => {
+  for (const blocker of ['integration', 'capacity']) {
+    const item = task(1); let enabled = true, capacity = 2, live = 1, preparations = 0, launches = 0;
+    const scheduler = new TaskScheduler({ tasks: () => [item], capacity: () => capacity, liveCount: () => live, enabled: () => enabled,
+      persist: async () => {},
+      prepare: async () => {
+        if (++preparations === 1) { if (blocker === 'integration') enabled = false; else capacity = 1; }
+        return { commit: item.baseCommit, artifacts: [] };
+      },
+      launch: async task => { launches++; task.state = 'running'; live++; }
+    });
+    await scheduler.enqueue(item, { type: 'startManaged' });
+    assert.equal(item.schedule?.state, 'queued'); assert.equal(launches, 0); assert.ok(item.schedule?.request);
+    enabled = true; live = 0; await scheduler.drain(); await scheduler.drain();
+    assert.equal(launches, 1); assert.equal(item.schedule?.state, 'running');
+  }
+});
+
 test('real Git pins selected base and reviewed predecessor, refuses changed/dirty results, fast-forwards only a clean unstarted dependent', async () => {
   const directory = path.resolve('.test-build/scheduler-git'); await mkdir(directory, { recursive: true });
   const root = await mkdtemp(path.join(directory, 'git-')), repository = path.join(root, 'main'); await mkdir(repository);

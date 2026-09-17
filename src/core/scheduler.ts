@@ -125,7 +125,11 @@ export class TaskScheduler {
         const prepared = await this.hooks.prepare(task);
         s.actualStartingCommit = prepared.commit; s.artifacts = prepared.artifacts;
         await this.hooks.persist();
-        if (!this.hooks.enabled()) { s.state = 'interrupted'; s.reason = 'Launch cancelled before provider start.'; await this.hooks.persist(); return; }
+        const reservations = this.hooks.tasks().filter(item => item.schedule?.uncertain).length;
+        if (!this.hooks.enabled() || this.hooks.liveCount() + reservations >= this.hooks.capacity()) {
+          s.state = 'queued'; s.reason = 'Waiting for task operations or capacity before provider start.';
+          await this.hooks.persist(); return;
+        }
         await this.hooks.launch(task, s.request);
         s.state = task.state === 'error' ? 'blocked' : task.state === 'interrupted' ? 'interrupted' : task.state === 'idle' ? 'finished' : 'running';
         if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;

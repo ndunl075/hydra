@@ -9,9 +9,12 @@ import { OwnershipLock } from './core/ownership';
 import { createWorktree, git, repositoryRoot, resolveTaskFile, isInside } from './core/worktrees';
 import { captureReview, captureCommitReview, reviewFiles } from './core/review';
 import { prepareCommitReview, commitReviewed } from './core/reviewCommit';
+import { Integrations } from './core/integration';
+import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { SettingsImport } from './extensionImport';
+import { Onboarding } from './extensionOnboarding';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -27,6 +30,7 @@ let manager: Manager | undefined;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   manager = new Manager(context);
   await manager.initialize();
+  await manager.showFirstRun();
 }
 export async function deactivate(): Promise<void> { await manager?.shutdown(); }
 
@@ -78,17 +82,28 @@ class Manager {
   private readonly review: ReviewDocuments;
   private readonly commitReviews = new Map<string, PreparedReview>();
   private pendingCommit?: Promise<ReviewedCommit>;
+  private readonly integrations: Integrations;
+  private readonly integrationOperations = new Map<string, IntegrationOperation>();
+  private pendingIntegration?: Promise<unknown>;
+  private integrationAbort?: { taskId: string; operationId?: string; controller: AbortController };
   private readonly settings: AppearanceSettings;
   private readonly settingsImport: SettingsImport;
+  private readonly onboarding: Onboarding;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
-    context.subscriptions.push(this.settings);
+    this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
+    context.subscriptions.push(this.settings, this.onboarding);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
+    this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
+      this.integrationOperations.set(op.taskId,op);
+      if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
+      void this.publish();
+    });
     this.review = new ReviewDocuments(context);
     this.scheduler = new TaskScheduler({
       tasks: () => this.tasks,
@@ -115,6 +130,8 @@ class Manager {
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
+    command('hydra.openOnboarding', () => this.onboarding.show());
+    command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
     command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
@@ -151,6 +168,12 @@ class Manager {
     command('hydra.prepareCommitReview', async (id: string) => { await this.handle({ type: 'prepareCommitReview', id }); return structuredClone(this.commitReviews.get(id)); });
     command('hydra.openCommitReview', (id: string, token: string, filePath: string) => this.handle({ type: 'openCommitReview', id, token, path: filePath }));
     command('hydra.commitReviewed', async (id: string, token: string, message: string) => { await this.handle({ type: 'commitReviewed', id, token, message }); return structuredClone(this.getTask(id).reviewedCommit); });
+    command('hydra.prepareIntegration',async(id:string,checks:unknown)=>{await this.handle({type:'prepareIntegration',id,checks});return structuredClone(this.integrationOperations.get(id));});
+    command('hydra.getIntegration',(id:string)=>structuredClone(this.integrationOperations.get(this.getTask(id).id)));
+    command('hydra.promoteIntegration',(id:string,operationId:string)=>this.handle({type:'promoteIntegration',id,operationId}));
+    command('hydra.reviewIntegrationResolution',async(id:string,operationId:string)=>{await this.handle({type:'reviewIntegrationResolution',id,operationId});return structuredClone(this.integrationOperations.get(id));});
+    command('hydra.acceptIntegrationResolution',(id:string,operationId:string,token:string)=>this.handle({type:'acceptIntegrationResolution',id,operationId,token}));
+    command('hydra.openIntegrationDiff',(id:string,operationId:string,filePath:string)=>this.handle({type:'openIntegrationDiff',id,operationId,path:filePath}));
     command('hydra.getChanges', async (id: string) => { const task = this.getTask(id); if (!vscode.workspace.isTrusted || this.disabled) throw new Error('Task review requires a trusted, healthy workspace.'); await this.verifyWorktree(task); return reviewFiles(task.worktree, task.baseCommit); });
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
@@ -194,6 +217,7 @@ class Manager {
           }
         }
         await this.store.save(this.tasks);
+        for(const op of await this.integrations.recover(this.tasks))this.integrationOperations.set(op.taskId,op);
       }
       this.selectedId = this.tasks[0]?.id;
       this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
@@ -207,6 +231,9 @@ class Manager {
     this.schedulerReady = true;
     await this.publish();
     await this.scheduler.drain();
+  }
+  async showFirstRun(): Promise<void> {
+    if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
   }
   private async handoffCommand(provider: 'claude' | 'codex', id?: string): Promise<string | undefined> {
     if (!id) {
@@ -273,8 +300,9 @@ class Manager {
     await this.store.save(this.tasks); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
   }
-  private reviewBlocked(task: Task): boolean { return this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
+  private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
+    if (pendingSchedule(task)) throw new Error('Cancel queued work or reconcile the writer before reviewing or integrating this task.');
     if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
     const root = await realpath(task.worktree);
     for (const document of vscode.workspace.textDocuments) {
@@ -282,6 +310,19 @@ class Manager {
       const file = await realpath(document.uri.fsPath).catch(() => document.uri.fsPath);
       if (isInside(root, file) || isInside(root, document.uri.fsPath)) throw new Error('Save or revert unsaved task editor buffers before preparing a commit review.');
     }
+  }
+  private async guardIntegration(task:Task,paths:string[]):Promise<void>{
+    if (pendingSchedule(task)) throw new Error('Cancel queued work or reconcile the writer before integration.');
+    await this.guardCommitReview(task);
+    for(const directory of paths){
+      const root=await realpath(directory);
+      for(const document of vscode.workspace.textDocuments){
+        if(!document.isDirty||document.uri.scheme!=='file')continue;
+        const file=await realpath(document.uri.fsPath).catch(()=>document.uri.fsPath);
+        if(isInside(root,file)||isInside(root,document.uri.fsPath))throw new Error('Save or revert unsaved task, target, and candidate editor buffers before integration.');
+      }
+    }
+    if(pendingSchedule(task)||this.closing||this.disabled||!vscode.workspace.isTrusted)throw new Error('Integration cancelled because the workspace closed or lost trust.');
   }
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
@@ -307,12 +348,16 @@ class Manager {
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
+      integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
         return [item.id, { active: !!view?.active, awaitingApproval: !!view?.active && !!view.approvals?.length }];
       }))
     };
     await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
+  }
+  private integrationSnapshot(op?:IntegrationOperation):IntegrationOperation|undefined{
+    return op?{...op,checks:op.checks.map(({stdout:_stdout,stderr:_stderr,...check})=>check)}:undefined;
   }
   private async openAgents(): Promise<void> {
     if (this.mode !== 'agents') {
@@ -400,7 +445,7 @@ class Manager {
       return;
     }
     if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -423,7 +468,7 @@ class Manager {
     const task = this.getTask(message.id);
     if (message.type === 'select') { this.selectedId = task.id; await this.publish(); return; }
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
-    if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
+    if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
     if (message.type === 'configureSchedule') {
       if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
       configureSchedule(task, this.tasks, message.dependencies, message.startFromDependency);
@@ -437,6 +482,7 @@ class Manager {
       return;
     }
     if (!scheduledLaunch && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) {
+      if (this.integrationAbort?.taskId === task.id) throw new Error('Finish or cancel this task integration before queueing another writer.');
       if ((message.type === 'launch' || message.type === 'terminal') && this.terminals.has(task.id)) { this.terminals.get(task.id)!.show(false); return; }
       assertCliAllowed(task);
       if (this.managed.has(task.id)) throw new Error('Stop the managed process before queueing another launch.');
@@ -447,7 +493,7 @@ class Manager {
       return;
     }
     if (['handoff', 'openWorktree'].includes(message.type) && this.managed.has(task.id)) throw new Error('Stop the managed process before handing off.');
-    if (!scheduledLaunch && pendingSchedule(task) && ['handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Cancel queued work or reconcile the writer before this action.');
+    if (!scheduledLaunch && pendingSchedule(task) && ['handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type)) throw new Error('Cancel queued work or reconcile the writer before this action.');
     if (message.type === 'stop') {
       // Process handles become available before startup's final metadata save completes.
       // Stop an owned writer even while its scheduling record still says starting.
@@ -460,7 +506,38 @@ class Manager {
       return;
     }
     if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }
+    if(message.type==='cancelIntegration'){
+      if(this.integrationAbort?.taskId!==task.id||this.integrationAbort.operationId!==message.operationId)throw new Error('This integration has no active checks to cancel.');
+      this.integrationAbort.controller.abort();return;
+    }
     await this.verifyWorktree(task);
+    if(message.type==='prepareIntegration'||message.type==='promoteIntegration'||message.type==='reviewIntegrationResolution'||message.type==='acceptIntegrationResolution'){
+      if(this.busy)throw new Error('Another task operation is in progress.');
+      this.busy=true;this.error=undefined;
+      const controller=new AbortController();this.integrationAbort={taskId:task.id,controller};
+      const action=async()=>{
+        const guard=(paths:string[])=>this.guardIntegration(task,paths);
+        if(message.type==='prepareIntegration'){await this.integrations.prepare(task,message.checks,guard,controller.signal);return;}
+        const op=this.getIntegration(task,message.operationId);this.integrationAbort!.operationId=op.id;
+        if(message.type==='promoteIntegration')await this.integrations.promote(task,op,guard);
+        else if(message.type==='reviewIntegrationResolution')await this.integrations.reviewResolution(task,op,guard);
+        else if(message.type==='acceptIntegrationResolution')await this.integrations.acceptResolution(task,op,message.token,guard,controller.signal);
+      };
+      this.pendingIntegration=action();
+      try{await this.pendingIntegration;}finally{this.pendingIntegration=undefined;this.integrationAbort=undefined;this.busy=false;this.fileCache=undefined;await this.publish();if(this.schedulerReady)void this.scheduler.drain().catch(error=>this.report(error));}
+      return;
+    }
+    if(message.type==='copyIntegrationCandidate'||message.type==='showIntegrationLog'||message.type==='openIntegrationDiff'){
+      const op=this.getIntegration(task,message.operationId);
+      if(message.type==='copyIntegrationCandidate'){await vscode.env.clipboard.writeText(op.candidate);return;}
+      if(message.type==='showIntegrationLog'){await this.review.openLog(`${task.title} · Integration ${op.id}`,JSON.stringify(op,null,2));return;}
+      if(message.type!=='openIntegrationDiff')return;
+      if(this.reviewBlocked(task)||!op.candidateCommit||!op.candidateTree)throw new Error('Stop task writers and prepare a candidate review before opening its snapshots.');
+      const prepared:PreparedReview={token:op.reviewToken||op.id,head:op.candidateCommit,tree:op.candidateTree,baseCommit:op.targetCommit,branch:op.targetBranch,indexHash:'',createdAt:op.updatedAt,files:op.files};
+      const snapshot=await captureCommitReview(op.candidate,prepared,message.path);
+      if(this.reviewBlocked(task))throw new Error('Task writer restarted. Stop it before reviewing the candidate.');
+      await this.review.open(`${task.title} · Integration into ${op.targetBranch}`,op.candidate,snapshot);return;
+    }
     if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'prepareCommitReview' || message.type === 'commitReviewed') {
       if (this.busy) throw new Error('Another task operation is in progress.');
@@ -595,6 +672,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.managed.shutdown();
@@ -607,5 +685,10 @@ class Manager {
     }
     try { if (!this.disabled) await this.store.save(this.tasks); }
     finally { for (const lock of this.locks) await lock.release(); }
+  }
+  private getIntegration(task:Task,id:string):IntegrationOperation{
+    const op=this.integrationOperations.get(task.id);
+    if(!op||op.id!==id)throw new Error('Integration operation expired. Select the current candidate.');
+    return op;
   }
 }

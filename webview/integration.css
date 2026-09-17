@@ -1,0 +1,10 @@
+.integration-panel { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--vscode-panel-border); }
+.integration-check-label { display: grid; gap: 8px; margin-top: 14px; }
+.integration-check-label textarea { width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--vscode-editor-font-family, monospace); }
+.integration-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 18px; padding: 10px 12px; border: 1px solid var(--vscode-panel-border); text-transform: capitalize; }
+.integration-validated, .integration-promoted { border-color: var(--vscode-testing-iconPassed, #6fa58a); }
+.integration-failed, .integration-conflicted, .integration-interrupted { border-color: var(--vscode-testing-iconFailed, #c78378); }
+.integration-checks { list-style: none; padding: 0; margin: 12px 0; }
+.integration-checks li { display: flex; align-items: baseline; gap: 12px; padding: 7px 0; font-size: 12px; }
+.integration-checks code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.integration-check-state { width: 58px; flex-shrink: 0; color: var(--vscode-descriptionForeground); }

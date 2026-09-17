@@ -4,7 +4,7 @@ Hydra is a standalone desktop IDE. Its initial agent-manager implementation is r
 
 ## Source and identity
 
-`desktop/upstream.json` pins the official MIT-licensed editor source to tag `1.113.0`, commit `cfbea10c5ffb233ea9177d34726e6056e89913dc`. This matches the editor revision used for core acceptance and is an explicit reproducibility pin, not an assertion that it is the latest release. Update the pin and rerun desktop acceptance together when upgrading the editor.
+`desktop/upstream.json` pins the official MIT-licensed editor source to tag `1.113.0`, commit `cfbea10c5ffb233ea9177d34726e6056e89913dc`. This is the initial reproducible desktop baseline, not an assertion that it is the latest release. The separate installed VS Code development test host is version `1.135.0`; passing its core tests does not replace acceptance against the pinned standalone app. Update the pin and rerun desktop acceptance together when upgrading the editor.
 
 `desktop/product.json` supplies Hydra's application name, CLI, URL protocol, Windows registry/app IDs/mutexes, and profile names. `desktop:prepare` checks the exact checkout/root, preserves upstream MIT notices, applies the overlay, removes inherited Marketplace/update endpoints, and patches executable/installer publisher metadata. No separate gallery/update service is configured yet, and external built-in extension downloads are disabled. The source's native language/editing extensions still build from the pinned tree.
 

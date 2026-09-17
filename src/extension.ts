@@ -256,7 +256,7 @@ class Manager {
         localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')]
       });
       this.panel = panel;
-      panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, 'media', 'hydra.svg');
+      panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, 'hydra-logo.png');
       panel.webview.html = this.html(panel.webview);
       panel.onDidDispose(() => {
         if (this.panel === panel) this.panel = undefined;

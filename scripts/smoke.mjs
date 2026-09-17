@@ -20,10 +20,10 @@ await git(['add', '.']);
 await git(['commit', '-m', 'fixture']);
 await fs.writeFile(path.join(repository, 'keep.txt'), 'main dirty\n');
 const probe = path.join(fixture, 'probe.cjs');
-await fs.writeFile(probe, "require('node:fs').writeFileSync('hydra-terminal-cwd.txt',process.cwd());setInterval(()=>{},1000);");
+await fs.writeFile(probe, "const fs=require('node:fs');const args=process.argv.slice(2);if(args.length){fs.appendFileSync('hydra-probes.jsonl',JSON.stringify(args)+'\\n');if(args[0]==='--version')console.log('2.1.270 (Claude Code)');else if(args[0]==='--help')console.log('--input-format stream-json --output-format stream-json --resume --permission-prompt-tool');else process.exit(9);}else{fs.writeFileSync('hydra-terminal-cwd.txt',process.cwd());setInterval(()=>{},1000);}");
 const provider = path.join(fixture, process.platform === 'win32' ? 'provider.cmd' : 'provider');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-await fs.writeFile(provider, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "%~dp0probe.cjs"\r\n` : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(probe)}\n`, { mode: 0o755 });
+await fs.writeFile(provider, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "%~dp0probe.cjs" %*\r\n` : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(probe)} "$@"\n`, { mode: 0o755 });
 await fs.mkdir(path.join(repository, '.vscode'));
 await fs.writeFile(path.join(repository, '.vscode', 'settings.json'), JSON.stringify({ 'hydra.codexPath': 'relative-invalid-path' }));
 const options = {

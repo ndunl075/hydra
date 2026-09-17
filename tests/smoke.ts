@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Handoff, Task } from '../src/core/model';
+import type { Handoff, Task, ProviderDiagnostic } from '../src/core/model';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -81,6 +81,12 @@ export async function run(): Promise<void> {
     await config.update('claudePath', process.env.HYDRA_TEST_PROVIDER, vscode.ConfigurationTarget.Workspace);
     await config.update('codexPath', process.env.HYDRA_TEST_PROVIDER, vscode.ConfigurationTarget.Workspace);
     await config.update('maxConcurrentTasks', 2, vscode.ConfigurationTarget.Workspace);
+    const diagnostic = await vscode.commands.executeCommand<ProviderDiagnostic>('hydra.checkProvider', 'claude');
+    assert.equal(diagnostic?.status, 'checked'); assert.equal(diagnostic.version, '2.1.270');
+    const probeCalls = (await readFile(path.join(repository, 'hydra-probes.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(probeCalls, [['--version'], ['--help']], 'Capability checks do not start a session or submit a prompt');
+    assert.ok(!vscode.window.terminals.some(item => item.name.startsWith('Hydra · ')), 'Checks do not launch provider terminals');
+    console.log('PASS: explicit capability checks read only version/help and retain advertised options without claiming managed-session support.');
     const tasks: Task[] = [];
     for (const provider of ['claude', 'codex', 'codex']) {
       const task = await vscode.commands.executeCommand<Task>('hydra.createTask', { repository, provider, title: `Smoke ${provider} ${tasks.length + 1}`, prompt: 'Test launch mechanics only; do not call a model.' });

@@ -6,6 +6,8 @@ import { LocalStore } from './core/store';
 import { OwnershipLock } from './core/ownership';
 import { changedFiles, createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
 import { findProvider, terminalLaunch } from './core/providers';
+import { checkProvider } from './core/diagnostics';
+import type { Provider, ProviderDiagnostic } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
@@ -56,6 +58,9 @@ class Manager {
   private snapshotGeneration = 0;
   private pendingNewTask = false;
   private handoff?: Handoff;
+  private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
+  private readonly diagnosticChecks = new Set<AbortController>();
+  private diagnosticGeneration = 0;
   constructor(private readonly context: vscode.ExtensionContext) {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
@@ -84,6 +89,12 @@ class Manager {
     command('hydra.releaseExternal', (id: string) => this.handle({ type: 'releaseExternal', id }));
     command('hydra.openOfficialExtension', () => this.handle({ type: 'openOfficial' }));
     command('hydra.getHandoff', () => structuredClone(this.handoff));
+    command('hydra.checkProvider', async (provider?: string) => {
+      provider ||= vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude');
+      await this.handle({ type: 'checkProvider', provider });
+      return structuredClone(this.diagnostics.get(provider as Provider));
+    });
+    command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
     this.status.show();
@@ -98,7 +109,11 @@ class Manager {
         void this.persist().catch(error => this.report(error));
       }
     }), vscode.workspace.onDidChangeConfiguration(event => {
-      if (event.affectsConfiguration('hydra')) void this.refresh().catch(error => this.report(error));
+      if (event.affectsConfiguration('hydra')) {
+        this.diagnosticGeneration++; this.diagnostics.clear();
+        for (const controller of this.diagnosticChecks) controller.abort();
+        void this.refresh().catch(error => this.report(error));
+      }
     }));
     try {
       this.tasks = await this.store.load();
@@ -197,7 +212,8 @@ class Manager {
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
       providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft,
-      handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex'))
+      handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
+      diagnostics: [...this.diagnostics.values()]
     };
     await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
   }
@@ -255,6 +271,28 @@ class Manager {
     if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider }; return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use task worktrees and terminals.');
     if (this.disabled) throw new Error('Hydra task operations are disabled. Resolve the storage or ownership error and reload this window.');
+    if (message.type === 'checkProvider' || message.type === 'showProviderDiagnostics') {
+      if (message.type === 'showProviderDiagnostics') {
+        const diagnostic = this.diagnostics.get(message.provider);
+        if (!diagnostic) throw new Error('Check the provider first to collect diagnostics.');
+        const document = await vscode.workspace.openTextDocument({ content: JSON.stringify(diagnostic, null, 2), language: 'json' });
+        await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        return;
+      }
+      if (this.diagnostics.get(message.provider)?.status === 'checking') throw new Error('This provider check is already in progress.');
+      const controller = new AbortController(), generation = this.diagnosticGeneration;
+      this.diagnosticChecks.add(controller);
+      this.diagnostics.set(message.provider, { provider: message.provider, status: 'checking', checkedAt: new Date().toISOString(), advertised: [], probes: [] });
+      await this.publish();
+      try {
+        const info = await findProvider(message.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${message.provider}Path`));
+        const diagnostic = await checkProvider(info, this.repositories[0] || this.context.extensionUri.fsPath, controller.signal);
+        if (generation === this.diagnosticGeneration && !this.closing) this.diagnostics.set(message.provider, diagnostic);
+      } catch (error) {
+        if (generation === this.diagnosticGeneration && !this.closing) this.diagnostics.set(message.provider, { provider: message.provider, status: 'error', checkedAt: new Date().toISOString(), advertised: [], probes: [], error: this.describe(error) });
+      } finally { this.diagnosticChecks.delete(controller); await this.publish(); }
+      return;
+    }
     if (message.type === 'openOfficial' || message.type === 'showOfficial' || message.type === 'copyHandoffPrompt') {
       await this.verifyHandoffWorkspace();
       const handoff = this.handoff!;
@@ -348,6 +386,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    for (const controller of this.diagnosticChecks) controller.abort();
     for (const [id, terminal] of this.terminals) {
       terminal.dispose();
       const task = this.getTask(id);

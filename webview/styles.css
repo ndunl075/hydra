@@ -115,6 +115,9 @@ textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
 .footer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 13px; }
 .footer-actions .secondary { font-size: 11px; padding: 5px 9px; }
 .handoff-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.provider-check { margin-top: 24px; padding-top: 17px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.7; color: var(--muted); }
+.provider-check p { margin: 10px 0 0; overflow-wrap: anywhere; }
+.diagnostic-actions { display: flex; gap: 16px; margin-top: 9px; }
 .handoff-heading { font-size: 23px; font-weight: 500; letter-spacing: -.6px; }
 .handoff-prompt { margin: 28px 0; padding-top: 22px; border-top: 1px solid var(--border); }
 .handoff-prompt .prompt-text { margin-left: 0; }

@@ -2,7 +2,7 @@
   "name": "hydra-agent-manager",
   "displayName": "Hydra",
   "description": "Editor and Agents modes with isolated Git worktrees and native provider terminals.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "nico-dunlap",
   "repository": {
     "type": "git",
@@ -33,15 +33,28 @@
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node scripts/test.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.3.0.vsix",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.4.0.vsix",
     "vscode:prepublish": "npm run check && npm run build",
     "test:smoke": "node scripts/smoke.mjs"
   },
   "contributes": {
     "commands": [
-      { "command": "hydra.handoffClaude", "title": "Hydra: Open Task in Claude Code" },
-      { "command": "hydra.handoffCodex", "title": "Hydra: Open Task in Codex" },
-      { "command": "hydra.openOfficialExtension", "title": "Hydra: Open Official Extension in Task Workspace" },
+      {
+        "command": "hydra.checkProvider",
+        "title": "Hydra: Check Default Provider Capabilities"
+      },
+      {
+        "command": "hydra.handoffClaude",
+        "title": "Hydra: Open Task in Claude Code"
+      },
+      {
+        "command": "hydra.handoffCodex",
+        "title": "Hydra: Open Task in Codex"
+      },
+      {
+        "command": "hydra.openOfficialExtension",
+        "title": "Hydra: Open Official Extension in Task Workspace"
+      },
       {
         "command": "hydra.toggleMode",
         "title": "Hydra: Toggle Editor / Agents",
@@ -119,7 +132,10 @@
       "title": "Hydra",
       "properties": {
         "hydra.handoff": {
-          "type": ["object", "null"],
+          "type": [
+            "object",
+            "null"
+          ],
           "default": null,
           "scope": "window",
           "description": "Task descriptor in a generated Hydra handoff workspace. Do not edit manually."

@@ -8,7 +8,7 @@ Features ship in separate branches and PRs. Type checking, builds, appropriate t
 | M0 mode prototype | Implemented; automated Windows checks passed | Status bar, shortcut, React manager, safe native text-tab behavior. Three mode cycles preserve unsaved text, selection, focus, and the existing terminal process |
 | M1 worktrees and terminals | Foundation implemented; Windows automated checks passed | Three isolated tasks, both terminal launch routes, concurrency limit, recovery, and ownership tested. Real-provider sessions still require acceptance validation; interactive terminal workflow refuses extra launches rather than queuing them |
 | M2 official extensions | Handoff foundation implemented; authenticated acceptance pending | Generated single-worktree workspaces for both providers; public-command availability checks; explicit prompt copy; persistent external ownership and safe failure handling. Automated native workspace loading tested. No automatic transcript transfer or observed external completion; real-provider/history validation pending |
-| M3 structured sessions | Planned | Protocol/version validation, streaming, approvals, resume, interruption, reported usage |
+| M3 structured sessions | Provider diagnostics implemented; adapters next | Explicit bounded public CLI help/version probes, advertised-versus-verified capability labels, local raw diagnostics, safe process cleanup. Structured streaming, approvals, resume, interruption, and usage are not connected yet |
 | M4 review and integration | Planned | Complete native diffs, clean integration, conflicts, confirmed discard |
 | M5 reliability and efficiency | Planned | Cross-window recovery and ownership, packaging, failure paths, measured efficiency |
 

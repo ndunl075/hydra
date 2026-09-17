@@ -6,6 +6,7 @@ import { LocalStore } from '../src/core/store';
 import { OwnershipLock } from '../src/core/ownership';
 import { changedFiles, createWorktree, git, parseStatus, resolveTaskFile } from '../src/core/worktrees';
 import { parseMessage, type Task } from '../src/core/model';
+import { assertCliAllowed, createHandoffWorkspace, handoffTask, parseHandoff, officialProviders } from '../src/core/handoff';
 
 const fixtures = path.resolve('.test-build', 'fixtures');
 async function fixture() {
@@ -115,5 +116,53 @@ test('repository ownership is exclusive and can be reacquired after release', as
     await first.release();
     await second.acquire(locks, repository);
     await second.release();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('official handoff selects only the exact worktree and preserves prompts as data', async () => {
+  const { root, repository } = await fixture();
+  try {
+    const worktree = await createWorktree(repository, 'handoff', '888888888888');
+    const task: Task = { id: '888888888888', title: 'Official task', prompt: 'Keep "quotes", Unicode ü, and $(literal text).\nNo shell execution.', repository, ...worktree, provider: 'claude', interface: 'interactive-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    for (const provider of ['claude', 'codex'] as const) {
+      const filename = await createHandoffWorkspace(path.join(root, 'handoffs'), task, provider);
+      const workspace = JSON.parse(await readFile(filename, 'utf8'));
+      assert.deepEqual(workspace.folders.map((folder: { path: string }) => folder.path), [task.worktree]);
+      assert.deepEqual(workspace.extensions.recommendations, [officialProviders[provider].extensionId]);
+      const descriptor = parseHandoff(workspace.settings['hydra.handoff'])!;
+      assert.equal(descriptor.task.provider, provider);
+      assert.equal(descriptor.task.prompt, task.prompt);
+      assert.equal(descriptor.task.branch, task.branch);
+      assert.equal('interface' in descriptor.task, false);
+      assert.throws(() => parseHandoff({ ...descriptor, version: 2 }));
+      for (const invalid of [{ worktree: '../escape' }, { provider: 'other' }, { id: '../../escape' }, { branch: 'main' }]) {
+        assert.throws(() => parseHandoff({ ...descriptor, task: { ...descriptor.task, ...invalid } }));
+      }
+    }
+    assert.equal(task.interface, 'interactive-cli', 'Preparing a descriptor does not implicitly start a session');
+    assert.equal(await readFile(path.join(repository, 'keep.txt'), 'utf8'), 'base\n');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('handoff persists ownership before opening and retains it after an ambiguous open failure', async () => {
+  const { root, repository } = await fixture();
+  try {
+    const worktree = await createWorktree(repository, 'ownership', '999999999999');
+    const task: Task = { id: '999999999999', title: 'External', prompt: 'goal', repository, ...worktree, provider: 'claude', interface: 'interactive-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const store = new LocalStore(path.join(root, 'store'));
+    const persist = () => store.save([task]);
+    let opens = 0;
+    const open = async () => { opens++; assert.equal((await store.load())[0]?.interface, 'official-extension'); };
+    await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'codex', true, persist, open), /Stop this task terminal/);
+    assert.equal(opens, 0);
+    await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'codex', false, persist, async () => { await open(); throw new Error('Ambiguous window failure'); }), /Ambiguous/);
+    const recovered = (await store.load())[0]!;
+    assert.equal(recovered.interface, 'official-extension');
+    assert.equal(recovered.state, 'external');
+    assert.equal(recovered.provider, 'codex');
+    assert.match(recovered.error!, /could not be confirmed/);
+    assert.throws(() => assertCliAllowed(recovered), /external extension/);
+    await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'claude', false, persist, open), /already externally owned/);
+    assert.equal(opens, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

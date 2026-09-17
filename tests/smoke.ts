@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Task } from '../src/core/model';
+import type { Handoff, Task } from '../src/core/model';
+import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   while (!await predicate()) {
@@ -22,12 +23,31 @@ export async function run(): Promise<void> {
   assert.ok(extension, 'Hydra extension is installed in the test host');
   await extension.activate();
   const repository = process.env.HYDRA_TEST_REPOSITORY;
+  if (process.env.HYDRA_TEST_HANDOFF_PROVIDER) {
+    const provider = process.env.HYDRA_TEST_HANDOFF_PROVIDER as 'claude' | 'codex';
+    const handoff = await vscode.commands.executeCommand<Handoff>('hydra.getHandoff');
+    assert.ok(handoff);
+    assert.equal(handoff.task.provider, provider);
+    assert.equal(handoff.task.repository, repository);
+    assert.equal(vscode.workspace.workspaceFolders?.length, 1);
+    assert.equal(path.relative(await realpath(vscode.workspace.workspaceFolders![0]!.uri.fsPath), await realpath(handoff.task.worktree)), '');
+    assert.equal(await readFile(path.join(handoff.task.worktree, 'keep.txt'), 'utf8'), 'base\n');
+    await waitFor(managerOpen);
+    assert.equal(vscode.extensions.getExtension(officialProviders[provider].extensionId), undefined, 'Provider extensions are disabled for the smoke test');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openOfficialExtension'), /not enabled/);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.createTask', { repository: handoff.task.worktree, title: 'Blocked', prompt: 'Blocked', provider }), /original Hydra window/);
+    assert.ok(!vscode.window.terminals.some(item => item.name.startsWith('Hydra · ')));
+    console.log(`PASS: ${provider} handoff loads the exact native workspace, presents instructions, and fails safely without an enabled provider.`);
+    return;
+  }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
     assert.equal(tasks?.length, 3, 'All three task records are recovered');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
+    const workspaces = await Promise.all((['claude', 'codex'] as const).map((provider, index) => createHandoffWorkspace(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs'), tasks[index]!, provider)));
+    await writeFile(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs.json'), JSON.stringify(workspaces));
     console.log('PASS: fresh host recovers three tasks without inventing completion or launching a model request.');
     return;
   }

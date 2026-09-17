@@ -29,7 +29,7 @@ await fs.writeFile(path.join(repository, '.vscode', 'settings.json'), JSON.strin
 const options = {
   extensionDevelopmentPath: root, extensionTestsPath: path.join(root, 'dist', 'smoke.cjs'),
   ...(localCode ? { vscodeExecutablePath: localCode } : {}),
-  extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider },
+  extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_FIXTURE: fixture },
   // The official Windows test runner uses cmd.exe and requires explicit quoting for positional folders.
   launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', 'vscode-user-data')]
 };
@@ -37,6 +37,14 @@ let passed = false;
 try {
   await runTests(options);
   await runTests({ ...options, extensionTestsEnv: { ...options.extensionTestsEnv, HYDRA_TEST_RECOVERY: '1' } });
+  const handoffs = JSON.parse(await fs.readFile(path.join(fixture, 'handoffs.json'), 'utf8'));
+  for (const [index, handoffProvider] of ['claude', 'codex'].entries()) {
+    const workspace = handoffs[index];
+    await runTests({ ...options,
+      extensionTestsEnv: { ...options.extensionTestsEnv, HYDRA_TEST_HANDOFF_PROVIDER: handoffProvider },
+      launchArgs: [process.platform === 'win32' ? `"${workspace}"` : workspace, ...options.launchArgs.slice(1)]
+    });
+  }
   if ((await fs.readFile(path.join(repository, 'keep.txt'), 'utf8')) !== 'main dirty\n') throw new Error('Main checkout was modified.');
   passed = true;
 } finally {

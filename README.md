@@ -12,6 +12,7 @@ A Windows-first VS Code extension for switching between ordinary editing and an 
 - Open the provider in a native terminal at the exact worktree and use **Copy prompt** to paste the task when ready. Provider authentication, conversation, and permissions stay in the official CLI.
 - Search and filter tasks, inspect worktree identity, refresh changed-file inventory, and open existing files in the native editor.
 - Stop a terminal explicitly. Task worktrees and branches remain available. Closing the manager or switching modes keeps the task terminals alive.
+- Hand off an idle or stopped task with **Open in Claude Code** or **Open in Codex**. A generated `.code-workspace` opens in a separate window with only that exact checkout, the local task prompt, and the official extension recommendation.
 - Saved records recover after reload. Missing sessions become interrupted, never completed. Hydra stops its owned terminals on extension shutdown and does not promise background survival or automatic CLI resume.
 
 The manager occupies a supported editor tab alongside native editors and terminals. It does not promise exact restoration of arbitrary grid layouts. Structured conversation, model controls, approval handling, resume, usage, native diff review, integration, and discard are subsequent features.
@@ -36,6 +37,16 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.2.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
+Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.3.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
 
-`npm.cmd test` runs real-Git safety and storage tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. These executables make no model requests and do not validate real-provider protocol capabilities. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
+`npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
+
+## Official extension handoff
+
+The target window opens Hydra's handoff instructions without launching a provider or submitting a prompt. Select **Open Claude Code** or **Open Codex** there to invoke the provider's public UI command; select **Copy task prompt** and paste it yourself. The official extension owns login, conversation, permissions, and session history. CLI installation is not required for this route. Missing or disabled extensions show an installation search; an unsupported command shows the documented Command Palette fallback.
+
+Hydra marks the task externally owned before opening the window. It blocks another handoff or CLI writer while ownership remains external, including after reload or an ambiguous window-opening failure. Hydra cannot observe or stop the external provider. Stop its session in the target window, then select **I stopped the external session** in the original Hydra window to return ownership. This is your acknowledgment, not an automated stop check. Close the old target window before starting another session; Hydra cannot prevent you from manually reopening a provider or running a CLI outside its controls.
+
+No transcript or history is copied. Use history controls in the official provider; no automatic CLI-to-extension resume is claimed. Claude documents shared history and `claude --resume`, but authenticated worktree/session matching still requires acceptance testing. Codex history transfer is not asserted. No private extension data, credentials, or unsupported session APIs are accessed.
+
+The bridge uses `claude-vscode.editor.open` from the public Claude Code extension manifest (checked against version 2.1.269) and the documented Codex `chatgpt.openSidebar` command. It checks the installed extension's public command contribution and registration before invoking it. See [Claude's VS Code guide](https://code.claude.com/docs/en/vs-code), [Codex's IDE guide](https://learn.chatgpt.com/docs/codex/ide), and [Codex command documentation](https://learn.chatgpt.com/docs/developer-commands?surface=ide). End-to-end authenticated provider/history and manual visual checks remain pending; the milestone is a handoff foundation.

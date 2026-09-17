@@ -114,6 +114,11 @@ textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
 .worktree-identity code { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .footer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 13px; }
 .footer-actions .secondary { font-size: 11px; padding: 5px 9px; }
+.handoff-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.handoff-heading { font-size: 23px; font-weight: 500; letter-spacing: -.6px; }
+.handoff-prompt { margin: 28px 0; padding-top: 22px; border-top: 1px solid var(--border); }
+.handoff-prompt .prompt-text { margin-left: 0; }
+.handoff-actions + .form-note, .handoff-actions + .availability { margin-top: 13px; line-height: 1.6; }
 .stop-button { color: #d1b67d; font-size: 11px; }
 .error { margin: 15px 20px 0; border: 1px solid #67563a; background: #2a241c; padding: 12px; color: #e0c79b; font-size: 12px; flex-shrink: 0; max-height: 180px; overflow: auto; }
 .error p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }

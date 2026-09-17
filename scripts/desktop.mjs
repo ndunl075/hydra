@@ -165,6 +165,13 @@ export async function installer() {
   const sourcePath = 'build/gulpfile.vscode.win32.ts';
   await fs.writeFile(path.join(source, sourcePath), installerVersionSource(await git(['show', `${pin.commit}:${sourcePath}`]), manifest.version));
   await fs.writeFile(path.join(source, 'build', 'win32', 'code.iss'), brandedInstaller(await git(['show', `${pin.commit}:build/win32/code.iss`])));
+  // The standalone app task does not stage installer-specific updater tools.
+  // Use the pinned task, including Hydra's icon, before compiling [Files].
+  await npm(['run', 'gulp', '--', 'vscode-win32-x64-inno-updater'], source);
+  for (const name of ['inno_updater.exe','vcruntime140.dll']) {
+    const tool=await fs.readFile(path.join(output,'tools',name));
+    if(tool.length<1024||tool.subarray(0,2).toString()!=='MZ')throw new Error(`Required installer tool is missing or invalid: ${name}`);
+  }
   await npm(['run', 'gulp', '--', 'vscode-win32-x64-user-setup'], source);
   const setup = path.join(source, '.build', 'win32-x64', 'user-setup', 'HydraSetup.exe');
   const bytes = await fs.readFile(setup);

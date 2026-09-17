@@ -1,0 +1,34 @@
+import React, { useEffect, useState } from 'react';
+import type { ClientMessage, SessionView, Task, TaskBrief, TaskHandoffSummary } from '../src/core/model';
+import { briefFields, buildTaskPrompt, canEditBrief, emptyBrief, emptyHandoffSummary, handoffFields, taskPromptPreview } from '../src/core/taskContext';
+import type { UsageSummary, UsageTotals } from '../src/core/usage';
+
+const labels: Record<keyof TaskBrief, string> = { goal: 'Goal', constraints: 'Constraints', relevantPaths: 'Relevant paths and symbols', acceptance: 'Acceptance criteria', testCommands: 'Suggested test commands' };
+export function BriefFields({ brief, onChange, disabled = false }: { brief: TaskBrief; onChange: (brief: TaskBrief) => void; disabled?: boolean }) {
+  return <div className="brief-fields">{briefFields.map(key => <label key={key}>{labels[key]}<textarea rows={key === 'goal' ? 4 : 2} maxLength={16000} disabled={disabled} required={key === 'goal'} value={brief[key]} onChange={event => onChange({ ...brief, [key]: event.target.value })} placeholder={key === 'relevantPaths' ? 'Paths are references; file contents are not attached.' : key === 'testCommands' ? 'Advisory only. Saving does not execute commands.' : undefined} /></label>)}</div>;
+}
+export function PromptPreview({ prompt, draft = false }: { prompt: string; draft?: boolean }) {
+  return <details className="context-details"><summary>{draft ? 'Draft initial prompt' : 'Exact initial prompt'} <span>{prompt.length.toLocaleString()} characters</span></summary><pre className="context-preview">{prompt || 'Add a goal to preview the prompt.'}</pre><p className="form-note">{draft ? 'Save the brief before launch to use this draft. The saved prompt is unchanged until then.' : 'This is the text Hydra submits or copies.'} The provider may add its own workspace instructions and native session context.</p></details>;
+}
+function Totals({ provider, values }: { provider: string; values?: UsageTotals }) {
+  return <div className="usage-provider"><strong>{provider}</strong>{values ? <dl><div><dt>Input</dt><dd>{values.input.toLocaleString()}</dd></div><div><dt>Output</dt><dd>{values.output.toLocaleString()}</dd></div><div><dt>Cache read</dt><dd>{values.cacheRead?.toLocaleString() ?? 'Unavailable'}</dd></div><div><dt>Cache created</dt><dd>{values.cacheCreated?.toLocaleString() ?? 'Unavailable'}</dd></div><div><dt>API estimate</dt><dd>{values.estimatedUsd === undefined ? 'Unavailable' : `$${values.estimatedUsd.toFixed(4)}`}</dd></div></dl> : <p className="quiet">Usage unavailable</p>}</div>;
+}
+export function UsagePanel({ task, project }: { task?: UsageSummary; project?: UsageSummary }) {
+  const [scope, setScope] = useState<'task' | 'project'>('task');
+  const usage = scope === 'task' ? task : project;
+  return <details className="context-details"><summary>Reported usage</summary><div className="usage-scopes" aria-label="Usage scope"><button className="secondary" aria-pressed={scope === 'task'} onClick={() => setScope('task')}>This task</button><button className="secondary" aria-pressed={scope === 'project'} onClick={() => setScope('project')}>This project</button></div><Totals provider="Claude · recorded results" values={usage?.claude} /><Totals provider="Codex · recorded thread totals" values={usage?.codex} /><p className="form-note">{usage?.recordedTurns ?? 0} recorded managed turns · {usage?.unmeasuredTurns ?? 0} without aggregatable usage · {usage?.tasksWithoutHistory ?? 0} tasks without managed history.</p><p className="form-note">Codex totals count each recorded root thread once, including its native session history; cache is included in input. Claude cache is reported separately from input. Missing measurements and external activity are unavailable. API estimates are not subscription bills or remaining quota. Nested-agent coverage is provider-dependent.</p></details>;
+}
+export function TaskContext({ task, session, busy, send }: { task: Task; session?: SessionView; busy: boolean; send: (message: ClientMessage) => void }) {
+  const savedBrief = task.brief || { ...emptyBrief(), goal: task.prompt };
+  const [brief, setBrief] = useState(savedBrief);
+  const [handoff, setHandoff] = useState<TaskHandoffSummary>(task.handoffSummary || emptyHandoffSummary());
+  useEffect(() => { setBrief(task.brief || { ...emptyBrief(), goal: task.prompt }); }, [task.id, task.prompt]);
+  useEffect(() => { setHandoff(task.handoffSummary || emptyHandoffSummary()); }, [task.id, JSON.stringify(task.handoffSummary)]);
+  const editable = canEditBrief(task, session), preview = taskPromptPreview(task, brief), prompt = preview.prompt;
+  const handoffDirty = JSON.stringify(handoff) !== JSON.stringify(task.handoffSummary || emptyHandoffSummary());
+  const handoffLabels: Record<keyof TaskHandoffSummary, string> = { summary: 'Result summary', decisions: 'Decisions', validation: 'Validation notes', unresolved: 'Unresolved work', evidenceRefs: 'Changed paths and evidence references' };
+  return <section className="task-context-panel" aria-label="Task brief and handoff">
+    <details className="context-details"><summary>Task brief <span>{editable ? 'Editable before launch' : 'Initial context locked'}</span></summary>{editable ? <form onSubmit={event => { event.preventDefault(); send({ type: 'saveBrief', id: task.id, brief }); }}><BriefFields brief={brief} onChange={setBrief} disabled={busy} /><PromptPreview prompt={prompt} draft={preview.draft} /><button className="secondary" disabled={busy || !brief.goal.trim() || prompt.length > 32000 || !preview.draft} type="submit">Save brief</button>{prompt.length > 32000 && <p role="alert">Shorten the brief to 32,000 characters.</p>}</form> : <><pre className="context-preview">{task.prompt}</pre><p className="form-note">The initial prompt stays fixed after launch. Send changes through an explicit follow-up.</p></>}</details>
+    <details className="context-details"><summary>Local handoff <span>{task.handoffSummary ? 'Notes saved' : 'Add result and evidence'}</span></summary><form onSubmit={event => { event.preventDefault(); send({ type: 'saveHandoffSummary', id: task.id, handoffSummary: handoff }); }}>{handoffFields.map(key => <label key={key}>{handoffLabels[key]}<textarea rows={2} maxLength={8000} value={handoff[key]} disabled={busy} onChange={event => setHandoff({ ...handoff, [key]: event.target.value })} /></label>)}<div className="task-actions"><button type="submit" className="secondary" disabled={busy || !handoffDirty}>Save handoff notes</button><button type="button" className="secondary" disabled={busy || handoffDirty} onClick={() => send({ type: 'showTaskHandoff', id: task.id })}>Open local handoff file</button></div><p className="form-note">Save notes before opening the file. Hydra adds recorded commit and local evidence paths without a model call. These notes do not certify passing checks and are never attached to another task automatically.</p></form></details>
+  </section>;
+}

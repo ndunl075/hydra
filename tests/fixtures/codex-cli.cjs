@@ -64,7 +64,8 @@ else {
   });
   function complete() {
     notify('item/completed', { threadId, turnId, item: { id: 'message', type: 'agentMessage', text: 'Codex ü complete' } });
-    notify('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { last: { inputTokens: 12, outputTokens: 4, cachedInputTokens: 3, cacheWriteInputTokens: 2 } } });
+    const usage = { inputTokens: 12, outputTokens: 4, cachedInputTokens: 3, cacheWriteInputTokens: 2 };
+    notify('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { last: usage, total: usage } });
     notify('turn/completed', { threadId, turn: { id: turnId, status: prompt === 'failed' ? 'failed' : 'completed', error: prompt === 'failed' ? { message: 'Fixture failure' } : null } });
     if (prompt === 'badexit') process.exit(7);
   }

@@ -2,9 +2,11 @@ import { mkdir, readFile, rename, writeFile, appendFile } from 'node:fs/promises
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { SessionView } from './model';
+import { validThreadUsage } from './usage';
 
 export class SessionStore {
   private queue: Promise<void> = Promise.resolve();
+  private artifactQueue: Promise<void> = Promise.resolve();
   constructor(private readonly root: string) {}
   directory(id: string): string {
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid session task ID.');
@@ -13,6 +15,20 @@ export class SessionStore {
   rawPath(id: string, turnId: string): string {
     if (!/^[a-f0-9]{12}$/.test(turnId)) throw new Error('Invalid turn ID.');
     return path.join(this.directory(id), `${turnId}.events.jsonl`);
+  }
+  historyPath(id: string): string { return path.join(this.directory(id), 'history.json'); }
+  async saveHandoff(id: string, content: string): Promise<string> {
+    const directory = this.directory(id), filename = path.join(directory, 'handoff.md');
+    const operation = this.artifactQueue.then(async () => {
+      await mkdir(directory, { recursive: true });
+      const temporary = path.join(directory, `${randomUUID()}.tmp`);
+      await writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
+      await rename(temporary, filename);
+    });
+    // A nonessential handoff export must not poison the provider evidence queue.
+    this.artifactQueue = operation.catch(() => {});
+    await operation;
+    return filename;
   }
   async load(id: string): Promise<SessionView> {
     let raw: string;
@@ -24,6 +40,8 @@ export class SessionStore {
     if (data.version !== 1 || !Array.isArray(data.turns) || data.turns.some(turn => {
       if (!turn || typeof turn.id !== 'string' || !/^[a-f0-9]{12}$/.test(turn.id) || ids.has(turn.id) || typeof turn.prompt !== 'string' || typeof turn.text !== 'string' || typeof turn.createdAt !== 'string' || !['running', 'completed', 'error', 'interrupted'].includes(turn.status) ||
         (turn.provider !== undefined && !['claude', 'codex'].includes(turn.provider)) ||
+        (turn.usageSource !== undefined && (turn.usageSource !== 'claude-result' && turn.usageSource !== 'codex-last-request' || !turn.usage || (turn.usageSource === 'claude-result' ? turn.provider !== 'claude' : turn.provider !== 'codex'))) ||
+        (turn.threadUsage !== undefined && (turn.provider !== 'codex' || !validThreadUsage(turn.threadUsage))) ||
         (turn.error !== undefined && typeof turn.error !== 'string') || (turn.permissionDenials !== undefined && (!number(turn.permissionDenials) || !Number.isInteger(turn.permissionDenials))) ||
         (turn.usage !== undefined && (!turn.usage || !number(turn.usage.input) || !number(turn.usage.output) || ['cacheRead', 'cacheCreated', 'estimatedUsd'].some(key => {
           const value = (turn.usage as unknown as Record<string, unknown>)[key]; return value !== undefined && !number(value);

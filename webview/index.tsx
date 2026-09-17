@@ -3,6 +3,8 @@ import { ScheduleControls } from './ScheduleControls';
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
+import { BriefFields, PromptPreview, TaskContext, UsagePanel } from './TaskContext';
+import { buildTaskPrompt, emptyBrief } from '../src/core/taskContext';
 import { IntegrationPanel } from './IntegrationPanel';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
@@ -34,7 +36,7 @@ function SessionThread({ task, session, busy }: { task: Task; session: SessionVi
         {turn.error && <p className="session-error" role="status">{turn.error}</p>}
         {turn.textTruncated && <p className="session-note">Showing the first 50,000 characters here. Full output is retained in local raw diagnostics; model context is unchanged.</p>}
         {!!turn.permissionDenials && <p className="session-note">{turn.permissionDenials} permission request(s) denied. Interactive approvals are unavailable here; use the provider terminal when needed.</p>}
-        {turn.usage && <p className="session-note">Provider-reported tokens: {turn.usage.input.toLocaleString()} input · {turn.usage.output.toLocaleString()} output{turn.usage.cacheRead !== undefined && ` · ${turn.usage.cacheRead.toLocaleString()} cache read`}{turn.usage.cacheCreated !== undefined && ` · ${turn.usage.cacheCreated.toLocaleString()} cache created`}{turn.usage.estimatedUsd !== undefined && ` · $${turn.usage.estimatedUsd.toFixed(4)} provider estimate, not your bill`}</p>}
+        {turn.usage && <p className="session-note">{turn.provider === 'codex' ? 'Latest model response (not a turn total)' : 'Provider result'} tokens: {turn.usage.input.toLocaleString()} input · {turn.usage.output.toLocaleString()} output{turn.usage.cacheRead !== undefined && ` · ${turn.usage.cacheRead.toLocaleString()} cache read`}{turn.usage.cacheCreated !== undefined && ` · ${turn.usage.cacheCreated.toLocaleString()} cache created`}{turn.usage.estimatedUsd !== undefined && ` · $${turn.usage.estimatedUsd.toFixed(4)} provider estimate, not your bill`}</p>}
       </article>
     </React.Fragment>)}
     {session.approvals?.map(approval => <article key={approval.id} className="approval-request" aria-label={`${approval.kind} approval`}>
@@ -168,9 +170,12 @@ function App() {
             <form onSubmit={event => { event.preventDefault(); send({ type: 'create', ...draft, repository, startingCommit }); }}>
               <label>Repository<select value={repository} onChange={event => setRepository(event.target.value)} required><option value="" disabled>Select repository</option>{snapshot.repositories.map(repo => <option key={repo} value={repo}>{basename(repo)} · {repo}</option>)}</select></label>
               <label>Task title<input autoFocus value={draft.title} maxLength={120} onChange={event => updateDraft({ title: event.target.value })} placeholder="e.g. Fix keyboard navigation" required /></label>
-              <label>Task prompt<textarea rows={6} value={draft.prompt} maxLength={32000} onChange={event => updateDraft({ prompt: event.target.value })} placeholder="Describe the goal, relevant files, constraints, and how to verify the result." required /></label>
-              <div className="form-bottom"><label className="provider-select">Provider<select value={draft.provider} onChange={event => updateDraft({ provider: event.target.value as Provider })}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><button className="primary" type="submit" disabled={snapshot.busy || !repository}>Create task <Icon name="arrow" /></button></div>
+              <BriefFields brief={draft.brief || { ...emptyBrief(), goal: draft.prompt }} onChange={brief => updateDraft({ brief, prompt: buildTaskPrompt(brief) })} disabled={snapshot.busy} />
+              <PromptPreview prompt={draft.prompt} />
+              <div className="form-bottom"><label className="provider-select">Provider<select value={draft.provider} onChange={event => updateDraft({ provider: event.target.value as Provider })}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><button className="primary" type="submit" disabled={snapshot.busy || !repository || draft.prompt.length > 32000}>Create task <Icon name="arrow" /></button></div>
+              {draft.prompt.length > 32000 && <p role="alert">Shorten the complete brief to 32,000 characters.</p>}
               <p className="form-note">Starts from committed HEAD. Uncommitted edits stay in your main checkout. Creating a task makes no model request.</p>
+              <p className="form-note">Model and effort follow official provider settings. Verified per-task overrides are not available in Hydra yet.</p>
             </form>
             {snapshot.repositories.length === 0 && <div className="inline-notice">Open a local Git repository with an initial commit to create tasks.</div>}
             <label>Starting commit (optional full SHA)<input maxLength={64} value={startingCommit} onChange={event => setStartingCommit(event.target.value)} placeholder="Defaults to current repository HEAD" /></label>
@@ -180,6 +185,8 @@ function App() {
           <div className="conversation-header"><div><h2>{selected.title}</h2><span>{providerName(selected.provider)} <span className="separator">/</span> {selected.interface === 'official-extension' ? 'Official extension' : selected.interface === 'managed-cli' ? 'Managed CLI' : 'Interactive CLI'}</span></div><button className="icon-button" title="New task" aria-label="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>
           <div className="task-context"><Icon name="branch" /><span title={selected.branch}>{selected.branch}</span><span className={`state ${selected.state}`}>{selected.interface === 'official-extension' ? 'External · status unavailable' : selected.state === 'external' ? 'Terminal active' : selected.state}</span></div>
           <div className="thread">
+            <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} send={send} />
+            <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} />
             {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} /> : <>
             <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{selected.prompt}</p></article>
             <article className="system-message"><div className="message-author"><span className="avatar hydra-avatar">h</span><strong>Hydra</strong><span className="local-tag">LOCAL</span></div><p>{selected.interface === 'official-extension' ? `This task is handed off to ${providerName(selected.provider)} in its own workspace window. Stop the provider session there before returning ownership.` : `Task checkout is ready. Open ${providerName(selected.provider)} in the terminal, then paste your prompt to begin.`}</p><div className="task-actions">{selected.interface === 'official-extension' ? <button className="secondary" disabled={snapshot.busy} onClick={() => send({ type: 'releaseExternal', id: selected.id })}>I stopped the external session</button> : <button className="primary" disabled={snapshot.busy || !provider?.available} onClick={() => send({ type: 'launch', id: selected.id })}><Icon name="terminal" />{selected.state === 'external' ? 'Show terminal' : 'Open provider terminal'}</button>}<button className="secondary" onClick={() => send({ type: 'copyPrompt', id: selected.id })}>Copy prompt</button></div>

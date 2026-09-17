@@ -186,6 +186,24 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 .commit-review label { display: grid; gap: 8px; }
 .commit-review input { width: 100%; min-width: 0; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 9px 10px; }
 .commit-review .primary { justify-self: start; }
+.task-context-panel { margin-bottom: 12px; }
+.context-details { margin: 0 0 12px; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+.context-details > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; cursor: pointer; font-weight: 600; list-style-position: inside; }
+.context-details > summary::after { content: '+'; color: var(--muted); font-size: 15px; }
+.context-details[open] > summary::after { content: '−'; }
+.context-details > summary span { color: var(--muted); font-size: 11px; font-weight: 400; text-align: right; margin-left: auto; }
+.context-details[open] > summary { margin-bottom: 16px; }
+.context-preview { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.6; max-height: 340px; overflow-y: auto; padding: 12px; background: var(--surface); border-radius: 4px; }
+.context-details form { display: grid; gap: 14px; }
+.brief-fields { display: grid; gap: 16px; }
+.brief-fields textarea, .context-details textarea { min-height: 64px; }
+.usage-scopes { display: flex; gap: 8px; margin-bottom: 18px; }
+.usage-scopes button[aria-pressed=true] { border-color: var(--vscode-focusBorder, #c6c6cc); }
+.usage-provider { margin: 16px 0; }
+.usage-provider > strong { font-size: 12px; }
+.usage-provider dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; margin: 12px 0; }
+.usage-provider dt { color: var(--muted); font-size: 11px; }
+.usage-provider dd { font-variant-numeric: tabular-nums; margin: 5px 0 0; font-size: 13px; }
 .schedule-controls fieldset { border: 1px solid var(--vscode-panel-border); padding: 12px; margin: 12px 0; }
 .schedule-controls fieldset label { display: block; margin: 8px 0; }
 .schedule-controls input[type="checkbox"] { width: auto; margin-right: 8px; }

@@ -1,0 +1,32 @@
+{
+  "$schema": "vscode://schemas/color-theme",
+  "name": "Hydra Light",
+  "type": "light",
+  "colors": {
+    "editor.background": "#FAFBF9", "editor.foreground": "#18221C",
+    "sideBar.background": "#F1F4EF", "sideBar.foreground": "#334238",
+    "activityBar.background": "#F1F4EF", "activityBar.foreground": "#18221C",
+    "activityBarBadge.background": "#173C2C", "activityBarBadge.foreground": "#FFFFFF",
+    "titleBar.activeBackground": "#FAFBF9", "titleBar.activeForeground": "#18221C",
+    "statusBar.background": "#F1F4EF", "statusBar.foreground": "#334238",
+    "statusBar.noFolderBackground": "#F1F4EF", "statusBar.debuggingBackground": "#173C2C", "statusBar.debuggingForeground": "#FFFFFF",
+    "tab.activeBackground": "#FAFBF9", "tab.inactiveBackground": "#F1F4EF", "tab.activeForeground": "#18221C",
+    "editorGroupHeader.tabsBackground": "#F1F4EF", "panel.background": "#FAFBF9",
+    "terminal.background": "#FAFBF9", "terminal.foreground": "#18221C",
+    "button.background": "#173C2C", "button.foreground": "#FFFFFF", "button.hoverBackground": "#24553F",
+    "button.secondaryBackground": "#E9EEE7", "button.secondaryForeground": "#18221C", "button.secondaryHoverBackground": "#DCE6D9",
+    "focusBorder": "#276342", "list.activeSelectionBackground": "#173C2C", "list.activeSelectionForeground": "#FFFFFF", "list.hoverBackground": "#E9EEE7",
+    "input.background": "#FFFFFF", "input.foreground": "#18221C", "input.border": "#C5CFC4",
+    "editor.selectionBackground": "#C9DDCB", "editor.lineHighlightBackground": "#F0F4EE",
+    "editorLineNumber.foreground": "#758272", "editorLineNumber.activeForeground": "#334238",
+    "panel.border": "#D5DED2", "sideBar.border": "#D5DED2", "descriptionForeground": "#566651",
+    "textLink.foreground": "#276342", "textLink.activeForeground": "#173C2C"
+  },
+  "tokenColors": [
+    { "scope": ["comment"], "settings": { "foreground": "#64715F" } },
+    { "scope": ["string"], "settings": { "foreground": "#276342" } },
+    { "scope": ["keyword", "storage"], "settings": { "foreground": "#76562C" } },
+    { "scope": ["entity.name.function"], "settings": { "foreground": "#334238" } },
+    { "scope": ["constant.numeric"], "settings": { "foreground": "#825731" } }
+  ]
+}

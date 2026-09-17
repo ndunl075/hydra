@@ -87,6 +87,42 @@ export async function run(): Promise<void> {
       assert.ok(!managerOpen(), 'Manager leaves the editor surface');
     }
     console.log('PASS: three mode cycles preserve unsaved text, selection, focus, and a live terminal process.');
+    const workbench = vscode.workspace.getConfiguration('workbench');
+    const windowConfig = vscode.workspace.getConfiguration('window');
+    const previousTheme = workbench.inspect<string>('colorTheme')?.globalValue;
+    const previousAutomatic = windowConfig.inspect<boolean>('autoDetectColorScheme')?.globalValue;
+    try {
+      await vscode.commands.executeCommand('hydra.openAgents');
+      await vscode.commands.executeCommand('hydra.openSettings');
+      await vscode.commands.executeCommand('hydra.openSettings');
+      const settingsTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra · Settings');
+      await waitFor(() => settingsTabs().length === 1);
+      assert.ok(managerOpen(), 'Settings retains the agent-manager tab');
+      const tasksBeforeAppearance = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
+      for (const mode of ['light', 'dark'] as const) {
+        await vscode.commands.executeCommand('hydra.setAppearance', mode);
+        await waitFor(() => vscode.window.activeColorTheme.kind === (mode === 'light' ? vscode.ColorThemeKind.Light : vscode.ColorThemeKind.Dark));
+        assert.equal(vscode.workspace.getConfiguration('workbench').get('colorTheme'), mode === 'light' ? 'Hydra Light' : 'Hydra Dark');
+        assert.equal(vscode.workspace.getConfiguration('window').get('autoDetectColorScheme'), false);
+        assert.equal(document.getText(), 'unsaved buffer\nkeep this selection\n');
+        assert.equal(document.isClosed, false, 'Appearance preserves unsaved documents');
+        assert.equal(await terminal.processId, processId, 'Appearance preserves the terminal process');
+        assert.deepEqual(await vscode.commands.executeCommand('hydra.listTasks'), tasksBeforeAppearance, 'Appearance does not mutate task/session records');
+      }
+      await assert.rejects(async () => await vscode.commands.executeCommand('hydra.setAppearance', 'unknown'), /Unknown appearance/);
+      await workbench.update('colorTheme', 'Hydra Dark', vscode.ConfigurationTarget.Workspace);
+      try {
+        await assert.rejects(async () => await vscode.commands.executeCommand('hydra.setAppearance', 'light'), /workspace overrides/);
+        assert.equal(vscode.workspace.getConfiguration('workbench').inspect<string>('colorTheme')?.globalValue, 'Hydra Dark', 'Override refusal leaves global preferences untouched');
+      } finally { await workbench.update('colorTheme', undefined, vscode.ConfigurationTarget.Workspace); }
+      await vscode.window.tabGroups.close(settingsTabs());
+      await vscode.commands.executeCommand('hydra.toggleMode');
+      await waitFor(() => !managerOpen() && vscode.window.activeTextEditor?.document === document);
+      console.log('PASS: native Settings reuse, dark/light themes, override refusal, and unchanged unsaved buffers, terminal process, and task records.');
+    } finally {
+      await workbench.update('colorTheme', previousTheme, vscode.ConfigurationTarget.Global);
+      await windowConfig.update('autoDetectColorScheme', previousAutomatic, vscode.ConfigurationTarget.Global);
+    }
   } finally { terminal.dispose(); }
   if (repository && process.env.HYDRA_TEST_PROVIDER) {
     const config = vscode.workspace.getConfiguration('hydra');

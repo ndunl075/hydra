@@ -8,3 +8,5 @@ codex app-server generate-json-schema --out .test-build/codex-json-schema
 ```
 
 Source: [OpenAI Codex](https://github.com/openai/codex), Apache-2.0 (see LICENSE.txt). Generated with experimental fields omitted. These types describe the pinned wire contract, not authentication or implementation acceptance. Runtime response/event checks in `codexProtocol.ts` validate fields Hydra consumes. Keep provider version gates and these artifacts aligned; do not regenerate from an unpinned binary or enable experimental APIs implicitly.
+
+The account setup subset also includes `GetAccountParams/Response`, `Account`, `LoginAccountParams/Response`, `CancelLoginAccountParams/Response/Status`, `AccountLoginCompletedNotification`, and their `PlanType`, `LoginAppBrand`, and `DesktopOnboardingEntrypoint` dependencies, copied byte-for-byte from the same pinned generation. `accountSetup.ts` restricts outgoing requests to provider-owned ChatGPT login, cancellation and public account read; other generated login variants are not enabled. The protocol performs no thread or turn operations and persists none of its messages.

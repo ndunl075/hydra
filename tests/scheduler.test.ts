@@ -80,6 +80,27 @@ test('schedule storage and messages reject malformed identities and follow-up re
   assert.deepEqual(parseMessage({ type: 'configureSchedule', id: task(1).id, dependencies: [] }), { type: 'configureSchedule', id: task(1).id, dependencies: [], startFromDependency: undefined });
 });
 
+test('post-launch save failure retains writer ownership and legacy active tasks reserve recovery capacity', async () => {
+  const tasks = [task(1)]; let saves = 0;
+  const h = harness(tasks, async () => { if (++saves === 4) throw new Error('Transient storage failure after launch'); });
+  await h.scheduler.enqueue(tasks[0]!, { type: 'launch' });
+  assert.equal(h.launches.length, 1); assert.equal(tasks[0]!.schedule?.state, 'running');
+  await assert.rejects(h.scheduler.cancel(tasks[0]!), /Stop and reconcile/);
+  const legacy = task(2); legacy.state = 'running'; const external = task(3); external.state = 'external'; external.interface = 'official-extension';
+  const recovered = harness([legacy, external]); recovered.scheduler.reconcile();
+  assert.equal(legacy.schedule?.uncertain, true); assert.equal(external.schedule, undefined);
+});
+
+test('persisted cyclic dependencies block and explicit follow-up text survives capacity waiting', async () => {
+  const tasks = [task(1), task(2)];
+  tasks[0]!.schedule = { state: 'queued', dependencies: [tasks[1]!.id], artifacts: [], request: { type: 'followUp', prompt: 'Resume with only this delta' } };
+  tasks[1]!.schedule = { state: 'queued', dependencies: [tasks[0]!.id], artifacts: [], request: { type: 'launch' } };
+  const h = harness(tasks); await h.scheduler.drain();
+  assert.equal(h.launches.length, 0); assert.equal(tasks[0]!.schedule.state, 'blocked');
+  assert.match(tasks[0]!.schedule.reason || '', /cycle/);
+  assert.deepEqual(tasks[0]!.schedule.request, { type: 'followUp', prompt: 'Resume with only this delta' });
+});
+
 test('real Git pins selected base and reviewed predecessor, refuses changed/dirty results, fast-forwards only a clean unstarted dependent', async () => {
   const directory = path.resolve('.test-build/scheduler-git'); await mkdir(directory, { recursive: true });
   const root = await mkdtemp(path.join(directory, 'git-')), repository = path.join(root, 'main'); await mkdir(repository);

@@ -46,6 +46,7 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
 
 export function configureSchedule(task: Task, tasks: Task[], dependencies: string[], startFromDependency?: string): void {
   if (task.schedule && (activeStates.includes(task.schedule.state) || task.schedule.uncertain)) throw new Error('Stop and reconcile this task writer before changing dependencies.');
+  if (task.schedule?.actualStartingCommit && startFromDependency !== task.schedule.startFromDependency) throw new Error('The initial checkout cannot change after a launch. Create a new dependent task.');
   const candidate: TaskSchedule = { state: task.schedule?.request ? 'queued' : 'finished', dependencies, startFromDependency, artifacts: dependencies.flatMap(id => {
     const receipt = tasks.find(item => item.id === id)?.reviewedCommit;
     return receipt ? [{ taskId: id, ...receipt }] : [];
@@ -131,7 +132,9 @@ export class TaskScheduler {
         s.reason = task.error;
         await this.hooks.persist();
       } catch (error) {
-        s.state = 'blocked'; s.reason = error instanceof Error ? error.message : String(error);
+        // A save can fail after process creation. Retain the live writer state so Stop still stops it.
+        s.state = task.state === 'running' || task.state === 'external' ? 'running' : 'blocked';
+        s.reason = error instanceof Error ? error.message : String(error);
         await this.hooks.persist();
       }
     }

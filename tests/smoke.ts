@@ -190,7 +190,8 @@ export async function run(): Promise<void> {
       await waitFor(() => correctCwd(task));
     }
     assert.equal(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).length, 2);
-    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.schedule?.state, 'queued');
     await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id);
     assert.equal(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).length, 2, 'Duplicate launch reveals the existing terminal');
     const pids = await Promise.all(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).map(item => item.processId));
@@ -201,7 +202,6 @@ export async function run(): Promise<void> {
     assert.deepEqual(await Promise.all(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).map(item => item.processId)), pids);
     await vscode.commands.executeCommand('hydra.stopTask', tasks[0]!.id);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.state === 'interrupted');
-    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
     await waitFor(() => correctCwd(tasks[2]!));
     console.log('PASS: both provider routes launch in exact worktrees, reuse terminals, enforce the two-terminal limit, and survive mode changes.');
     for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
@@ -221,10 +221,11 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffCodex', tasks[0]!.id), /managed process/);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openDiff', tasks[0]!.id, 'keep.txt', 'combined'), /Stop this task writer/);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id);
-    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.schedule?.state, 'queued');
     await vscode.commands.executeCommand('hydra.stopTask', tasks[0]!.id);
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id))?.turns[1]?.status, 'interrupted');
-    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    await waitFor(() => correctCwd(tasks[2]!));
     console.log('PASS: managed Claude streams and persists a result, resumes its explicit ID, blocks overlapping writers, shares concurrency with terminals, and stops without inventing completion.');
     for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
@@ -233,6 +234,7 @@ export async function run(): Promise<void> {
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[0]?.text, 'Codex ü complete');
     await vscode.commands.executeCommand('hydra.followUp', tasks[1]!.id, 'approval');
     await waitFor(async () => !!(await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.approvals?.length);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[1]!.id)?.schedule?.state === 'waiting-for-approval');
     const pending = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id);
     const approvalId = pending!.approvals![0]!.id;
     await vscode.commands.executeCommand('hydra.approve', tasks[1]!.id, approvalId, 'accept');
@@ -243,7 +245,10 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id), /managed process/);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffClaude', tasks[1]!.id), /managed process/);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
-    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.schedule?.state, 'queued');
+    await vscode.commands.executeCommand('hydra.cancelQueued', tasks[0]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.schedule?.state, 'cancelled');
     await vscode.commands.executeCommand('hydra.stopTask', tasks[1]!.id);
     await vscode.commands.executeCommand('hydra.stopTask', tasks[2]!.id);
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[2]?.status, 'interrupted');

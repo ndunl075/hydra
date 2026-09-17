@@ -439,12 +439,14 @@ class Manager {
     if (!scheduledLaunch && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) {
       if ((message.type === 'launch' || message.type === 'terminal') && this.terminals.has(task.id)) { this.terminals.get(task.id)!.show(false); return; }
       assertCliAllowed(task);
-      if (this.managed.has(task.id) || this.terminals.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this task writer before queueing another launch.');
+      if (this.managed.has(task.id)) throw new Error('Stop the managed process before queueing another launch.');
+      if (this.terminals.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this task writer before queueing another launch.');
       if (message.type === 'startManaged' && task.sessionId) throw new Error('Send a follow-up to resume this session.');
       if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task before sending a follow-up.');
       await this.scheduler.enqueue(task, message.type === 'followUp' ? { type: 'followUp', prompt: message.prompt } : { type: message.type as 'launch' | 'terminal' | 'startManaged' });
       return;
     }
+    if (['handoff', 'openWorktree'].includes(message.type) && this.managed.has(task.id)) throw new Error('Stop the managed process before handing off.');
     if (!scheduledLaunch && pendingSchedule(task) && ['handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Cancel queued work or reconcile the writer before this action.');
     if (message.type === 'stop') {
       if (task.schedule?.state === 'starting') throw new Error('This launch is being prepared. Stop it once startup finishes.');

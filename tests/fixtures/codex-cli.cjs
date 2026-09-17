@@ -43,9 +43,10 @@ else {
           const script = `const fs = require('node:fs'); setInterval(() => fs.appendFileSync('codex-heartbeat.txt', 'x'), 50);`;
           require('node:child_process').spawn(process.execPath, ['-e', script], { cwd: process.cwd(), stdio: 'ignore' });
         }
-      } else if (prompt === 'approval' || prompt === 'decline' || prompt === 'network' || prompt === 'file' || prompt === 'unsupported' || prompt === 'stale') {
+      } else if (prompt === 'approval' || prompt === 'decline' || prompt === 'network' || prompt === 'file' || prompt === 'file-no-details' || prompt === 'unsupported' || prompt === 'stale') {
         approval = true;
-        const method = prompt === 'file' ? 'item/fileChange/requestApproval' : prompt === 'unsupported' ? 'item/tool/requestUserInput' : 'item/commandExecution/requestApproval';
+        const method = prompt.startsWith('file') ? 'item/fileChange/requestApproval' : prompt === 'unsupported' ? 'item/tool/requestUserInput' : 'item/commandExecution/requestApproval';
+        if (prompt === 'file') notify('item/started', { threadId, turnId, item: { id: 'tool', type: 'fileChange', status: 'inProgress', changes: [{ path: 'example.txt', kind: { type: 'add' }, diff: '+proposed fixture content' }] } });
         emit({ id: 'server-request', method, params: { threadId, turnId: prompt === 'stale' ? 'bbbbbbbb-bbbb-7bbb-9bbb-bbbbbbbbbbbb' : turnId, itemId: 'tool', kind: 'command', command: 'echo literal $(data)', cwd: process.cwd(), reason: 'Fixture request', ...(prompt === 'network' ? { networkApprovalContext: { host: 'example.invalid', protocol: 'https' } } : {}) } });
       } else setTimeout(complete, 75);
     } else if (message.method === 'turn/interrupt') {

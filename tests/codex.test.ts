@@ -70,7 +70,7 @@ test('Codex managed requests handshake, persist explicit thread resume, and neve
     const history = await store.load(task.id); assert.equal(history.turns.length, 2);
     const events = (await readFile(store.rawPath(task.id, history.turns[0]!.id), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(events.map(event => event.sequence), events.map((_, index) => index + 1)); assert.equal(events.at(-1).type, 'exit');
-    for (const prompt of ['noresult', 'badexit', 'failed', 'malformed', 'unsupported', 'stale']) {
+    for (const prompt of ['noresult', 'badexit', 'failed', 'malformed', 'unsupported', 'stale', 'file-no-details']) {
       await manager.start(task, executable, prompt); await manager.finished(task.id);
       assert.equal(task.state, 'error', prompt); assert.equal(manager.view(task.id)?.turns.at(-1)?.status, 'error', prompt);
     }
@@ -85,6 +85,7 @@ test('Codex approvals bind to live requests, grant one decision, decline, and di
       await waitFor(async () => !!manager.view(task.id)?.approvals?.length);
       const approval = manager.view(task.id)!.approvals![0]!;
       assert.equal(approval.kind, kind); assert.ok(approval.detail.includes('Fixture request'));
+      if (kind === 'file') { assert.ok(approval.detail.includes('example.txt')); assert.ok(approval.detail.includes('+proposed fixture content')); }
       assert.equal((await store.load(task.id)).approvals, undefined);
       manager.approve(task.id, approval.id, decision);
       assert.throws(() => manager.approve(task.id, approval.id, decision), /no longer pending/);

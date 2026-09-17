@@ -44,6 +44,7 @@ export class ManagedCodex {
     const child = spawn(launch.executable, launch.args, { cwd: task.worktree, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
     const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
     const approvals = new Map<string, { rpcId: RpcId; approval: Approval }>();
+    const reviewItems = new Map<string, Record<string, any>>();
     const stdout = new StringDecoder('utf8'), stderr = new StringDecoder('utf8');
     let nextId = 0, bytes = 0, failure: string | undefined, stopped = false, closing = false, protocol: CodexTurn | undefined;
     let saveTimer: ReturnType<typeof setTimeout> | undefined, closeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -108,11 +109,20 @@ export class ManagedCodex {
         }
         if ([...approvals.values()].some(entry => entry.rpcId === message.id)) throw new Error('Duplicate Codex approval request.');
         const id = randomBytes(6).toString('hex');
-        const detail = JSON.stringify(params, null, 2);
+        const item = typeof params.itemId === 'string' ? reviewItems.get(params.itemId) : undefined;
+        if (message.method === 'item/fileChange/requestApproval' && (!item || item.type !== 'fileChange' || !Array.isArray(item.changes))) throw new Error('Codex file approval has no matching proposed changes. No permission granted; use the provider terminal.');
+        const detail = JSON.stringify({ request: params, ...(item ? { item } : {}) }, null, 2);
         if (detail.length > 50000) throw new Error('Codex approval details exceed the display limit. No permission granted; use the provider terminal.');
         const approval: Approval = { id, kind: message.method.includes('fileChange') ? 'file' : params.networkApprovalContext ? 'network' : 'command', detail };
         approvals.set(id, { rpcId: message.id, approval }); view.approvals = [...approvals.values()].map(value => value.approval); update();
         return;
+      }
+      if (message.method === 'item/started') {
+        const params = record(message.params);
+        if (protocol?.id && params.threadId === protocol.threadId && params.turnId === protocol.id) {
+          const item = record(params.item);
+          if (typeof item.id === 'string' && ['fileChange', 'commandExecution'].includes(item.type)) reviewItems.set(item.id, item);
+        }
       }
       if (message.method === 'serverRequest/resolved') {
         const params = record(message.params);

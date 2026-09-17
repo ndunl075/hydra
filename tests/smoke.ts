@@ -134,6 +134,21 @@ export async function run(): Promise<void> {
     }
   } finally { terminal.dispose(); }
   if (process.env.HYDRA_TEST_DESKTOP) {
+    const setupTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Welcome to Hydra');
+    assert.equal(setupTabs().length, 0, 'A built-in extension must not auto-open onboarding in an extension test host');
+    const startup = await vscode.commands.executeCommand<{ development: boolean }>('hydra.desktop.startupContext');
+    assert.equal(startup?.development, true, 'Owned workbench recognizes the separate native test harness');
+    const setupBefore = await vscode.commands.executeCommand('hydra.getOnboardingState');
+    await vscode.commands.executeCommand('hydra.openOnboarding');
+    await vscode.commands.executeCommand('hydra.openOnboarding');
+    await waitFor(() => setupTabs().length === 1);
+    await vscode.window.tabGroups.close(setupTabs());
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.getOnboardingState'), setupBefore, 'Closing setup preserves the interrupted step');
+    await vscode.commands.executeCommand('hydra.openOnboarding');
+    await waitFor(() => setupTabs().length === 1);
+    await vscode.window.tabGroups.close(setupTabs());
+    assert.equal(document.isClosed, false, 'Reopening setup preserves dirty editor documents');
+    console.log('PASS: native onboarding suppresses first-run in test hosts, reuses one tab, reopens its interrupted state, and preserves dirty documents.');
     const profile = await vscode.commands.executeCommand<ProfileResources>('hydra.desktop.profileResources');
     assert.ok(profile); assert.equal(profile.name, 'Hydra Native Acceptance');
     assert.notEqual(path.dirname(profile.settings), profile.root, 'Native acceptance uses a named profile rather than inferring paths from global storage');

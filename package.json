@@ -45,6 +45,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "hydra.openOnboarding",
+        "title": "Hydra: Open Onboarding"
+      },
+      {
         "command": "hydra.openSettings",
         "title": "Hydra: Open Settings"
       },

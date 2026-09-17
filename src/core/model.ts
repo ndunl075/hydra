@@ -1,3 +1,4 @@
+import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 export type Provider = 'claude' | 'codex';
 export type TaskState = 'idle' | 'external' | 'running' | 'interrupted' | 'error';
 export interface Task {
@@ -42,6 +43,7 @@ export interface Snapshot {
   /** Local activity only; no other task's transcript or approval details. */
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
+  integration?: IntegrationOperation;
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
@@ -56,6 +58,10 @@ export type ClientMessage =
   | { type: 'prepareCommitReview'; id: string }
   | { type: 'openCommitReview'; id: string; token: string; path: string }
   | { type: 'commitReviewed'; id: string; token: string; message: string }
+  | { type: 'prepareIntegration'; id: string; checks: IntegrationCommand[] }
+  | { type: 'promoteIntegration' | 'reviewIntegrationResolution' | 'copyIntegrationCandidate' | 'showIntegrationLog' | 'cancelIntegration'; id: string; operationId: string }
+  | { type: 'acceptIntegrationResolution'; id: string; operationId: string; token: string }
+  | { type: 'openIntegrationDiff'; id: string; operationId: string; path: string }
   | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string }
   | { type: 'draft'; title: string; prompt: string; provider: Provider };
 
@@ -68,6 +74,14 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'prepareIntegration' || ['promoteIntegration','reviewIntegrationResolution','acceptIntegrationResolution','copyIntegrationCandidate','showIntegrationLog','cancelIntegration','openIntegrationDiff'].includes(type)) {
+    const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'prepareIntegration') return { type, id, checks: parseIntegrationCommands(message.checks) };
+    const operationId = string('operationId'); if (!/^[a-f0-9]{24}$/.test(operationId)) throw new Error('Invalid integration operation.');
+    if (type === 'openIntegrationDiff') return { type, id, operationId, path: string('path',4096) };
+    if (type === 'acceptIntegrationResolution') { const token=string('token');if(!/^[a-f0-9]{24}$/.test(token))throw new Error('Invalid resolution review.');return {type,id,operationId,token}; }
+    return { type, id, operationId } as ClientMessage;
+  }
   if (type === 'prepareCommitReview' || type === 'openCommitReview' || type === 'commitReviewed') {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');

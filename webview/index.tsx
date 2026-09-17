@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
+import { IntegrationPanel } from './IntegrationPanel';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
 
@@ -185,6 +186,7 @@ function App() {
             </article>
             </>}
             <Changes key={selected.id} task={selected} files={snapshot.files} busy={snapshot.busy} prepared={snapshot.commitReview} />
+            <IntegrationPanel key={`integration-${selected.id}`} task={selected} operation={snapshot.integration} busy={snapshot.busy} send={send} />
           </div>
           <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={selected.worktree}>{selected.worktree}</code></div><div className="footer-actions"><div className="handoff-actions">{(['claude', 'codex'] as const).map(provider => <button key={provider} className="secondary" disabled={snapshot.busy || selected.state === 'external' || selected.state === 'running' || selected.interface === 'official-extension'} onClick={() => send({ type: 'handoff', id: selected.id, provider })}>Open in {providerName(provider)} <Icon name="arrow" /></button>)}</div>{selected.state === 'external' && selected.interface === 'interactive-cli' && <button className="stop-button" onClick={() => send({ type: 'stop', id: selected.id })}>Stop terminal</button>}</div></footer>
         </>}

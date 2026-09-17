@@ -20,6 +20,13 @@ export class ReviewDocuments {
     const text = this.documents.get(uri.toString());
     if (text !== undefined) { this.bytes -= Buffer.byteLength(text); this.documents.delete(uri.toString()); }
   }
+  async openLog(title: string, text: string): Promise<void> {
+    const content=`${title}\n\n${text}`,bytes=Buffer.byteLength(content);
+    if(this.bytes+bytes>32*1024*1024)throw new Error('Open review snapshots reached 32 MiB. Close some tabs, then retry.');
+    const resource=vscode.Uri.from({scheme:'hydra-review',authority:randomBytes(12).toString('hex'),path:'/integration/checks.log'});
+    this.documents.set(resource.toString(),content);this.bytes+=bytes;
+    try{await vscode.window.showTextDocument(resource,{viewColumn:vscode.ViewColumn.Two,preview:false});}catch(error){this.release(resource);throw error;}
+  }
   async open(taskTitle: string, worktree: string, snapshot: ReviewSnapshot): Promise<void> {
     const identity = randomBytes(12).toString('hex');
     const uri = (side: string, name: string) => vscode.Uri.from({ scheme: 'hydra-review', authority: identity, path: `/${side}/${name}` });

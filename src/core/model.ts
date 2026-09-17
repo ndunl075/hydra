@@ -1,3 +1,4 @@
+import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 export type Provider = 'claude' | 'codex';
 export type TaskState = 'idle' | 'external' | 'running' | 'interrupted' | 'error';
@@ -8,6 +9,7 @@ export interface Task {
   sessionId?: string; sessionProvider?: Provider; providerVersion?: string;
   error?: string;
   reviewedCommit?: ReviewedCommit;
+  schedule?: TaskSchedule;
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
 export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }
@@ -47,7 +49,8 @@ export interface Snapshot {
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
-  | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics'; id: string }
+  | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter'; id: string }
+  | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'followUp'; id: string; prompt: string }
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
@@ -62,7 +65,7 @@ export type ClientMessage =
   | { type: 'promoteIntegration' | 'reviewIntegrationResolution' | 'copyIntegrationCandidate' | 'showIntegrationLog' | 'cancelIntegration'; id: string; operationId: string }
   | { type: 'acceptIntegrationResolution'; id: string; operationId: string; token: string }
   | { type: 'openIntegrationDiff'; id: string; operationId: string; path: string }
-  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string }
+  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string }
   | { type: 'draft'; title: string; prompt: string; provider: Provider };
 
 export function parseMessage(value: unknown): ClientMessage {
@@ -93,6 +96,11 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!message.trim()) throw new Error('Enter a commit message.');
     return { type, id, token, message };
   }
+  if (type === 'configureSchedule') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id) || !Array.isArray(message.dependencies) || message.dependencies.length > 100 || !message.dependencies.every(value => typeof value === 'string' && /^[a-f0-9]{12}$/.test(value))) throw new Error('Invalid dependencies.');
+    return { type, id, dependencies: message.dependencies as string[], startFromDependency: message.startFromDependency === undefined ? undefined : string('startFromDependency') || undefined };
+  }
   if (type === 'approve') {
     const id = string('id'), approvalId = string('approvalId'), decision = string('decision');
     if (!/^[a-f0-9]{12}$/.test(id) || !/^[a-f0-9]{12}$/.test(approvalId) || !['accept', 'decline'].includes(decision)) throw new Error('Invalid approval decision.');
@@ -115,7 +123,7 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id) || !prompt.trim()) throw new Error('Invalid follow-up.');
     return { type, id, prompt };
   }
-  if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal', 'startManaged', 'showSessionDiagnostics'].includes(type)) {
+  if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal', 'startManaged', 'showSessionDiagnostics', 'cancelQueued', 'reconcileWriter'].includes(type)) {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return { type, id } as ClientMessage;
@@ -136,7 +144,7 @@ export function parseMessage(value: unknown): ClientMessage {
     const common = { title: string('title', 120), prompt: string('prompt', 32000), provider };
     if (type === 'draft') return { type, ...common } as ClientMessage;
     if (!common.title.trim() || !common.prompt.trim()) throw new Error('Enter a title and task prompt.');
-    return { type, ...common, repository: string('repository', 4096) } as ClientMessage;
+    return { type, ...common, repository: string('repository', 4096), startingCommit: message.startingCommit === undefined ? undefined : string('startingCommit', 64) || undefined } as ClientMessage;
   }
   throw new Error('Unknown command.');
 }

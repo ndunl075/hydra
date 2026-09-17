@@ -1,3 +1,4 @@
+import { validateSchedule } from './scheduler';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -24,6 +25,7 @@ export class LocalStore {
         (task.providerVersion !== undefined && typeof task.providerVersion !== 'string') ||
         (task.sessionProvider !== undefined && !['claude', 'codex'].includes(task.sessionProvider))) throw new Error('Invalid task record. Original data has been retained.');
       ids.add(task.id);
+      if (task.schedule !== undefined) validateSchedule(task.schedule);
       if (task.reviewedCommit !== undefined) {
         const record = task.reviewedCommit;
         if (!record || typeof record !== 'object' || ![record.commit, record.tree, record.baseCommit].every(value => typeof value === 'string' && /^[a-f0-9]{40,64}$/.test(value)) || record.baseCommit !== task.baseCommit || typeof record.reviewedAt !== 'string' || !Number.isFinite(Date.parse(record.reviewedAt))) throw new Error('Invalid reviewed commit. Original data has been retained.');

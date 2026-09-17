@@ -1,3 +1,4 @@
+import { pendingSchedule } from '../src/core/scheduler';
 import React, { useState } from 'react';
 import type { ClientMessage, Task } from '../src/core/model';
 import { parseIntegrationCommands, type IntegrationOperation } from '../src/core/integrationModel';
@@ -5,12 +6,13 @@ import './integration.css';
 export function IntegrationPanel({task,operation,busy,send}:{task:Task;operation?:IntegrationOperation;busy:boolean;send:(message:ClientMessage)=>void}){
   const [checks,setChecks]=useState('[\n  {"executable": "npm.cmd", "args": ["test"]}\n]');
   const [error,setError]=useState<string>();
-  const blocked=busy||task.state==='running'||task.state==='external'||task.interface==='official-extension';
+  const blocked=pendingSchedule(task)||busy||task.state==='running'||task.state==='external'||task.interface==='official-extension';
   const prepare=()=>{try{const commands=parseIntegrationCommands(JSON.parse(checks));setError(undefined);send({type:'prepareIntegration',id:task.id,checks:commands});}catch(error){setError(error instanceof Error?error.message:String(error));}};
   const action=(type:'promoteIntegration'|'reviewIntegrationResolution'|'copyIntegrationCandidate'|'showIntegrationLog'|'cancelIntegration')=>{if(operation)send({type,id:task.id,operationId:operation.id});};
   return <section className="integration-panel" aria-label="Task integration">
     <div className="section-label">INTEGRATION <span>{task.integrationTarget}</span></div>
     <p className="quiet">Build a separate merge candidate from the exact reviewed commit. Your target checkout stays in place until you promote passed checks.</p>
+    {pendingSchedule(task)&&<p className="quiet">Cancel queued work or reconcile the writer before integration.</p>}
     <label className="integration-check-label">Acceptance commands<textarea rows={4} spellCheck={false} disabled={blocked} value={checks} onChange={event=>setChecks(event.target.value)} /></label>
     <p className="quiet">These executable/argument records run in the candidate checkout when you prepare it. Choose commands for this project; Git hooks apply. Each check is limited to two minutes.</p>
     {error&&<p className="session-error" role="alert">{error}</p>}

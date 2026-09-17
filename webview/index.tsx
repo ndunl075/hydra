@@ -1,3 +1,5 @@
+import { pendingSchedule } from '../src/core/scheduler';
+import { ScheduleControls } from './ScheduleControls';
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
@@ -74,7 +76,7 @@ function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: Officia
 }
 function Changes({ task, files, busy, prepared }: { task: Task; files: TaskFile[]; busy: boolean; prepared?: PreparedReview }) {
   const [message, setMessage] = useState('');
-  const blocked = busy || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension';
+  const blocked = pendingSchedule(task) || busy || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension';
   return <section className="changes" aria-label="Changed files">
     <div className="section-label">CHANGES <span>{files.length}</span><button className="text-button" onClick={() => send({ type: 'refresh' })}>Refresh</button></div>
     {files.length ? files.map(file => <div className="change-row" key={file.path}>
@@ -106,6 +108,7 @@ function App() {
   const [filter, setFilter] = useState('all');
   const [draft, setDraft] = useState<Draft>({ title: '', prompt: '', provider: 'claude' });
   const [repository, setRepository] = useState('');
+  const [startingCommit, setStartingCommit] = useState('');
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       if (event.data?.type === 'snapshot') {
@@ -129,7 +132,7 @@ function App() {
   };
   const selected = snapshot.tasks.find(task => task.id === snapshot.selectedId);
   const tasks = snapshot.tasks.filter(task => `${task.title} ${task.branch} ${task.provider}`.toLowerCase().includes(search.toLowerCase()) &&
-    (filter === 'all' || (filter === 'active' ? task.state === 'external' || task.state === 'running' : task.state === 'error' || task.state === 'interrupted')));
+    (filter === 'all' || (filter === 'active' ? task.state === 'external' || task.state === 'running' : task.state === 'error' || task.state === 'interrupted' || !!snapshot.taskActivity?.[task.id]?.awaitingApproval || task.schedule?.state === 'blocked' || task.schedule?.state === 'interrupted')));
   const active = snapshot.tasks.filter(task => task.state === 'running' || task.state === 'external' && task.interface === 'interactive-cli').length;
   const provider = snapshot.providers.find(item => item.provider === selected?.provider);
   return <main className="app">
@@ -149,7 +152,7 @@ function App() {
             <div className="repo-label"><Icon name="folder" />{basename(repo)}</div>
             {tasks.filter(task => task.repository === repo).map(task => <button key={task.id} className={`task ${selected?.id === task.id && !creating ? 'selected' : ''}`} aria-current={selected?.id === task.id && !creating ? 'true' : undefined} onClick={() => { setCreating(false); send({ type: 'select', id: task.id }); }}>
               <span className="task-title"><span className={`status-dot ${task.state}`} />{task.title}</span>
-              <span className="task-meta">{providerName(task.provider)}<span>{task.state === 'external' ? task.interface === 'official-extension' ? 'External' : 'Terminal' : task.state}</span></span>
+              <span className="task-meta">{providerName(task.provider)}<span>{task.state === 'external' ? task.interface === 'official-extension' ? 'External' : 'Terminal' : task.schedule?.state || task.state}</span></span>
               <span className="task-branch">{task.branch.replace('agent/', '')}</span>
             </button>)}
           </section>)}
@@ -162,7 +165,7 @@ function App() {
         {snapshot.handoff ? <HandoffView handoff={snapshot.handoff} info={snapshot.officialExtensions?.find(info => info.provider === snapshot.handoff?.task.provider)} busy={snapshot.busy} /> : creating || !selected ? <>
           <div className="conversation-header"><span>New task</span>{selected && <button className="icon-button" aria-label="Cancel new task" onClick={() => setCreating(false)}><Icon name="close" /></button>}</div>
           <div className="new-task-body"><div className="eyebrow">A SEPARATE BRANCH. A CLEAR GOAL.</div><h2>What are we working on?</h2><p className="intro">Give an agent a focused task. Hydra keeps its checkout separate while you keep working.</p>
-            <form onSubmit={event => { event.preventDefault(); send({ type: 'create', ...draft, repository }); }}>
+            <form onSubmit={event => { event.preventDefault(); send({ type: 'create', ...draft, repository, startingCommit }); }}>
               <label>Repository<select value={repository} onChange={event => setRepository(event.target.value)} required><option value="" disabled>Select repository</option>{snapshot.repositories.map(repo => <option key={repo} value={repo}>{basename(repo)} · {repo}</option>)}</select></label>
               <label>Task title<input autoFocus value={draft.title} maxLength={120} onChange={event => updateDraft({ title: event.target.value })} placeholder="e.g. Fix keyboard navigation" required /></label>
               <label>Task prompt<textarea rows={6} value={draft.prompt} maxLength={32000} onChange={event => updateDraft({ prompt: event.target.value })} placeholder="Describe the goal, relevant files, constraints, and how to verify the result." required /></label>
@@ -170,6 +173,7 @@ function App() {
               <p className="form-note">Starts from committed HEAD. Uncommitted edits stay in your main checkout. Creating a task makes no model request.</p>
             </form>
             {snapshot.repositories.length === 0 && <div className="inline-notice">Open a local Git repository with an initial commit to create tasks.</div>}
+            <label>Starting commit (optional full SHA)<input maxLength={64} value={startingCommit} onChange={event => setStartingCommit(event.target.value)} placeholder="Defaults to current repository HEAD" /></label>
             <ProviderCheck provider={draft.provider} diagnostic={snapshot.diagnostics?.find(item => item.provider === draft.provider)} />
           </div>
         </> : <>
@@ -185,6 +189,7 @@ function App() {
               {selected.interface === 'interactive-cli' && <ProviderCheck provider={selected.provider} diagnostic={snapshot.diagnostics?.find(item => item.provider === selected.provider)} />}
             </article>
             </>}
+            <ScheduleControls key={`schedule-${selected.id}`} task={selected} tasks={snapshot.tasks} busy={snapshot.busy} send={send} />
             <Changes key={selected.id} task={selected} files={snapshot.files} busy={snapshot.busy} prepared={snapshot.commitReview} />
             <IntegrationPanel key={`integration-${selected.id}`} task={selected} operation={snapshot.integration} busy={snapshot.busy} send={send} />
           </div>

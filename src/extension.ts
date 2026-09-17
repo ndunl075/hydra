@@ -111,8 +111,9 @@ class Manager {
       }
       this.selectedId = this.tasks[0]?.id;
       this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
-      await this.refreshProviders();
     } catch (error) { this.disabled = true; this.report(error); }
+    try { await this.refreshProviders(); }
+    catch (error) { this.report(error); }
     await this.publish();
   }
   private async refreshRepositories(): Promise<void> {
@@ -127,7 +128,7 @@ class Manager {
     const config = vscode.workspace.getConfiguration('hydra');
     this.providers = await Promise.all(['claude', 'codex'].map(provider => findProvider(provider as 'claude' | 'codex', config.get<string>(`${provider}Path`))));
   }
-  private async refresh(): Promise<void> { await this.refreshProviders(); await this.publish(); }
+  private async refresh(): Promise<void> { this.error = undefined; await this.refreshProviders(); await this.publish(); }
   private describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
   private report(error: unknown): void {
     this.error = this.describe(error);

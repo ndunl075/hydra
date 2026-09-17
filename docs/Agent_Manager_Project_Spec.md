@@ -42,7 +42,7 @@ The left side shows the normal Explorer and native navigation. The center contai
 | Bottom terminal | Terminal bound to the selected worktree. Keep existing terminals alive and label each one with its task. |
 | Mode control | Editor / Agents switch inside the manager, plus a persistent status-bar command and configurable keyboard shortcut. |
 
-Use the supplied Zed screenshot as the reference for density and hierarchy: narrow task rail, readable conversation, substantial code area, and terminal beneath. Match the active VS Code theme, typography, keyboard behavior, and accessibility conventions. Avoid dashboard cards and decorative chrome.
+Use the supplied Zed screenshot as the reference for density and hierarchy: narrow task rail, readable conversation, substantial code area, and terminal beneath. Use the Hydra palette below alongside native VS Code typography, keyboard behavior, and accessibility conventions. Keep the native workbench theme under the user's control. Avoid dashboard cards and decorative chrome.
 
 ### UI colors
 

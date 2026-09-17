@@ -2,14 +2,6 @@ name: Windows desktop
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/standalone-editor]
-    paths:
-      - '.github/workflows/desktop.yml'
-      - 'desktop/**'
-      - 'scripts/desktop*'
-      - 'scripts/smoke.mjs'
-      - 'tests/desktop.test.mjs'
   pull_request:
     paths:
       - '.github/workflows/desktop.yml'

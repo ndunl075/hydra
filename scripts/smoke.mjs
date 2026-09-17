@@ -16,7 +16,8 @@ if (desktopCode) {
   // the application's built-in extensions, never from this source checkout.
   developmentPath = path.join(fixture, 'harness');
   await fs.mkdir(developmentPath);
-  await fs.writeFile(path.join(developmentPath, 'package.json'), JSON.stringify({ name: 'desktop-test-harness', publisher: 'hydra-internal', version: '1.0.0', engines: { vscode: '^1.95.0' } }));
+  await fs.writeFile(path.join(developmentPath, 'package.json'), JSON.stringify({ name: 'desktop-test-harness', publisher: 'hydra-internal', version: '1.0.0', engines: { vscode: '^1.95.0' }, main: './harness.cjs', extensionKind: ['workspace'] }));
+  await fs.writeFile(path.join(developmentPath, 'harness.cjs'), 'exports.activate = () => {};\n');
   testsPath = path.join(developmentPath, 'smoke.cjs');
   await fs.copyFile(path.join(root, 'dist', 'smoke.cjs'), testsPath);
 }
@@ -43,7 +44,8 @@ await fs.writeFile(codexProvider, process.platform === 'win32' ? `@echo off\r\n"
 await fs.mkdir(path.join(repository, '.vscode'));
 await fs.writeFile(path.join(repository, '.vscode', 'settings.json'), JSON.stringify({ 'hydra.codexPath': 'relative-invalid-path' }));
 const options = {
-  extensionDevelopmentPath: developmentPath, extensionTestsPath: testsPath,
+  extensionDevelopmentPath: desktopCode && process.platform === 'win32' ? `"${developmentPath}"` : developmentPath,
+  extensionTestsPath: desktopCode && process.platform === 'win32' ? `"${testsPath}"` : testsPath,
   ...(desktopCode || localCode ? { vscodeExecutablePath: desktopCode || localCode } : {}),
   extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_CODEX_PROVIDER: codexProvider, HYDRA_TEST_FIXTURE: fixture },
   // The official Windows test runner uses cmd.exe and requires explicit quoting for positional folders.

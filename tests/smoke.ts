@@ -22,6 +22,11 @@ async function correctCwd(task: Task): Promise<boolean> {
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension('nico-dunlap.hydra-agent-manager');
   assert.ok(extension, 'Hydra extension is installed in the test host');
+  if (process.env.HYDRA_TEST_DESKTOP) {
+    assert.equal(vscode.env.appName, 'Hydra', 'The host is Hydra itself');
+    const bundled = path.join(path.dirname(process.env.HYDRA_TEST_DESKTOP), 'resources', 'app', 'extensions', 'hydra-agent-manager');
+    assert.equal(path.relative(await realpath(bundled), await realpath(extension.extensionPath)), '', 'Hydra features load from the app bundle rather than the source checkout');
+  }
   await extension.activate();
   const repository = process.env.HYDRA_TEST_REPOSITORY;
   if (process.env.HYDRA_TEST_HANDOFF_PROVIDER) {

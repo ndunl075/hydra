@@ -1,0 +1,82 @@
+name: Windows desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/standalone-editor]
+    paths:
+      - '.github/workflows/desktop.yml'
+      - 'desktop/**'
+      - 'scripts/desktop*'
+      - 'scripts/smoke.mjs'
+      - 'tests/desktop.test.mjs'
+  pull_request:
+    paths:
+      - '.github/workflows/desktop.yml'
+      - 'desktop/**'
+      - 'scripts/desktop*'
+      - 'scripts/smoke.mjs'
+      - 'tests/desktop.test.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Ensure native Spectre build dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installerDir = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'
+          $vswhere = Join-Path $installerDir 'vswhere.exe'
+          $vsPath = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw 'Visual Studio 2022 C++ toolchain is missing.' }
+          $components = @(
+            'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre',
+            'Microsoft.VisualStudio.Component.VC.ATL.Spectre',
+            'Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre'
+          )
+          $ready = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires $components -property installationPath
+          if ($ready -ne $vsPath) {
+            $installerArgs = @('modify', '--installPath', ('"' + $vsPath + '"'), '--quiet', '--norestart')
+            foreach ($component in $components) { $installerArgs += @('--add', $component) }
+            # setup.exe has no --wait switch; PowerShell waits for the process tree.
+            $install = Start-Process -FilePath (Join-Path $installerDir 'setup.exe') -ArgumentList $installerArgs -WorkingDirectory $env:RUNNER_TEMP -WindowStyle Hidden -Wait -PassThru
+            if ($install.ExitCode -notin @(0, 3010)) { throw "Visual Studio component install failed: $($install.ExitCode)" }
+            $ready = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires $components -property installationPath
+            if ($ready -ne $vsPath) { throw 'Spectre component verification failed.' }
+          }
+          "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
+      - run: npm.cmd ci
+      - run: npm.cmd run desktop:build
+      - run: npm.cmd run desktop:smoke
+      - name: Upload standalone editor
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hydra-win32-x64
+          path: .desktop/VSCode-win32-x64/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload dependency failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-dependency-logs
+          path: .desktop/npm-cache/_logs/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,4 +1,4 @@
-# Agent Manager for VS Code
+# Hydra IDE
 
 *Product specification and implementation brief*
 
@@ -16,7 +16,7 @@ One development environment for writing code yourself, delegating tasks, watchin
 
 ### Recommended starting point
 
-Start as a locally installed VS Code extension, delivered as a .vsix for development and early acceptance. The final bundled product is a standalone Hydra IDE installed through a Windows setup executable, following Nico's 17 September delivery decision. Use native editing and terminal surfaces alongside a custom agent interface. A maintained editor distribution is now an explicit delivery milestone; see [Desktop delivery and onboarding](Desktop_Delivery.md). VS Code exposes extension views and webviews, but a perfect replacement of its workbench is not an extension API guarantee. [1]
+The product is its own Hydra IDE, built as a maintained desktop editor distribution and installed through a Windows setup executable. The existing extension implementation becomes a built-in Hydra module; `.vsix` files and VS Code hosts are development tools, not the final delivery or a runtime dependency. Prioritize the standalone build foundation before extending the remaining agent milestones. See [Standalone build](Standalone_Build.md) and [Desktop delivery and onboarding](Desktop_Delivery.md). Use native editing and terminal surfaces alongside a custom agent interface. A perfect workbench rearrangement remains an acceptance gate rather than an extension API guarantee. [1]
 
 ### Scope for the first release
 
@@ -212,7 +212,7 @@ Deliver a usable terminal workflow early, then add structured integrations. Each
 
 ### Definition of done
 
-Nico can open a Git project in VS Code, flip into the agent manager, start Claude Code and Codex tasks in isolated worktrees, use either the managed CLI experience or an official extension, return to ordinary editing, review all changes, and integrate or discard each result without losing work or confusing which checkout an agent is using.
+Nico can install and launch the standalone Hydra IDE without installing VS Code, choose whether the installer creates a desktop shortcut, import VS Code/Cursor preferences during skippable onboarding, select dark/light appearance, and complete supported provider-owned account setup. In Hydra he can open a Git project, flip into the agent manager, start Claude Code and Codex tasks in isolated worktrees, use either the managed CLI experience or a supported official extension, return to ordinary editing, review all changes, and integrate or discard each result without losing work or confusing which checkout an agent is using. Standalone build, onboarding, provider acceptance, and safe integration/discard must all pass; the core `.vsix` alone is not done.
 
 ### Decisions to validate during implementation
 

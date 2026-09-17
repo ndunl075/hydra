@@ -8,6 +8,8 @@ scripts/**
 .test-build/**
 .gitignore
 .vscode-test/**
+.desktop/**
+desktop/**
 dist/smoke.cjs
 tsconfig.json
 package-lock.json

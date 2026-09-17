@@ -1,6 +1,6 @@
 # Desktop delivery and onboarding
 
-Nico's 17 September 2026 requirements extend the extension prototype into a standalone Windows Hydra IDE. The current `.vsix` remains a development artifact. No standalone installer, settings importer, or account-onboarding UI is shipped yet.
+Hydra is its own Windows IDE, as clarified by Nico on 17 September 2026. The extension prototype becomes a built-in module of a branded Code - OSS desktop build, not a requirement to install VS Code. A `.vsix` remains a core development artifact. No standalone installer, settings importer, or account-onboarding UI is shipped yet. See [Standalone build](Standalone_Build.md) for the first desktop target.
 
 ## Installation
 
@@ -34,9 +34,9 @@ Official sources checked on 17 September 2026: [Codex App Server](https://learn.
 ## Delivery order and gates
 
 1. In-IDE Settings plus dark/light native themes implemented in version 0.8.0 as a separate feature PR; Windows native-host checks passed. Manual visual/accessibility acceptance remains pending.
-2. Implement import preview, merge/backup/rollback, and onboarding persistence against isolated test profiles. Keep import unavailable in the host extension until an isolated Hydra profile exists; importing Cursor preferences into somebody's active VS Code profile is not the bundled product behavior.
-3. Implement supported account setup, runtime availability, public status, cancellation, and real-provider acceptance without model calls on login.
-4. Build the branded desktop editor distribution with isolated profiles and a documented extension-distribution route. Code - OSS is the preferred foundation to validate, rather than repackaging Microsoft's proprietary VS Code distribution. [Microsoft's distribution and Marketplace guidance](https://code.visualstudio.com/docs/supporting/faq) requires a distinct route for forks; do not assume access to Microsoft Marketplace or redistribute provider extensions without checking their terms.
+2. Build and test Hydra's branded Code - OSS desktop distribution with isolated profiles and the existing workflow built in. This is the immediate priority following Nico's correction. A tested Windows executable is required before calling this gate complete. [Microsoft's distribution and Marketplace guidance](https://code.visualstudio.com/docs/supporting/faq) requires a distinct extension-distribution route for forks; do not assume access to Microsoft Marketplace or redistribute provider extensions without checking their terms.
+3. Implement import preview, merge/backup/rollback, and onboarding persistence against Hydra's isolated profile. Keep import unavailable in the host extension; importing Cursor preferences into somebody's active VS Code profile is not the product behavior.
+4. Implement supported account setup, runtime availability, public status, cancellation, and real-provider acceptance without model calls on login.
 5. Bundle the tested desktop build into the Windows installer with the optional shortcut and first-run launch. Validate updates, uninstall, data preservation, both shortcut choices, and onboarding in clean environments.
 
 M6 is complete only with a tested standalone installer and all onboarding gates; extension packaging does not mark it complete. These features ship in individual PRs under Nico's commit, push, review, and merge workflow.

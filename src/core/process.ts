@@ -20,7 +20,7 @@ export function checkWindowsTermination(pid: number, error: (Error & { code?: st
   // Unknown/localized diagnostics and mixed permission failures fail closed.
   const absent = new Set([pid]);
   let diagnostic = stderr.trim();
-  if (diagnostic && (error.code === 1 || error.code === 128)) {
+  if (diagnostic && (error.code === 1 || error.code === 128 || error.code === 255)) {
     diagnostic = diagnostic.replace(/ERROR: The process with PID (\d+)(?: \(child process of PID (\d+)\))? could not be terminated\.\s*Reason: There is no running instance of the task\./g, (_match, child: string, parent?: string) => {
       absent.add(Number(child)); if (parent && Number(child) !== pid) absent.add(Number(parent)); return '';
     }).replace(/ERROR: The process "(\d+)" not found\./g, (_match, missing: string) => { absent.add(Number(missing)); return ''; }).trim();

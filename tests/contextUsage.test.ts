@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { buildTaskPrompt, canEditBrief, emptyBrief, emptyHandoffSummary, renderTaskHandoff } from '../src/core/taskContext';
+import { buildTaskPrompt, canEditBrief, emptyBrief, emptyHandoffSummary, lockTaskContext, parseBrief, renderTaskHandoff, taskPromptPreview } from '../src/core/taskContext';
+import { TaskScheduler } from '../src/core/scheduler';
 import { parseMessage, type SessionView, type Task, type Turn } from '../src/core/model';
 import { LocalStore } from '../src/core/store';
 import { SessionStore } from '../src/core/sessionStore';
@@ -56,6 +57,61 @@ test('task brief and local handoff survive store reload; mismatched prompts are 
     current.reviewedCommit = { commit: 'b'.repeat(40), tree: 'c'.repeat(40), baseCommit: current.baseCommit, reviewedAt: new Date().toISOString() };
     assert.match(renderTaskHandoff(current, evidence.historyPath(id), []), /receipt may predate later edits/);
     await store.save([{ ...current, prompt: 'tampered' }]); await assert.rejects(store.load(), /disagree/);
+  } finally { await clean(root); }
+});
+
+test('legacy preview preserves saved plain text and unsaved changes are explicitly drafts', () => {
+  const current = task(), legacy = { ...emptyBrief(), goal: current.prompt };
+  assert.deepEqual(taskPromptPreview(current, legacy), { prompt: 'legacy prompt', draft: false });
+  const changed = { ...legacy, acceptance: 'Explicit new criterion' };
+  assert.deepEqual(taskPromptPreview(current, changed), { prompt: buildTaskPrompt(changed), draft: true });
+  current.brief = changed; current.prompt = buildTaskPrompt(changed);
+  assert.deepEqual(taskPromptPreview(current, changed), { prompt: current.prompt, draft: false });
+});
+
+test('saved briefs require a goal while draft messages may remain empty', async () => {
+  const root = await fixture();
+  try {
+    for (const goal of ['', ' \t\n ']) {
+      const brief = { ...emptyBrief(), goal, constraints: 'A goal is still required' };
+      assert.throws(() => parseBrief(brief), /task goal/);
+      assert.throws(() => parseMessage({ type: 'saveBrief', id, brief }), /task goal/);
+      const current = { ...task(), brief, prompt: buildTaskPrompt(brief) }, store = new LocalStore(root);
+      await store.save([current]); await assert.rejects(store.load(), /task goal/);
+    }
+    assert.equal(parseMessage({ type: 'draft', title: '', prompt: '', provider: 'codex', brief: emptyBrief() }).type, 'draft');
+  } finally { await clean(root); }
+});
+
+test('brief lock is durable before queue submission, survives cancellation/reload, and failed lock saves cannot enqueue', async () => {
+  const root = await fixture();
+  try {
+    const current = task(), store = new LocalStore(root); let launches = 0;
+    current.brief = { ...emptyBrief(), goal: 'Pinned queued goal', testCommands: 'advisory command only' };
+    current.prompt = buildTaskPrompt(current.brief);
+    const scheduler = new TaskScheduler({ tasks: () => [current], capacity: () => 1, liveCount: () => 1, enabled: () => true,
+      persist: () => store.save([current]), prepare: async item => ({ commit: item.baseCommit, artifacts: [] }), launch: async () => { launches++; }
+    });
+    await lockTaskContext(current, () => store.save([current]));
+    const locked = (await store.load())[0]!;
+    assert.ok(locked.contextLockedAt); assert.equal(locked.schedule, undefined, 'Lock must be saved before launch intent enters the queue');
+    await scheduler.enqueue(current, { type: 'startManaged' });
+    const queued = (await store.load())[0]!;
+    assert.equal(queued.schedule?.state, 'queued'); assert.equal(canEditBrief(queued), false); assert.equal(queued.prompt, current.prompt);
+    assert.equal(launches, 0, 'Capacity hold and suggested test text make no provider call');
+    await scheduler.cancel(current);
+    assert.equal(canEditBrief((await store.load())[0]!), false, 'Cancellation does not undo the durable context lock');
+    const failed = task(); let enqueued = false;
+    await assert.rejects((async () => {
+      await lockTaskContext(failed, async () => { throw new Error('Disk full'); });
+      enqueued = true;
+    })(), /Disk full/);
+    assert.equal(enqueued, false); assert.equal(canEditBrief(failed), false);
+    for (const schedule of [
+      { state: 'queued' as const, dependencies: [], artifacts: [], request: { type: 'launch' as const } },
+      { state: 'finished' as const, dependencies: [], artifacts: [], actualStartingCommit: 'a'.repeat(40) },
+      { state: 'interrupted' as const, dependencies: [], artifacts: [], uncertain: true }
+    ]) assert.equal(canEditBrief({ ...task(), schedule }), false, 'Legacy queue metadata also protects the brief without a context lock');
   } finally { await clean(root); }
 });
 

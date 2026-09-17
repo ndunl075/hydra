@@ -1,3 +1,4 @@
+import { pendingSchedule } from './scheduler';
 import type { SessionView, Task, TaskBrief, TaskHandoffSummary } from './model';
 
 export const briefFields = ['goal', 'constraints', 'relevantPaths', 'acceptance', 'testCommands'] as const;
@@ -16,8 +17,9 @@ function textFields<T extends string>(value: unknown, fields: readonly T[], limi
   }
   return result;
 }
-export function parseBrief(value: unknown): TaskBrief {
+export function parseBrief(value: unknown, allowEmptyGoal = false): TaskBrief {
   const brief = textFields(value, briefFields, 16000);
+  if (!allowEmptyGoal && !brief.goal.trim()) throw new Error('Enter a task goal.');
   if (buildTaskPrompt(brief).length > 32000) throw new Error('The complete task brief must fit within 32,000 characters.');
   return brief;
 }
@@ -30,7 +32,19 @@ export function buildTaskPrompt(brief: TaskBrief): string {
 }
 
 export function canEditBrief(task: Task, session?: SessionView): boolean {
-  return task.state === 'idle' && task.interface === 'interactive-cli' && !task.contextLockedAt && !task.sessionId && !session?.turns.length;
+  return !task.schedule?.request && !task.schedule?.actualStartingCommit && !pendingSchedule(task) && task.state === 'idle' && task.interface === 'interactive-cli' && !task.contextLockedAt && !task.sessionId && !session?.turns.length;
+}
+
+export function taskPromptPreview(task: Task, brief: TaskBrief): { prompt: string; draft: boolean } {
+  const saved = task.brief || { ...emptyBrief(), goal: task.prompt };
+  const draft = briefFields.some(key => brief[key] !== saved[key]);
+  return { prompt: draft ? buildTaskPrompt(brief) : task.prompt, draft };
+}
+
+/** Lock before queueing even when the later provider attempt fails. */
+export async function lockTaskContext(task: Task, persist: () => Promise<void>): Promise<void> {
+  task.contextLockedAt ||= new Date().toISOString();
+  await persist();
 }
 
 /** A local, user-curated artifact. It never represents automated validation. */

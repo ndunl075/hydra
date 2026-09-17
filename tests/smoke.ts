@@ -9,6 +9,7 @@ import type { ProfileResources } from '../src/core/profileImport';
 import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/taskContext';
 import type { UsageSummary } from '../src/core/usage';
 import type { ModelCatalog } from '../src/core/modelSelection';
+import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   while (!await predicate()) {
@@ -141,6 +142,21 @@ export async function run(): Promise<void> {
     }
   } finally { terminal.dispose(); }
   if (process.env.HYDRA_TEST_DESKTOP) {
+    const setupTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Welcome to Hydra');
+    assert.equal(setupTabs().length, 0, 'A built-in extension must not auto-open onboarding in an extension test host');
+    const startup = await vscode.commands.executeCommand<{ development: boolean }>('hydra.desktop.startupContext');
+    assert.equal(startup?.development, true, 'Owned workbench recognizes the separate native test harness');
+    const setupBefore = await vscode.commands.executeCommand('hydra.getOnboardingState');
+    await vscode.commands.executeCommand('hydra.openOnboarding');
+    await vscode.commands.executeCommand('hydra.openOnboarding');
+    await waitFor(() => setupTabs().length === 1);
+    await vscode.window.tabGroups.close(setupTabs());
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.getOnboardingState'), setupBefore, 'Closing setup preserves the interrupted step');
+    await vscode.commands.executeCommand('hydra.openOnboarding');
+    await waitFor(() => setupTabs().length === 1);
+    await vscode.window.tabGroups.close(setupTabs());
+    assert.equal(document.isClosed, false, 'Reopening setup preserves dirty editor documents');
+    console.log('PASS: native onboarding suppresses first-run in test hosts, reuses one tab, reopens its interrupted state, and preserves dirty documents.');
     const profile = await vscode.commands.executeCommand<ProfileResources>('hydra.desktop.profileResources');
     assert.ok(profile); assert.equal(profile.name, 'Hydra Native Acceptance');
     assert.notEqual(path.dirname(profile.settings), profile.root, 'Native acceptance uses a named profile rather than inferring paths from global storage');
@@ -200,13 +216,30 @@ export async function run(): Promise<void> {
     await vscode.commands.executeCommand('hydra.showTaskHandoff', tasks[0]!.id);
     assert.ok(vscode.window.activeTextEditor?.document.getText().includes('Local fixture handoff'));
     assert.ok(vscode.window.activeTextEditor?.document.getText().includes('No reviewed commit'));
+    const handoffDocument = vscode.window.activeTextEditor!.document;
+    const savedHandoff = await readFile(handoffDocument.uri.fsPath, 'utf8');
+    const handoffEdit = new vscode.WorkspaceEdit(); handoffEdit.insert(handoffDocument.uri, new vscode.Position(0, 0), 'Unsaved local handoff note\n');
+    assert.equal(await vscode.workspace.applyEdit(handoffEdit), true);
+    const dirtyHandoff = handoffDocument.getText();
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.showTaskHandoff', tasks[0]!.id), /unsaved generated handoff/);
+    assert.equal(handoffDocument.getText(), dirtyHandoff); assert.equal(handoffDocument.isDirty, true);
+    assert.equal(await readFile(handoffDocument.uri.fsPath, 'utf8'), savedHandoff);
+    await vscode.window.showTextDocument(handoffDocument);
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
     for (const task of tasks.slice(0, 2)) await vscode.commands.executeCommand('hydra.launchTask', task.id);
     await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveBrief', tasks[0]!.id, brief), /locked after launch/);
     for (const task of tasks.slice(0, 2)) {
       await waitFor(() => correctCwd(task));
     }
     assert.equal(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).length, 2);
-    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.schedule?.state, 'queued');
+    const queuedBriefTask = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id);
+    assert.ok(queuedBriefTask?.contextLockedAt, 'Queued launch records its brief lock before dispatch');
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveBrief', tasks[2]!.id, { ...brief, goal: 'Changed queued goal' }), /locked after launch/);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.prompt, queuedBriefTask.prompt, 'Rejected queued edit preserves the exact prompt');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.prepareIntegration', tasks[2]!.id, [{ executable: 'node', args: ['--version'] }]), /Cancel queued work/);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openDiff', tasks[2]!.id, 'keep.txt', 'combined'), /Stop this task writer/);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id);
     assert.equal(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).length, 2, 'Duplicate launch reveals the existing terminal');
     const pids = await Promise.all(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).map(item => item.processId));
@@ -217,10 +250,10 @@ export async function run(): Promise<void> {
     assert.deepEqual(await Promise.all(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).map(item => item.processId)), pids);
     await vscode.commands.executeCommand('hydra.stopTask', tasks[0]!.id);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.state === 'interrupted');
-    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
     await waitFor(() => correctCwd(tasks[2]!));
     console.log('PASS: both provider routes launch in exact worktrees, reuse terminals, enforce the two-terminal limit, and survive mode changes.');
     for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.filter(task => tasks.slice(1).some(item => item.id === task.id)).every(task => !['queued', 'starting', 'running'].includes(task.schedule?.state || '')) || false);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
     await vscode.commands.executeCommand('hydra.startManaged', tasks[0]!.id);
     await waitFor(async () => { const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id); return session?.turns[0]?.status === 'completed' && !session.active; });
@@ -241,10 +274,11 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffCodex', tasks[0]!.id), /managed process/);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openDiff', tasks[0]!.id, 'keep.txt', 'combined'), /Stop this task writer/);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id);
-    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.schedule?.state, 'queued');
     await vscode.commands.executeCommand('hydra.stopTask', tasks[0]!.id);
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id))?.turns[1]?.status, 'interrupted');
-    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    await waitFor(() => correctCwd(tasks[2]!));
     console.log('PASS: managed Claude streams and persists a result, resumes its explicit ID, blocks overlapping writers, shares concurrency with terminals, and stops without inventing completion.');
     for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
@@ -253,6 +287,7 @@ export async function run(): Promise<void> {
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[0]?.text, 'Codex ü complete');
     await vscode.commands.executeCommand('hydra.followUp', tasks[1]!.id, 'approval');
     await waitFor(async () => !!(await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.approvals?.length);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[1]!.id)?.schedule?.state === 'waiting-for-approval');
     const pending = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id);
     const approvalId = pending!.approvals![0]!.id;
     await vscode.commands.executeCommand('hydra.approve', tasks[1]!.id, approvalId, 'accept');
@@ -263,7 +298,10 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id), /managed process/);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffClaude', tasks[1]!.id), /managed process/);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
-    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.schedule?.state, 'queued');
+    await vscode.commands.executeCommand('hydra.cancelQueued', tasks[0]!.id);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.schedule?.state, 'cancelled');
     await vscode.commands.executeCommand('hydra.stopTask', tasks[1]!.id);
     await vscode.commands.executeCommand('hydra.stopTask', tasks[2]!.id);
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[2]?.status, 'interrupted');
@@ -357,5 +395,17 @@ export async function run(): Promise<void> {
     const modelView = await vscode.commands.executeCommand<SessionView>('hydra.getSession', modelTask.id);
     assert.deepEqual(modelView?.turns[1]?.modelSettings, { requested: selection, effective: selection });
     console.log('PASS: native model discovery submits no prompt, unsupported Astra is refused, explicit settings lock, and acknowledged model/effort survive resume.');
+    const targetFile=path.join(repository,'keep.txt'),targetBytes=await readFile(targetFile),targetBefore=(await git(repository,['rev-parse','HEAD'])).trim();
+    const checks=[{executable:'git',args:['diff','--check',commitTask.baseCommit,'HEAD']}];
+    await assert.rejects(async()=>await vscode.commands.executeCommand('hydra.prepareIntegration',commitTask.id,checks),/clean saved/);
+    try{
+      await git(repository,['restore','keep.txt']);
+      const candidate=await vscode.commands.executeCommand<IntegrationOperation>('hydra.prepareIntegration',commitTask.id,checks);assert.ok(candidate);assert.equal(candidate.phase,'validated');assert.equal((await git(repository,['rev-parse','HEAD'])).trim(),targetBefore);
+      await vscode.commands.executeCommand('hydra.openIntegrationDiff',commitTask.id,candidate.id,'commit review ü.txt');
+      const integrationTab=vscode.window.tabGroups.activeTabGroup.activeTab?.input;assert.ok(integrationTab instanceof vscode.TabInputTextDiff);assert.equal((await vscode.workspace.openTextDocument(integrationTab.modified)).getText(),'stale saved edit\n');
+      await vscode.commands.executeCommand('hydra.promoteIntegration',commitTask.id,candidate.id);assert.equal((await git(repository,['rev-parse','HEAD'])).trim(),candidate.candidateCommit);assert.equal((await git(repository,['rev-parse',`refs/hydra/integration-backups/${candidate.id}`])).trim(),targetBefore);assert.equal((await git(commitTask.worktree,['rev-parse','HEAD'])).trim(),receipt.commit);assert.equal(await readFile(path.join(repository,'commit review ü.txt'),'utf8'),'stale saved edit\n');assert.equal(editDocument.isDirty,true);
+    }finally{await writeFile(targetFile,targetBytes);}
+    assert.equal(await readFile(path.join(tasks[0]!.worktree,'requests.jsonl'),'utf8'),claudeRequestsBefore);assert.equal(await readFile(path.join(tasks[1]!.worktree,'codex-requests.jsonl'),'utf8'),codexRequestsBefore);
+    console.log('PASS: native integration refuses dirty target, reviews immutable candidate diff, runs explicit checks and promotes through owning checkout with retained task and rollback reference, without provider requests.');
   }
 }

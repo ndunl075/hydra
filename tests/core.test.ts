@@ -26,7 +26,7 @@ test('Windows stop tolerates only taskkill not-found with independently confirme
 
 test('Windows tree stop accepts exited descendants only after all named processes are confirmed absent', () => {
   const stderr = 'ERROR: The process with PID 8348 (child process of PID 12744) could not be terminated.\r\nReason: There is no running instance of the task.\r\n';
-  for (const code of [1, 128]) {
+  for (const code of [1, 128, 255]) {
     const error = Object.assign(new Error(stderr), { code });
     const checked: number[] = [];
     const absent = (pid: number, signal: 0) => {

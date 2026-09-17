@@ -10,6 +10,8 @@ function taskStatus(task: Task, awaitingApproval: boolean) {
   if (task.interface === 'official-extension') return 'External · unobserved';
   if (task.state === 'external') return 'Terminal · unobserved';
   if (awaitingApproval) return 'Approval needed';
+  if (task.schedule?.uncertain) return 'Reconcile writer';
+  if (task.schedule && ['queued', 'starting', 'blocked'].includes(task.schedule.state)) return task.schedule.state === 'queued' ? 'Queued' : task.schedule.state === 'starting' ? 'Starting' : 'Blocked';
   return { running: 'Running', idle: 'Idle', interrupted: 'Interrupted', error: 'Error' }[task.state];
 }
 

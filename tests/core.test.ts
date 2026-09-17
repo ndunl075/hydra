@@ -7,6 +7,8 @@ import { OwnershipLock } from '../src/core/ownership';
 import { changedFiles, createWorktree, git, parseStatus, resolveTaskFile } from '../src/core/worktrees';
 import { parseMessage, type Task } from '../src/core/model';
 import { assertCliAllowed, createHandoffWorkspace, handoffTask, parseHandoff, officialProviders } from '../src/core/handoff';
+import { runProbe } from '../src/core/process';
+import { checkProvider } from '../src/core/diagnostics';
 
 const fixtures = path.resolve('.test-build', 'fixtures');
 async function fixture() {
@@ -164,5 +166,48 @@ test('handoff persists ownership before opening and retains it after an ambiguou
     assert.throws(() => assertCliAllowed(recovered), /external extension/);
     await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'claude', false, persist, open), /already externally owned/);
     assert.equal(opens, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('public CLI diagnostics recognize advertised contracts without claiming authentication or session support', async () => {
+  const { root } = await fixture();
+  try {
+    for (const provider of ['claude', 'codex'] as const) {
+      const executable = path.join(root, `${provider}${process.platform === 'win32' ? '.cmd' : ''}`);
+      const script = `${provider}.cjs`;
+      await writeFile(path.join(root, script), `const fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync('calls.jsonl',JSON.stringify(args)+'\\n');if(args[0]==='--version')console.log(${JSON.stringify(provider === 'claude' ? '2.1.270 (Claude Code)' : 'codex-cli 0.120.0')});else if(args[0]==='--help')console.log(${JSON.stringify(provider === 'claude' ? '--input-format stream-json --output-format stream-json --resume --permission-prompt-tool' : 'Commands: app-server')});else if(args.join(' ')==='app-server --help')console.log('app-server generate-json-schema');else process.exit(9);`);
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      await writeFile(executable, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "%~dp0${script}" %*\r\n` : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.join(root, script))} "$@"\n`, { mode: 0o755 });
+      const result = await checkProvider({ provider, executable, available: true }, root);
+      assert.equal(result.status, 'checked');
+      assert.equal(result.version, provider === 'claude' ? '2.1.270' : '0.120.0');
+      assert.ok(result.advertised.length);
+      assert.equal('authenticated' in result, false);
+      assert.equal('streamingSupported' in result, false);
+      assert.deepEqual(result.probes.map(probe => probe.args), provider === 'claude' ? [['--version'], ['--help']] : [['--version'], ['--help'], ['app-server', '--help']]);
+    }
+    const calls = (await readFile(path.join(root, 'calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls.length, 5);
+    assert.ok(calls.every(args => args.includes('--help') || args.includes('--version')), 'Only public metadata calls were made');
+    const missing = await checkProvider({ provider: 'codex', available: false }, root);
+    assert.equal(missing.status, 'unavailable'); assert.deepEqual(missing.probes, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('probe runner bounds output and runtime, retains errors, and passes arguments without shell expansion', async () => {
+  const { root } = await fixture();
+  try {
+    const literal = 'quotes " Unicode ü and $(do not execute)';
+    const echo = await runProbe(process.execPath, ['-e', 'console.log(process.argv[1])', literal], root);
+    assert.equal(echo.stdout.trim(), literal); assert.equal(echo.exitCode, 0);
+    const failed = await runProbe(process.execPath, ['-e', 'console.error("raw diagnostic");process.exit(7)'], root);
+    assert.equal(failed.exitCode, 7); assert.match(failed.stderr, /raw diagnostic/);
+    const oversized = await runProbe(process.execPath, ['-e', 'process.stdout.write("x".repeat(10000));setInterval(()=>{},1000)'], root, { maxBytes: 1024 });
+    assert.equal(Buffer.byteLength(oversized.stdout), 1024); assert.match(oversized.error!, /output limit/);
+    const timedOut = await runProbe(process.execPath, ['-e', 'setInterval(()=>{},1000)'], root, { timeoutMs: 150 });
+    assert.match(timedOut.error!, /timed out/);
+    const controller = new AbortController(); controller.abort();
+    const cancelled = await runProbe(process.execPath, ['-e', 'setInterval(()=>{},1000)'], root, { signal: controller.signal });
+    assert.match(cancelled.error!, /cancelled/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { ClientMessage, Snapshot, Provider, Draft, Handoff, OfficialExtensionInfo } from '../src/core/model';
+import type { ClientMessage, Snapshot, Provider, Draft, Handoff, OfficialExtensionInfo, ProviderDiagnostic } from '../src/core/model';
 import './styles.css';
 
 declare function acquireVsCodeApi(): { postMessage(message: ClientMessage): void; getState(): unknown; setState(state: unknown): void };
@@ -9,6 +9,15 @@ const send = (message: ClientMessage) => api.postMessage(message);
 const initial: Snapshot = { tasks: [], repositories: [], providers: [], files: [], busy: false, mode: 'agents' };
 const providerName = (provider: Provider) => provider === 'claude' ? 'Claude Code' : 'Codex';
 const basename = (value: string) => value.split(/[\\/]/).filter(Boolean).at(-1) || value;
+function ProviderCheck({ provider, diagnostic }: { provider: Provider; diagnostic?: ProviderDiagnostic }) {
+  return <section className="provider-check" aria-label={`${providerName(provider)} capabilities`}>
+    <div className="section-label">PROVIDER CHECK <span>{diagnostic?.version || 'Not verified'}</span></div>
+    <div className="diagnostic-actions"><button className="text-button" disabled={diagnostic?.status === 'checking'} onClick={() => send({ type: 'checkProvider', provider })}>{diagnostic?.status === 'checking' ? 'Checking…' : `Check ${providerName(provider)}`}</button>{diagnostic && diagnostic.status !== 'checking' && <button className="text-button" onClick={() => send({ type: 'showProviderDiagnostics', provider })}>View diagnostics</button>}</div>
+    {diagnostic?.error && <p role="status">{diagnostic.error}</p>}
+    {diagnostic?.status === 'checked' && <p role="status">CLI help advertises: {diagnostic.advertised.join(', ') || 'No recognized structured options'}. These are not verified Hydra session capabilities.</p>}
+    <p className="quiet">Checks read public version and help output only. They make no model request or authentication check. Managed streaming, approvals, resume, and usage remain unavailable until the adapter is verified.</p>
+  </section>;
+}
 function Icon({ name }: { name: 'plus' | 'branch' | 'terminal' | 'arrow' | 'refresh' | 'search' | 'close' | 'folder' }) {
   const paths = {
     plus: 'M8 2v12M2 8h12', branch: 'M4 3v10M4 8c6 0 8-1 8-5M10 3h4M2 3h4M2 13h4',
@@ -104,6 +113,7 @@ function App() {
               <p className="form-note">Starts from committed HEAD. Uncommitted edits stay in your main checkout. Creating a task makes no model request.</p>
             </form>
             {snapshot.repositories.length === 0 && <div className="inline-notice">Open a local Git repository with an initial commit to create tasks.</div>}
+            <ProviderCheck provider={draft.provider} diagnostic={snapshot.diagnostics?.find(item => item.provider === draft.provider)} />
           </div>
         </> : <>
           <div className="conversation-header"><div><h2>{selected.title}</h2><span>{providerName(selected.provider)} <span className="separator">/</span> {selected.interface === 'official-extension' ? 'Official extension' : 'Interactive CLI'}</span></div><button className="icon-button" title="New task" aria-label="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>
@@ -113,6 +123,7 @@ function App() {
             <article className="system-message"><div className="message-author"><span className="avatar hydra-avatar">h</span><strong>Hydra</strong><span className="local-tag">LOCAL</span></div><p>{selected.interface === 'official-extension' ? `This task is handed off to ${providerName(selected.provider)} in its own workspace window. Stop the provider session there before returning ownership.` : `Task checkout is ready. Open ${providerName(selected.provider)} in the terminal, then paste your prompt to begin.`}</p><div className="task-actions">{selected.interface === 'official-extension' ? <button className="secondary" disabled={snapshot.busy} onClick={() => send({ type: 'releaseExternal', id: selected.id })}>I stopped the external session</button> : <button className="primary" disabled={snapshot.busy || !provider?.available} onClick={() => send({ type: 'launch', id: selected.id })}><Icon name="terminal" />{selected.state === 'external' ? 'Show terminal' : 'Open provider terminal'}</button>}<button className="secondary" onClick={() => send({ type: 'copyPrompt', id: selected.id })}>Copy prompt</button></div>
               {!provider?.available && selected.interface === 'interactive-cli' && <p className="availability">{providerName(selected.provider)} CLI was not found. <button className="text-button" onClick={() => send({ type: 'settings' })}>Set its executable path</button>.</p>}
               <p className="observability">{selected.interface === 'official-extension' ? 'Session progress, approvals, and completion are unavailable to Hydra. History is not transferred automatically.' : 'Conversation and permissions stay in the provider terminal for this prototype. Structured streaming, resume, and usage reporting are not connected yet.'}</p>
+              {selected.interface === 'interactive-cli' && <ProviderCheck provider={selected.provider} diagnostic={snapshot.diagnostics?.find(item => item.provider === selected.provider)} />}
             </article>
             <section className="changes" aria-label="Changed files"><div className="section-label">CHANGES <span>{snapshot.files.length}</span></div>{snapshot.files.length ? snapshot.files.map(file => <button className="file-row" key={file.path} onClick={() => send({ type: 'openFile', id: selected.id, path: file.path })}><span className="file-status">{file.status.trim()}</span><span>{file.path}</span><Icon name="arrow" /></button>) : <p className="quiet">No changes yet. Refresh to check this worktree.</p>}<p className="review-note">Files open in the native editor. Full diff review and integration arrive in M4.</p></section>
           </div>

@@ -8,6 +8,11 @@ export interface Task {
 }
 export interface TaskFile { path: string; status: string }
 export interface ProviderInfo { provider: Provider; executable?: string; available: boolean }
+export interface ProviderDiagnostic {
+  provider: Provider; executable?: string; status: 'checking' | 'checked' | 'unavailable' | 'error';
+  version?: string; checkedAt: string; advertised: string[]; error?: string;
+  probes: { args: string[]; stdout: string; stderr: string; exitCode: number | null; error?: string }[];
+}
 export interface Draft { title: string; prompt: string; provider: Provider }
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
@@ -16,11 +21,13 @@ export interface Snapshot {
   tasks: Task[]; selectedId?: string; mode: 'editor' | 'agents'; repositories: string[];
   providers: ProviderInfo[]; files: TaskFile[]; busy: boolean; error?: string; draft?: Draft;
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];
+  diagnostics?: ProviderDiagnostic[];
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal'; id: string }
   | { type: 'handoff'; id: string; provider: Provider }
+  | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
   | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string }
@@ -35,6 +42,11 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'checkProvider' || type === 'showProviderDiagnostics') {
+    const provider = string('provider');
+    if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
+    return { type, provider };
+  }
   if (['ready', 'editor', 'refresh', 'settings', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
   if (type === 'handoff') {
     const id = string('id');

@@ -1,0 +1,131 @@
+# Agentic IDE architecture: efficient parallel work
+
+Researched 2026-09-17. Scope: Zed, Cursor, VS Code, Claude Code, Codex; recommendations for Hydra.
+Goal: maximize accepted, tested changes per token and unit of time. Parallelism improves latency only when work is separable; it does not create extra provider quota.
+
+## 1. Verified patterns worth borrowing
+
+| System | Documented architecture / behavior | Hydra implication |
+| --- | --- | --- |
+| Zed | External agents are separate processes connected through ACP; native agent configuration/auth remain distinct from Zed's built-in agent. [External agents](https://zed.dev/docs/ai/external-agents) | Keep provider-owned sessions behind adapters; do not rebuild their agent loops. |
+| Zed parallel agents | Independent threads can use different agents. Worktree picker creates detached checkouts; setup hooks initialize them. Archiving eligible threads saves Git state and removes their worktree; restoration recovers it. [Parallel agents](https://zed.dev/docs/ai/parallel-agents) | Model conversation lifecycle separately from checkout lifecycle. Offer explicit isolated tasks and recoverable archival. |
+| Cursor | Managed worktree setup uses OS-specific or generic commands in `.cursor/worktrees.json`; docs discourage symlinking dependencies. [Worktrees](https://cursor.com/docs/configuration/worktrees) | Prepare each environment deterministically before spending model tokens debugging setup. |
+| VS Code | Separates agent harness, session, interface, and execution environment; offers workspace/worktree and local/remote/cloud choices. Worktrees are not security boundaries. [Architecture overview](https://code.visualstudio.com/docs/agents/overview) | Preserve native editor/terminal UX; track execution location and permissions independently. |
+| Codex | App Server exposes structured threads, turns, notifications, resume and interruption. Desktop worktrees provide separate checkouts and local/worktree handoff. [App Server](https://learn.chatgpt.com/docs/app-server), [Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees) | Continue explicit thread-ID resume; keep Git ownership in Hydra. |
+| Claude Code | Programmatic CLI/SDK retains the agent loop and context management. Subagents isolate intermediate context and return results; teams add independent contexts and coordination cost. [Programmatic use](https://code.claude.com/docs/en/headless), [Subagents](https://code.claude.com/docs/en/sub-agents), [Teams](https://code.claude.com/docs/en/agent-teams) | Use bounded delegation for independent work; avoid a permanent swarm for small edits. |
+
+ACP is editor↔agent JSON-RPC with capability negotiation, session updates, permission requests and cancellation; MCP supplies tools/context. Neither protocol itself guarantees token savings or filesystem isolation. ACP is an optional interoperability adapter, not a prerequisite for Hydra's native providers. [ACP contract](https://agentclientprotocol.com/protocol/v1/overview)
+
+These are documented interfaces and workflow patterns, not a source-code audit of competitors or comparative efficiency benchmarks.
+
+## 2. Hydra baseline
+
+Snapshot: [c88f9be](https://github.com/ndunl075/hydra/tree/c88f9beea25c6caaa0824623b8252b23f9cd8568).
+
+- [worktrees.ts](../src/core/worktrees.ts): unique branch + sibling checkout, pinned base commit, recorded integration target, canonical-path checks.
+- [Provider_Protocol.md](Provider_Protocol.md): Claude CLI 2.1.270 streaming/resume and Codex App Server 0.154.0 pinned protocol; explicit provider identity, approvals and stop behavior.
+- [model.ts](../src/core/model.ts): task/session identity and per-turn input/output/cache usage. [handoff.ts](../src/core/handoff.ts): official-extension workspace handoff.
+- [Implementation_Status.md](Implementation_Status.md): writer exclusion/concurrency and native immutable review foundations exist. Queueing, reviewed-state integration/discard, broader authenticated acceptance, and measured efficiency remain incomplete.
+
+Preserve these foundations. All designs/defaults below are proposals, not claims of shipped functionality.
+
+## 3. Proposed architecture
+
+| Layer | Owns | Must avoid |
+| --- | --- | --- |
+| Native editor + manager UI | Task cards, streaming display, terminal, diff, approvals | Model calls for rendering, status polling, or opening diffs |
+| Deterministic scheduler | Dependency graph, resource reservations, ownership, retries | LLM deciding routine queue transitions |
+| Context builder | Small task brief, relevant file/symbol references, checkpoint | Injecting whole repo or every worker transcript |
+| Provider adapters | Version/capabilities, session/turn IDs, events, cancellation, usage | Credential mediation, private-history scraping, silent fallback |
+| Worktree/environment manager | Base SHA, branch, setup, ports, test DB, process ownership | Treating checkout separation as a sandbox |
+| Review/integration queue | Reviewed snapshot identity, validation, serialized integration | Merging stale review or competing writes to target branch |
+| Local event/artifact store | Durable state, logs, evidence, usage provenance | Replaying raw logs into prompts automatically |
+
+Use a deterministic state machine:
+`queued → preparing → running → validating → ready_for_review → integrating → done`.
+Explicit alternate states: `blocked`, `awaiting_permission`, `interrupted`, `failed`.
+“Provider turn completed” does not imply “task validated.”
+
+Persist identifiers and ownership before launching work. Reconcile processes/checkouts after crashes; never silently relaunch an uncertain writer. Retain full diagnostics outside model context.
+
+## 4. Token policy
+
+Claude's guidance emphasizes small context, task-specific skills, reduced MCP overhead, appropriate reasoning effort, and preprocessing outside the model. Its displayed API-cost estimate is not a subscription bill. [Cost guidance](https://code.claude.com/docs/en/costs)
+
+Apply these proposed rules:
+
+1. **Brief once:** objective, acceptance checks, allowed scope, constraints, base SHA, relevant paths. Link details; retrieve only when necessary.
+2. **Search before reading:** filename/symbol lookup, targeted `rg`, then bounded excerpts. Exclude generated output, dependencies and irrelevant logs. Expand context when evidence is insufficient.
+3. **Keep instructions small:** shared invariants always loaded; specialized workflows on demand. Do not put this whole research guide into every agent's startup instructions.
+4. **Filter mechanically:** preserve full test logs as artifacts; send exit status, failed cases and relevant stack traces. Mark truncation and provide retrieval paths.
+5. **Resume related work:** continue the recorded provider session with the delta. Start a new session for unrelated objectives; cross-provider handoff uses a concise checkpoint, not an assumed transferable transcript.
+6. **Compact at useful boundaries:** preserve decisions, constraints, changed paths, unresolved failures and next action. Let providers manage their internal context; Hydra must not rewrite opaque session state.
+7. **Route by task risk:** cheaper/lower-effort options for bounded tasks only when configured and measured; deeper reasoning for architecture, unfamiliar failures, concurrency and integration. Never silently override the user's provider/model.
+8. **Stop repetition:** detect repeated failing commands or unchanged patches. After a bounded retry budget, return a blocker with evidence; don't loop indefinitely.
+9. **Use narrow review:** acceptance criteria + diff + relevant code/test evidence. Add independent model review for consequential changes; avoid full-repo reviews for every small patch.
+
+Prompt caching reduces repeated input processing cost under model-specific rules; it does not shrink the logical context or make output free. Preserve stable instructions/tool definitions where possible, measure actual cache usage, and account for compaction/cache rebuilds. Do not assume cache sharing across workers/providers or apply raw API cache settings to opaque CLI sessions. [OpenAI caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+
+## 5. Parallelism without runaway spend
+
+Claude documents higher token use and coordination overhead for teams, especially on sequential or same-file tasks. A subagent summary protects its parent's context but the worker still consumes tokens. [Teams](https://code.claude.com/docs/en/agent-teams), [Subagents](https://code.claude.com/docs/en/sub-agents)
+
+**Proposed starting policy:** one worker for small tasks; up to three active workers for independent substantial tasks. These are tuning defaults, not measured optima or provider limits.
+
+- Decompose by deliverable and file ownership. Stabilize shared interfaces first; queue dependent tasks until prerequisites land.
+- Give each writer one worktree and exclusive lease. Read-only research/review can use an immutable snapshot without another writable checkout.
+- Parallelize independent UI, backend and documentation only after defining their shared contract. Serialize shared schema, lockfile and central-interface changes.
+- Count nested provider workers in budgets where observable. If descendants cannot be metered/limited, label accounting incomplete and avoid automatic nested fan-out.
+- Bound active workers by provider quota/rate signals, CPU, memory, disk and environment capacity. Back off on rate limits; reserve budget for validation/integration.
+- Use event-driven updates. No token-consuming heartbeat prompts or repeated “are you done?” requests.
+- Launch multiple implementations of the same task only as an explicit quality experiment; include rejected candidates in cost.
+- Scale concurrency only when measured throughput improves without unacceptable rework or quality loss.
+
+## 6. Worktree and integration lifecycle
+
+Git worktrees share repository objects/refs while maintaining separate working directories and indexes. A branch ordinarily cannot be checked out in two worktrees. [Git worktree](https://git-scm.com/docs/git-worktree)
+
+1. Resolve base SHA and integration target; snapshot any intentionally included dirty input explicitly. Hydra's current creation starts at committed HEAD.
+2. Create unique branch/worktree outside the main checkout. Acquire task ownership; launch provider with that exact working directory.
+3. Run trusted, idempotent setup without an LLM: locked dependencies, task-specific ports, isolated test database/schema and temporary paths. Share package download caches when safe, not mutable dependency/build directories.
+4. Enforce filesystem/network policy through provider/OS isolation where supported. Separate checkouts do not isolate secrets, processes, ports or databases.
+5. Execute scoped task; record provider identity, turn results, resource usage and test evidence.
+6. Stop writers before review. Record base/head SHA plus fingerprints of staged, unstaged and untracked content. Preserve unsaved editor buffers.
+7. Validate the reviewed state; integrate serially in a dedicated integration checkout against the latest target. Revalidate if either side changed. Resolve conflicts explicitly and run affected integration checks.
+8. Advance target only after successful validation and applicable approval. Keep a rollback reference. Clean up only after preserving recoverable changes and stopping owned processes; never force-delete unknown dirty work.
+
+## 7. Minimal task contract
+
+```yaml
+task: unique-id
+goal: one observable outcome
+base_sha: immutable-commit
+depends_on: []
+write_scope: [src/feature/, tests/feature/]
+context: [relevant-path-or-symbol]
+acceptance: [behavior, test-command]
+budget: {max_turns: 12, max_retries: 2}
+result: [summary, changed_paths, commit_or_snapshot, tests, blockers]
+```
+
+Numbers are proposed starting limits. Scope is a coordination rule unless tool/sandbox enforcement exists. Dollar limits apply only where reliable billing and controls exist; never infer subscription quota from an API-price estimate.
+
+## 8. Implementation order and measurement
+
+| Priority | Extend | Exit evidence |
+| --- | --- | --- |
+| P0 | Existing adapters/ownership/recovery | Real authenticated Claude/Codex tool, approval, interrupt and resume acceptance; no duplicate writer |
+| P1 | Usage ledger + task brief/checkpoint | Correct per-turn versus cumulative accounting, known missing usage, smaller prompts with equivalent acceptance |
+| P2 | Scheduler + environment setup | Dependency queue, reservations, bounded retries and crash recovery; distinct ports/DBs |
+| P3 | Existing native review → integration | Stale-review rejection, serialized integration, conflict recovery and recoverable cleanup |
+| P4 | Optional ACP + retrieval improvements | Capability/version fixtures; better measured interoperability or accepted-work efficiency |
+
+Benchmark a fixed set of small fixes, cross-file features and refactors against single-agent baseline. Repeat runs; keep provider/model/effort and acceptance checks comparable. Measure:
+
+- Accepted tasks and regression rate; human review time and rework.
+- End-to-end latency and accepted tasks/hour.
+- All-worker input, output, cache-read/write and reasoning usage where exposed; avoid double-counting provider subsets/cumulative events.
+- Total API cost per accepted task, including failed/rejected runs; subscription quota only if provider reports it.
+- Context size, repeated reads, cache reuse, retries, conflicts and setup failures.
+
+Ship optimizations only when quality holds. No inspected source establishes that one IDE universally uses fewer tokens for equivalent work; Hydra needs its own measurements.

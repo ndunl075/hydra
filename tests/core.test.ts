@@ -24,6 +24,50 @@ test('Windows stop tolerates only taskkill not-found with independently confirme
   assert.doesNotThrow(() => checkWindowsTermination(1234, null, () => assert.fail('Successful taskkill needs no liveness probe')));
 });
 
+test('Windows tree stop accepts exited descendants only after all named processes are confirmed absent', () => {
+  const stderr = 'ERROR: The process with PID 8348 (child process of PID 12744) could not be terminated.\r\nReason: There is no running instance of the task.\r\n';
+  for (const code of [1, 128]) {
+    const error = Object.assign(new Error(stderr), { code });
+    const checked: number[] = [];
+    const absent = (pid: number, signal: 0) => {
+      assert.equal(signal, 0); checked.push(pid);
+      throw Object.assign(new Error('Process is gone'), { code: 'ESRCH' });
+    };
+    assert.doesNotThrow(() => checkWindowsTermination(12744, error, absent, stderr));
+    assert.deepEqual(checked, [12744, 8348]);
+    for (const live of [12744, 8348]) {
+      assert.throws(() => checkWindowsTermination(12744, error, (pid, signal) => pid === live ? true : absent(pid, signal), stderr), failure => failure === error);
+      assert.throws(() => checkWindowsTermination(12744, error, (pid, signal) => {
+        if (pid === live) throw Object.assign(new Error('Denied'), { code: 'EPERM' });
+        return absent(pid, signal);
+      }, stderr), failure => failure === error);
+    }
+    const second = 'ERROR: The process with PID 4321 (child process of PID 8348) could not be terminated.\nReason: There is no running instance of the task.\n';
+    checked.length = 0;
+    assert.doesNotThrow(() => checkWindowsTermination(12744, error, absent, stderr + second));
+    assert.deepEqual(checked, [12744, 8348, 4321]);
+    assert.throws(() => checkWindowsTermination(12744, error, (pid, signal) => pid === 4321 ? true : absent(pid, signal), stderr + second), failure => failure === error);
+    const stdout = 'SUCCESS: The process with PID 12744 (child process of PID 9999) has been terminated.\r\nSUCCESS: The process with PID 2468 (child process of PID 12744) has been terminated.\r\n';
+    checked.length = 0;
+    assert.doesNotThrow(() => checkWindowsTermination(12744, error, absent, stderr, stdout));
+    assert.deepEqual(checked, [12744, 8348, 2468], 'The live extension host is not a termination target');
+    assert.throws(() => checkWindowsTermination(12744, error, (pid, signal) => pid === 2468 ? true : absent(pid, signal), stderr, stdout), failure => failure === error);
+    assert.throws(() => checkWindowsTermination(12744, error, absent, stderr, stdout + 'ERROR: Access is denied.'), failure => failure === error);
+    const rootFailure = 'ERROR: The process with PID 12744 (child process of PID 9999) could not be terminated.\r\nReason: There is no running instance of the task.\r\n';
+    checked.length = 0;
+    assert.doesNotThrow(() => checkWindowsTermination(12744, error, (pid, signal) => pid === 9999 ? true : absent(pid, signal), rootFailure));
+    assert.deepEqual(checked, [12744], 'An exited root does not require its owning extension host to exit');
+    assert.throws(() => checkWindowsTermination(12744, error, () => true, rootFailure), failure => failure === error);
+    for (const diagnostic of [stderr + 'ERROR: Access is denied.', stderr.replace('There is no running instance of the task.', 'Access is denied.'), stderr + 'Unrecognized output', stderr.replace('8348', '0')]) {
+      assert.throws(() => checkWindowsTermination(12744, error, absent, diagnostic), failure => failure === error);
+    }
+  }
+  const missing = Object.assign(new Error('Root already exited'), { code: 128 });
+  assert.doesNotThrow(() => checkWindowsTermination(12744, missing, () => { throw Object.assign(new Error('Gone'), { code: 'ESRCH' }); }, 'ERROR: The process "12744" not found.\r\n'));
+  const denied = Object.assign(new Error('Denied'), { code: 5 });
+  assert.throws(() => checkWindowsTermination(12744, denied, () => assert.fail('Access-denied exit codes must not be suppressed'), stderr), failure => failure === denied);
+});
+
 const fixtures = path.resolve('.test-build', 'fixtures');
 async function fixture() {
   await mkdir(fixtures, { recursive: true });

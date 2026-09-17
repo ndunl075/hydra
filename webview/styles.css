@@ -160,3 +160,5 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
   --rail: var(--vscode-sideBar-background); --surface: var(--vscode-input-background);
   --border: var(--vscode-contrastBorder); --muted: var(--vscode-foreground); --green: var(--vscode-textLink-foreground);
 }
+.approval-request { padding: 20px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; }
+.approval-request pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; max-height: 320px; overflow: auto; }

@@ -24,12 +24,16 @@ await fs.writeFile(probe, await fs.readFile(path.join(root, 'tests', 'fixtures',
 const provider = path.join(fixture, process.platform === 'win32' ? 'provider.cmd' : 'provider');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 await fs.writeFile(provider, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "%~dp0probe.cjs" %*\r\n` : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(probe)} "$@"\n`, { mode: 0o755 });
+const codexProbe = path.join(fixture, 'codex-probe.cjs');
+await fs.writeFile(codexProbe, await fs.readFile(path.join(root, 'tests', 'fixtures', 'codex-cli.cjs')));
+const codexProvider = path.join(fixture, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+await fs.writeFile(codexProvider, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "%~dp0codex-probe.cjs" %*\r\n` : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(codexProbe)} "$@"\n`, { mode: 0o755 });
 await fs.mkdir(path.join(repository, '.vscode'));
 await fs.writeFile(path.join(repository, '.vscode', 'settings.json'), JSON.stringify({ 'hydra.codexPath': 'relative-invalid-path' }));
 const options = {
   extensionDevelopmentPath: root, extensionTestsPath: path.join(root, 'dist', 'smoke.cjs'),
   ...(localCode ? { vscodeExecutablePath: localCode } : {}),
-  extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_FIXTURE: fixture },
+  extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_CODEX_PROVIDER: codexProvider, HYDRA_TEST_FIXTURE: fixture },
   // The official Windows test runner uses cmd.exe and requires explicit quoting for positional folders.
   launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', 'vscode-user-data')]
 };

@@ -18,6 +18,23 @@ The parser validates `system/init` against version, working directory, permissio
 
 Sources: [public CLI programmatic usage](https://code.claude.com/docs/en/headless), [CLI reference](https://code.claude.com/docs/en/cli-reference), and [CLI authentication](https://code.claude.com/docs/en/authentication). A custom approval bridge and additional provider versions require separate verification. Hydra neither reads private provider history nor intermediates credentials.
 
-## Codex
+## Codex App Server 0.154.0
 
-Public help/version diagnostics are available. Managed App Server sessions are pending. The adapter must pin a CLI version and validate its generated schema, initialization, turns, approvals, stop, and resume before advertising those capabilities. The [official App Server contract](https://learn.chatgpt.com/docs/app-server) is the integration source; terminal and official-extension routes remain available.
+Hydra uses the unmodified official executable with `app-server --listen stdio://`. Version-specific TypeScript and JSON schemas were generated from pinned `@openai/codex@0.154.0`; the unmodified request-type dependency closure is checked into `src/core/generated/codex-0.154.0`. The stable initialization explicitly disables experimental APIs and attestation. No external transport/listener is opened, model is overridden, login is intermediated, or provider-private history is read.
+
+Initialization must identify the pinned CLI. Windows startup checks `windowsSandbox/readiness` and refuses missing/outdated setup. `thread/start` / `thread/resume` must return the exact worktree, pinned thread creation version, matching recorded UUID, on-request approvals, and effective workspace-write policy. Thread identity and owning provider are persisted before `turn/start`; no relative path, latest-session selector, or injected history is used. Old 0.5 records retain Claude ownership even after handoff.
+
+Turns supply text input with `text_elements: []`, exact worktree, on-request approval policy, and `sandboxPolicy` workspaceWrite with only the task worktree as an additional writable root, network disabled, and both temporary-directory write exclusions enabled. Root-thread/current-turn deltas update messages, authoritative completed message items replace deltas, and `tokenUsage.last` supplies per-turn token/cache figures. Other threads' output is excluded from the visible response but retained raw. Matching `turn/completed` and zero process exit are required; failures, interruptions, invalid JSON, identity mismatch, missing finals, and unclean exits never become success.
+
+Command, file, and network approval cards retain full request parameters and are bound to the current thread, turn, process, and server request ID. Responses offer only `accept` / `decline`; no amendments or session-wide grants. Resolved/completed/interrupted requests disappear, cannot be replayed, and are never persisted as actionable approvals. Unsupported requests receive an RPC error and stop the turn without granting permission. `turn/interrupt` targets the actual root turn; bounded cancellation and process close waits fall back to terminating the owned tree.
+
+| Behavior | Evidence | Limit |
+| --- | --- | --- |
+| Generated schema / stable initialization | Real pinned Windows CLI generated both schemas and returned matching initialization identity | Does not prove login or model/tool behavior |
+| Windows sandbox | Real isolated home returned read-only instead of requested editing policy. Production adapter then replayed the real initialization/readiness path and rejected `notConfigured`; raw sent methods contained no `turn/start` | No system setup was run. Editing requires official-client sandbox setup; authenticated acceptance pending |
+| Streaming / usage / resume | Local process fixtures and actual Windows VS Code hosts validate root output, final text, token metadata, and explicit thread-ID resume | Real authenticated Codex model/tool test remains pending |
+| Approvals | Fixtures/host verify command, network, file, accept/decline, stale-response rejection, and reload cleanup | Generic permissions, user input, MCP elicitation, and auth-token refresh are intentionally unsupported |
+| Interrupt / fallback | Fixtures and native host target active thread/turn; Windows descendant heartbeat stops on failed interrupt fallback | Real tools-running interruption/resume acceptance pending |
+| Storage / ownership | Local raw stdin/stdout/stderr logs and atomic history; native host blocks overlapping writers and shares terminal concurrency | No queue, automatic resume, or external background survival promised |
+
+The [official App Server contract](https://learn.chatgpt.com/docs/app-server) and [Windows sandbox guide](https://learn.chatgpt.com/docs/windows/windows-sandbox) are the public integration sources. Terminal and official-extension routes remain available for other CLI versions and unsupported flows. This is a pinned structured foundation, not completion of M3.

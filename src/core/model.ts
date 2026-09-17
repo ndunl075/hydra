@@ -4,7 +4,7 @@ export interface Task {
   id: string; title: string; prompt: string; repository: string; worktree: string;
   branch: string; baseCommit: string; integrationTarget: string; provider: Provider;
   interface: 'interactive-cli' | 'official-extension' | 'managed-cli'; state: TaskState; createdAt: string; updatedAt: string;
-  sessionId?: string; providerVersion?: string;
+  sessionId?: string; sessionProvider?: Provider; providerVersion?: string;
   error?: string;
 }
 export interface TaskFile { path: string; status: string }
@@ -16,12 +16,14 @@ export interface ProviderDiagnostic {
 }
 export interface Draft { title: string; prompt: string; provider: Provider }
 export interface Turn {
+  provider?: Provider;
   id: string; prompt: string; text: string; status: 'running' | 'completed' | 'error' | 'interrupted';
   createdAt: string; error?: string; permissionDenials?: number;
   textTruncated?: boolean;
   usage?: { input: number; output: number; cacheRead?: number; cacheCreated?: number; estimatedUsd?: number };
 }
-export interface SessionView { version: 1; turns: Turn[]; active?: boolean; totalTurns?: number }
+export interface Approval { id: string; kind: 'command' | 'file' | 'network'; detail: string }
+export interface SessionView { version: 1; turns: Turn[]; active?: boolean; totalTurns?: number; approvals?: Approval[] }
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
@@ -36,6 +38,7 @@ export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics'; id: string }
   | { type: 'followUp'; id: string; prompt: string }
+  | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
@@ -52,6 +55,11 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'approve') {
+    const id = string('id'), approvalId = string('approvalId'), decision = string('decision');
+    if (!/^[a-f0-9]{12}$/.test(id) || !/^[a-f0-9]{12}$/.test(approvalId) || !['accept', 'decline'].includes(decision)) throw new Error('Invalid approval decision.');
+    return { type, id, approvalId, decision } as ClientMessage;
+  }
   if (type === 'checkProvider' || type === 'showProviderDiagnostics') {
     const provider = string('provider');
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');

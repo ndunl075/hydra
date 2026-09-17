@@ -46,12 +46,17 @@ export async function run(): Promise<void> {
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
-    const managedTask = tasks.find(task => task.interface === 'managed-cli');
+    const managedTask = tasks.find(task => task.interface === 'managed-cli' && task.provider === 'claude');
     assert.ok(managedTask?.sessionId, 'Managed session identity survives reload');
     const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', managedTask.id);
     assert.equal(session?.turns.length, 2);
     assert.equal(session.turns[0]?.text, 'Hello ü');
     assert.equal(session.turns[1]?.status, 'interrupted');
+    const codexTask = tasks.find(task => task.interface === 'managed-cli' && task.provider === 'codex');
+    assert.ok(codexTask?.sessionId); assert.equal(codexTask.sessionProvider, 'codex');
+    const codexSession = await vscode.commands.executeCommand<SessionView>('hydra.getSession', codexTask.id);
+    assert.equal(codexSession?.turns.length, 3); assert.equal(codexSession.turns[0]?.text, 'Codex ü complete');
+    assert.equal(codexSession.turns[2]?.status, 'interrupted'); assert.equal(codexSession.approvals, undefined);
     const workspaces = await Promise.all((['claude', 'codex'] as const).map((provider, index) => createHandoffWorkspace(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs'), tasks[index]!, provider)));
     await writeFile(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs.json'), JSON.stringify(workspaces));
     console.log('PASS: fresh host recovers three tasks without inventing completion or launching a model request.');
@@ -85,7 +90,7 @@ export async function run(): Promise<void> {
   if (repository && process.env.HYDRA_TEST_PROVIDER) {
     const config = vscode.workspace.getConfiguration('hydra');
     await config.update('claudePath', process.env.HYDRA_TEST_PROVIDER, vscode.ConfigurationTarget.Workspace);
-    await config.update('codexPath', process.env.HYDRA_TEST_PROVIDER, vscode.ConfigurationTarget.Workspace);
+    await config.update('codexPath', process.env.HYDRA_TEST_CODEX_PROVIDER, vscode.ConfigurationTarget.Workspace);
     await config.update('maxConcurrentTasks', 2, vscode.ConfigurationTarget.Workspace);
     const diagnostic = await vscode.commands.executeCommand<ProviderDiagnostic>('hydra.checkProvider', 'claude');
     assert.equal(diagnostic?.status, 'checked'); assert.equal(diagnostic.version, '2.1.270');
@@ -140,5 +145,30 @@ export async function run(): Promise<void> {
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id))?.turns[1]?.status, 'interrupted');
     await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
     console.log('PASS: managed Claude streams and persists a result, resumes its explicit ID, blocks overlapping writers, shares concurrency with terminals, and stops without inventing completion.');
+    for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
+    await vscode.commands.executeCommand('hydra.startManaged', tasks[1]!.id);
+    await waitFor(async () => { const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id); return session?.turns[0]?.status === 'completed' && !session.active; });
+    assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[0]?.text, 'Codex ü complete');
+    await vscode.commands.executeCommand('hydra.followUp', tasks[1]!.id, 'approval');
+    await waitFor(async () => !!(await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.approvals?.length);
+    const pending = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id);
+    const approvalId = pending!.approvals![0]!.id;
+    await vscode.commands.executeCommand('hydra.approve', tasks[1]!.id, approvalId, 'accept');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.approve', tasks[1]!.id, approvalId, 'accept'), /no longer pending|No active/);
+    await waitFor(async () => { const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id); return session?.turns[1]?.status === 'completed' && !session.active; });
+    await vscode.commands.executeCommand('hydra.followUp', tasks[1]!.id, 'hold');
+    await waitFor(async () => (await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[2]?.text === 'Streaming ü');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id), /managed process/);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffClaude', tasks[1]!.id), /managed process/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.stopTask', tasks[1]!.id);
+    await vscode.commands.executeCommand('hydra.stopTask', tasks[2]!.id);
+    assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[1]!.id))?.turns[2]?.status, 'interrupted');
+    const codexRequests = (await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(codexRequests.find(message => message.method === 'thread/resume').params.threadId, '12345678-1234-7234-9234-123456789abc');
+    assert.ok(codexRequests.find(message => message.method === 'turn/interrupt'));
+    console.log('PASS: managed Codex streams, resumes its explicit thread, routes one approval, rejects stale approvals and overlapping writers, shares concurrency, and interrupts the active turn.');
   }
 }

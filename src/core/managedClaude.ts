@@ -27,10 +27,11 @@ export class ManagedClaude {
   }
   private async startTurn(task: Task, executable: string, prompt: string): Promise<void> {
     if (task.provider !== 'claude' || task.providerVersion !== testedClaudeVersion) throw new Error('Managed Claude requires the tested CLI version 2.1.270. Check the configured provider first.');
+    if (task.sessionId && task.sessionProvider && task.sessionProvider !== 'claude') throw new Error('This recorded session belongs to another provider. Create a separate Claude task.');
     if (task.interface === 'official-extension' || task.state === 'external' || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     if (!this.views.has(task.id)) await this.load(task);
     const view = this.views.get(task.id)!;
-    const turn: Turn = { id: randomBytes(6).toString('hex'), prompt, text: '', status: 'running', createdAt: new Date().toISOString() };
+    const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'claude', prompt, text: '', status: 'running', createdAt: new Date().toISOString() };
     const args = claudeArguments(task.sessionId);
     view.turns.push(turn);
     task.interface = 'managed-cli'; task.state = 'running'; task.error = undefined; task.updatedAt = new Date().toISOString();
@@ -76,6 +77,7 @@ export class ManagedClaude {
         protocol.push(data);
         if (protocol.sessionId && task.sessionId !== protocol.sessionId) {
           task.sessionId = protocol.sessionId;
+          task.sessionProvider = 'claude';
           void this.persistTask().catch(fail);
         }
         update();
@@ -89,7 +91,7 @@ export class ManagedClaude {
         clearTimeout(saveTimer);
         log('stdout', stdout.end()); log('stderr', stderr.end());
         if (!failure) try { protocol.end(); } catch (error) { failure = String(error); }
-        if (protocol.sessionId) task.sessionId = protocol.sessionId;
+        if (protocol.sessionId) { task.sessionId = protocol.sessionId; task.sessionProvider = 'claude'; }
         turn.status = stopped ? 'interrupted' : failure || code !== 0 || !protocol.resultReceived || turn.error ? 'error' : 'completed';
         if (turn.status !== 'completed') turn.error = failure || turn.error || (stopped ? 'Provider process stopped. The turn was not completed.' : `Provider exited ${code} without a valid successful result.`);
         task.state = turn.status === 'completed' ? 'idle' : turn.status;

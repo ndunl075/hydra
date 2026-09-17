@@ -23,6 +23,7 @@ export class SessionStore {
     const ids = new Set<string>();
     if (data.version !== 1 || !Array.isArray(data.turns) || data.turns.some(turn => {
       if (!turn || typeof turn.id !== 'string' || !/^[a-f0-9]{12}$/.test(turn.id) || ids.has(turn.id) || typeof turn.prompt !== 'string' || typeof turn.text !== 'string' || typeof turn.createdAt !== 'string' || !['running', 'completed', 'error', 'interrupted'].includes(turn.status) ||
+        (turn.provider !== undefined && !['claude', 'codex'].includes(turn.provider)) ||
         (turn.error !== undefined && typeof turn.error !== 'string') || (turn.permissionDenials !== undefined && (!number(turn.permissionDenials) || !Number.isInteger(turn.permissionDenials))) ||
         (turn.usage !== undefined && (!turn.usage || !number(turn.usage.input) || !number(turn.usage.output) || ['cacheRead', 'cacheCreated', 'estimatedUsd'].some(key => {
           const value = (turn.usage as unknown as Record<string, unknown>)[key]; return value !== undefined && !number(value);
@@ -33,7 +34,9 @@ export class SessionStore {
     return data;
   }
   save(id: string, view: SessionView): Promise<void> {
-    const directory = this.directory(id), data = JSON.stringify(view, null, 2);
+    // Pending RPC approvals belong to a live connection and must never survive reload.
+    const { approvals: _approvals, active: _active, ...history } = view;
+    const directory = this.directory(id), data = JSON.stringify(history, null, 2);
     return this.enqueue(async () => {
       await mkdir(directory, { recursive: true });
       const temporary = path.join(directory, `${randomUUID()}.tmp`);

@@ -19,15 +19,16 @@ A Windows-first VS Code extension for switching between ordinary editing and an 
 - Hand off an idle or stopped task with **Open in Claude Code** or **Open in Codex**. A generated `.code-workspace` opens in a separate window with only that exact checkout, the local task prompt, and the official extension recommendation.
 - Run **Check Claude Code / Codex** in the manager to inspect the configured CLI version and public help, or use **Hydra: Check Default Provider Capabilities**. **View diagnostics** opens the captured arguments, stdout, stderr, and exit status locally.
 - **Start managed Claude** streams a task through verified Claude CLI 2.1.270. Follow-ups resume its explicit session ID. Responses, raw events, and provider-reported usage are saved locally; **Stop process** terminates the owned process tree and leaves the turn interrupted.
+- **Start managed Codex** uses pinned CLI 0.154.0 App Server: streamed text, recorded thread-ID follow-ups, provider token usage, scoped command/file/network approval cards, and explicit turn interruption. Windows sandbox readiness is checked before any model turn.
 - Saved records recover after reload. Missing sessions become interrupted, never completed. Hydra stops its owned terminals on extension shutdown and does not promise background survival or automatic CLI resume.
 
-The manager occupies a supported editor tab alongside native editors and terminals. It does not promise exact restoration of arbitrary grid layouts. Codex structured sessions, model controls, interactive approvals, native diff review, integration, and discard are subsequent features.
+The manager occupies a supported editor tab alongside native editors and terminals. It does not promise exact restoration of arbitrary grid layouts. Model controls, broader provider approval prompts, native diff review, integration, and discard are subsequent features. Authenticated Codex acceptance remains pending.
 
 ## Provider and worktree settings
 
 Install the official Claude Code and/or Codex CLI separately using its supported login flow. Hydra searches PATH; set **Hydra: Claude Path** or **Hydra: Codex Path** to an absolute executable path if needed. Executable presence does not prove authentication or protocol compatibility. Windows `.cmd` / `.bat` shims are launched through PowerShell with an encoded, quoted executable path; task prompts are never inserted into shell commands.
 
-The default limit is two provider terminals. Extra launches are refused with an explanation; this terminal prototype does not implement the future managed-session queue. Tasks can still be created while that limit is reached. Configure **Hydra: Worktree Root** to choose an absolute directory outside the main repository. No secrets, ignored files, or dependencies are copied automatically.
+The default limit is two active managed processes or provider terminals. Extra launches are refused with an explanation; this terminal prototype does not implement the future managed-session queue. Tasks can still be created while that limit is reached. Configure **Hydra: Worktree Root** to choose an absolute directory outside the main repository. No secrets, ignored files, or dependencies are copied automatically.
 
 One Hydra window owns each canonical repository at a time. A second owner displays an error and disables task operations. Records are local under VS Code's extension global-storage directory, with atomic, versioned metadata. Corrupt records are preserved for diagnosis. Worktrees isolate files and indexes; they are not a security sandbox.
 
@@ -43,7 +44,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.5.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
+Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.6.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 
@@ -61,7 +62,7 @@ The bridge uses `claude-vscode.editor.open` from the public Claude Code extensio
 
 Checks are explicit, never triggered by mode changes, task creation, startup, or refresh. They run only `--version`, `--help`, and (for Codex) `app-server --help`, with an eight-second limit per call and a combined 256 KiB stdout/stderr limit. Timeout, cancellation, and excess output terminate the owned probe process tree. No task prompt, authentication request, session, or model request is sent.
 
-The manager distinguishes help-advertised options from verified adapter capabilities. Recognizing a version or option does not prove authentication, account billing, streaming compatibility, or resume support. Unknown output and failed probes remain actionable diagnostics; the interactive terminal stays available. Checks reset on Hydra configuration changes or reload. Managed Claude supports only the separately verified version below. Codex will use its [documented App Server protocol](https://learn.chatgpt.com/docs/app-server), with version-specific schema validation, in its adapter feature.
+The manager distinguishes help-advertised options from verified adapter capabilities. Recognizing a version or option does not prove authentication, account billing, streaming compatibility, or resume support. Unknown output and failed probes remain actionable diagnostics; the interactive terminal stays available. Checks reset on Hydra configuration changes or reload. Managed sessions support only the pinned versions documented below. Public help is a metadata check, not an authenticated session test.
 
 ## Managed Claude sessions
 
@@ -74,3 +75,15 @@ A finished model turn leaves the task idle for follow-up, rather than claiming t
 Owned session storage contains atomic conversation snapshots and sequenced append-only raw event logs. Reload recovers text and session IDs, marks unfinished turns interrupted, and never sends a model request automatically. The view shows ten recent turns and up to 50,000 response characters per turn, with visible truncation notices; full local output is retained. A 32 MiB per-turn output guard stops excessive output with an error. Token figures are provider-reported, and dollar figures are provider estimates, not an asserted bill or savings percentage.
 
 Managed processes and terminal writers share the configured concurrency cap; extra starts are refused rather than queued. An active managed writer blocks terminal launch and extension handoff for that task. Mode changes preserve running processes; extension shutdown stops them. See [the tested protocol and acceptance limits](docs/Provider_Protocol.md). Automated host tests use local fixtures without model requests; a separate real, tools-disabled CLI test confirmed streamed text, session-ID follow-up, and usage in a scratch directory.
+
+## Managed Codex sessions
+
+The adapter supports official Codex CLI **0.154.0** only. Hydra rechecks its version/help before each turn, initializes the documented stable stdio App Server protocol, and starts or resumes only the recorded root thread ID. It validates the effective worktree, version, approval policy, and sandbox before sending the prompt. The provider retains login, configured model, and environment; Hydra does not read credentials or private history. Billing routes are not asserted.
+
+Turns request a workspace-write sandbox confined to the task worktree, with restricted network and temporary-directory write exclusions. Command, file, and network requests appear as scoped approval cards. **Allow this request** or **Decline** answers that one live request; no persistent policy amendment or session-wide grant is offered. Full provider request details remain visible and in local raw diagnostics. Unsupported permission, elicitation, user-input, or credential-refresh prompts fail explicitly and stop the owned process; use the official client for those flows.
+
+On Windows, Hydra checks public `windowsSandbox/readiness` without changing system settings. If setup is absent or needs updating, complete it in the official Codex client and retry. A returned read-only or incompatible policy also stops startup before a model turn; Hydra never treats a failed sandbox request as successful editing access.
+
+**Stop process** sends `turn/interrupt` for the exact active thread/turn, waits for completion, and falls back to stopping its owned process tree if cancellation fails. A turn requires a matching final status and clean process exit to finish; a finished turn leaves the code task idle for review. Reload preserves responses and provider-owned IDs, clears pending approvals, marks unfinished turns interrupted, and never restarts a model automatically. A session cannot be resumed through a different provider after handoff.
+
+Version-generated request types are checked into source with provenance. Local fixtures and real VS Code hosts validate streaming, resume, approvals, interruption, storage, errors, writer exclusion, and shared concurrency without model requests. The real Windows CLI passed schema generation and initialization; its isolated test home lacked a ready editing sandbox. **Authenticated Codex model/tool acceptance is still pending**, and that limitation is recorded in [protocol evidence](docs/Provider_Protocol.md). See the [official App Server guide](https://learn.chatgpt.com/docs/app-server).

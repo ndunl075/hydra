@@ -11,6 +11,7 @@ import type { ThreadStartParams } from './generated/codex-0.154.0/v2/ThreadStart
 import type { ThreadResumeParams } from './generated/codex-0.154.0/v2/ThreadResumeParams';
 import type { TurnStartParams } from './generated/codex-0.154.0/v2/TurnStartParams';
 import type { TurnInterruptParams } from './generated/codex-0.154.0/v2/TurnInterruptParams';
+import { parseEffectiveModel, readModelCatalog, requireAdvertisedSelection, verifyEffectiveModel } from './modelSelection';
 
 export class ManagedCodex {
   private readonly views = new Map<string, SessionView>();
@@ -32,7 +33,8 @@ export class ManagedCodex {
     if (task.interface === 'official-extension' || task.state === 'external') throw new Error('Stop the existing task writer first.');
     if (!this.views.has(task.id)) await this.load(task);
     const view = this.views.get(task.id)!;
-    const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'codex', prompt, text: '', status: 'running', createdAt: new Date().toISOString() };
+    const selection = task.modelSelection ? { ...task.modelSelection } : undefined;
+    const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'codex', prompt, text: '', status: 'running', createdAt: new Date().toISOString(), ...(selection ? { modelSettings: { requested: selection } } : {}) };
     view.turns.push(turn); view.approvals = [];
     task.interface = 'managed-cli'; task.state = 'running'; task.error = undefined; task.updatedAt = new Date().toISOString();
     let sequence = 0;
@@ -171,14 +173,22 @@ export class ManagedCodex {
         const readiness = record(await request('windowsSandbox/readiness', undefined));
         if (readiness.status !== 'ready') throw new Error(`Codex Windows sandbox ${readiness.status === 'updateRequired' ? 'needs updating' : 'is not configured'}. Complete sandbox setup in the official Codex client, then retry. Hydra does not change Windows security settings.`);
       }
-      const options = { cwd: task.worktree, approvalPolicy: 'on-request', sandbox: 'workspace-write' } satisfies ThreadStartParams;
+      if (selection) requireAdvertisedSelection(await readModelCatalog(request), selection);
+      if (stopped) { await kill(); return; }
+      const options = { cwd: task.worktree, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(selection ? { model: selection.model, config: { model_reasoning_effort: selection.effort } } : {}) } satisfies ThreadStartParams;
       const response = task.sessionId ? await request('thread/resume', { ...options, threadId: providerId(task.sessionId) } satisfies ThreadResumeParams) : await request('thread/start', options);
       const threadId = validateCodexThread(response, task.worktree, task.sessionId);
       task.sessionId = threadId; task.sessionProvider = 'codex'; await this.persistTask();
+      if (selection || record(response).model !== undefined) {
+        turn.modelSettings = { ...turn.modelSettings, effective: parseEffectiveModel(response) };
+        await this.store.save(task.id, view);
+        if (selection) verifyEffectiveModel(response, selection);
+      }
       if (stopped) { await kill(); return; }
       protocol = new CodexTurn(threadId, turn);
       const started = record(await request('turn/start', {
         threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], cwd: task.worktree, approvalPolicy: 'on-request',
+        ...(selection ? { model: selection.model, effort: selection.effort } : {}),
         sandboxPolicy: { type: 'workspaceWrite', writableRoots: [task.worktree], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true }
       } satisfies TurnStartParams));
       protocol.started(started.turn); this.changed();

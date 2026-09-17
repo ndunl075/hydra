@@ -195,6 +195,9 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 .context-details[open] > summary { margin-bottom: 16px; }
 .context-preview { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.6; max-height: 340px; overflow-y: auto; padding: 12px; background: var(--surface); border-radius: 4px; }
 .context-details form { display: grid; gap: 14px; }
+.model-controls { margin-top: 16px; }
+.model-controls .task-actions { margin: 0; }
+.model-controls + .form-note { margin-top: 12px; }
 .brief-fields { display: grid; gap: 16px; }
 .brief-fields textarea, .context-details textarea { min-height: 64px; }
 .usage-scopes { display: flex; gap: 8px; margin-bottom: 18px; }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Task } from './model';
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
+import { parseModelSelection } from './modelSelection';
 export class LocalStore {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -25,6 +26,10 @@ export class LocalStore {
         (task.providerVersion !== undefined && typeof task.providerVersion !== 'string') ||
         (task.sessionProvider !== undefined && !['claude', 'codex'].includes(task.sessionProvider))) throw new Error('Invalid task record. Original data has been retained.');
       ids.add(task.id);
+      if (task.modelSelection !== undefined) {
+        if (task.provider !== 'codex') throw new Error('Model overrides are supported only for managed Codex tasks.');
+        parseModelSelection(task.modelSelection);
+      }
       if (task.brief !== undefined && buildTaskPrompt(parseBrief(task.brief)) !== task.prompt) throw new Error('Task brief and saved prompt disagree. Original data has been retained.');
       if (task.handoffSummary !== undefined) parseHandoffSummary(task.handoffSummary);
       if (task.contextLockedAt !== undefined && (typeof task.contextLockedAt !== 'string' || !Number.isFinite(Date.parse(task.contextLockedAt)))) throw new Error('Invalid task context lock.');

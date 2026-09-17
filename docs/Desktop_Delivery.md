@@ -1,6 +1,6 @@
 # Desktop delivery and onboarding
 
-Hydra is its own Windows IDE, as clarified by Nico on 17 September 2026. The extension prototype becomes a built-in module of a branded Code - OSS desktop build, not a requirement to install VS Code. A `.vsix` remains a core development artifact. No standalone installer, settings importer, or account-onboarding UI is shipped yet. See [Standalone build](Standalone_Build.md) for the first desktop target.
+Hydra is its own Windows IDE, as clarified by Nico on 17 September 2026. The extension prototype becomes a built-in module of a branded Code - OSS desktop build, not a requirement to install VS Code. A `.vsix` remains a core development artifact. The standalone build passed Windows native acceptance in PR #11. Settings import is implemented as the next feature; its native acceptance must pass before merge. No standalone installer or account-onboarding UI is shipped yet. See [Standalone build](Standalone_Build.md) and [settings import](Settings_Import.md).
 
 ## Installation
 
@@ -35,7 +35,7 @@ Official sources checked on 17 September 2026: [Codex App Server](https://learn.
 
 1. In-IDE Settings plus dark/light native themes implemented in version 0.8.0 as a separate feature PR; Windows native-host checks passed. Manual visual/accessibility acceptance remains pending.
 2. Build and test Hydra's branded Code - OSS desktop distribution with isolated profiles and the existing workflow built in. This is the immediate priority following Nico's correction. A tested Windows executable is required before calling this gate complete. [Microsoft's distribution and Marketplace guidance](https://code.visualstudio.com/docs/supporting/faq) requires a distinct extension-distribution route for forks; do not assume access to Microsoft Marketplace or redistribute provider extensions without checking their terms.
-3. Implement import preview, merge/backup/rollback, and onboarding persistence against Hydra's isolated profile. Keep import unavailable in the host extension; importing Cursor preferences into somebody's active VS Code profile is not the product behavior.
+3. Import preview, merge/backup/rollback, and active-profile targeting are implemented in version 0.10.0; native app acceptance is required before merge. Import remains unavailable in the VS Code host. Skippable onboarding and completion persistence are the next separate feature.
 4. Implement supported account setup, runtime availability, public status, cancellation, and real-provider acceptance without model calls on login.
 5. Bundle the tested desktop build into the Windows installer with the optional shortcut and first-run launch. Validate updates, uninstall, data preservation, both shortcut choices, and onboarding in clean environments.
 

@@ -13,9 +13,23 @@ export function processLaunch(executable: string, args: string[]): { executable:
   }
   return { executable, args };
 }
+export function checkWindowsTermination(pid: number, error: (Error & { code?: string | number | null }) | null, probe: (pid: number, signal: 0) => unknown = process.kill): void {
+  if (!error) return;
+  // taskkill starts asynchronously: an owned process can exit after our alive
+  // check. Only its not-found result plus an independent absence check is safe
+  // to ignore; permission failures must still reach the caller.
+  if (error.code === 128) {
+    try { probe(pid, 0); }
+    catch (probeError) { if ((probeError as NodeJS.ErrnoException).code === 'ESRCH') return; }
+  }
+  throw error;
+}
 export async function terminateProcessTree(pid: number): Promise<void> {
   if (process.platform === 'win32') {
-    await new Promise<void>((resolve, reject) => execFile(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, error => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => execFile(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, error => {
+      try { checkWindowsTermination(pid, error); resolve(); }
+      catch (failure) { reject(failure); }
+    }));
   } else {
     try { process.kill(-pid, 'SIGKILL'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }

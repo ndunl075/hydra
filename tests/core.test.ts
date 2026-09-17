@@ -7,8 +7,22 @@ import { OwnershipLock } from '../src/core/ownership';
 import { changedFiles, createWorktree, git, parseStatus, resolveTaskFile } from '../src/core/worktrees';
 import { parseMessage, type Task } from '../src/core/model';
 import { assertCliAllowed, createHandoffWorkspace, handoffTask, parseHandoff, officialProviders } from '../src/core/handoff';
-import { runProbe } from '../src/core/process';
+import { checkWindowsTermination, runProbe } from '../src/core/process';
 import { checkProvider } from '../src/core/diagnostics';
+
+test('Windows stop tolerates only taskkill not-found with independently confirmed process absence', () => {
+  const notFound = Object.assign(new Error('taskkill process not found'), { code: 128 });
+  const absent = (pid: number, signal: 0) => {
+    assert.equal(pid, 1234); assert.equal(signal, 0);
+    throw Object.assign(new Error('Process is gone'), { code: 'ESRCH' });
+  };
+  assert.doesNotThrow(() => checkWindowsTermination(1234, notFound, absent));
+  assert.throws(() => checkWindowsTermination(1234, notFound, () => true), error => error === notFound);
+  assert.throws(() => checkWindowsTermination(1234, notFound, () => { throw Object.assign(new Error('Denied'), { code: 'EPERM' }); }), error => error === notFound);
+  const denied = Object.assign(new Error('taskkill access denied'), { code: 1 });
+  assert.throws(() => checkWindowsTermination(1234, denied, () => assert.fail('Permission failures must not probe or be suppressed')), error => error === denied);
+  assert.doesNotThrow(() => checkWindowsTermination(1234, null, () => assert.fail('Successful taskkill needs no liveness probe')));
+});
 
 const fixtures = path.resolve('.test-build', 'fixtures');
 async function fixture() {

@@ -1,0 +1,78 @@
+{
+  "name": "hydra-agent-manager",
+  "displayName": "Hydra",
+  "description": "Editor and Agents modes with isolated Git worktrees and native provider terminals.",
+  "version": "0.1.0",
+  "publisher": "nico-dunlap",
+  "repository": { "type": "git", "url": "https://github.com/ndunl075/hydra.git" },
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "npm run build && npm run test:smoke",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.1.0.vsix",
+    "vscode:prepublish": "npm run check && npm run build",
+    "test:smoke": "node scripts/smoke.mjs"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "hydra.toggleMode",
+        "title": "Hydra: Toggle Editor / Agents",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "hydra.openAgents",
+        "title": "Hydra: Open Agents"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "hydra.toggleMode",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Hydra Dark",
+        "uiTheme": "vs-dark",
+        "path": "themes/hydra-dark.json"
+      }
+    ]
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/vscode": "1.95.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "@vscode/test-electron": "^2.4.1"
+  }
+}

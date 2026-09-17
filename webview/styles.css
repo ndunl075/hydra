@@ -186,3 +186,7 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 .commit-review label { display: grid; gap: 8px; }
 .commit-review input { width: 100%; min-width: 0; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 9px 10px; }
 .commit-review .primary { justify-self: start; }
+.schedule-controls fieldset { border: 1px solid var(--vscode-panel-border); padding: 12px; margin: 12px 0; }
+.schedule-controls fieldset label { display: block; margin: 8px 0; }
+.schedule-controls input[type="checkbox"] { width: auto; margin-right: 8px; }
+.schedule-controls code { overflow-wrap: anywhere; }

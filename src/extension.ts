@@ -1,3 +1,5 @@
+import { TaskScheduler, configureSchedule, pendingSchedule } from './core/scheduler';
+import { prepareScheduledTask } from './core/schedulerGit';
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
@@ -71,6 +73,8 @@ class Manager {
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
+  private readonly scheduler: TaskScheduler;
+  private schedulerReady = false;
   private readonly review: ReviewDocuments;
   private readonly commitReviews = new Map<string, PreparedReview>();
   private pendingCommit?: Promise<ReviewedCommit>;
@@ -86,7 +90,21 @@ class Manager {
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
     this.review = new ReviewDocuments(context);
-    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.publish(); }, error => this.report(error));
+    this.scheduler = new TaskScheduler({
+      tasks: () => this.tasks,
+      capacity: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2))),
+      liveCount: () => this.terminals.size + this.managed.count,
+      enabled: () => this.schedulerReady && !this.busy && !this.closing && !this.disabled && !this.handoff && vscode.workspace.isTrusted,
+      persist: () => this.persist(),
+      prepare: task => prepareScheduledTask(task, this.tasks, async item => {
+        await this.verifyWorktree(item);
+        if (this.terminals.has(item.id) || this.managed.has(item.id) || item.state === 'external' || item.state === 'running') throw new Error('Stop the task writer before dependency preparation.');
+        const root = await realpath(item.worktree);
+        if (vscode.workspace.textDocuments.some(document => document.isDirty && document.uri.scheme === 'file' && isInside(root, document.uri.fsPath))) throw new Error('Save or revert unsaved task buffers before dependency preparation.');
+      }),
+      launch: (task, request) => this.handle({ ...request, id: task.id }, true)
+    });
+    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error));
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -109,6 +127,9 @@ class Manager {
       return structuredClone(this.getTask(this.selectedId!));
     });
     command('hydra.launchTask', (id: string) => this.handle({ type: 'launch', id }));
+    command('hydra.configureSchedule', (id: string, dependencies: string[], startFromDependency?: string) => this.handle({ type: 'configureSchedule', id, dependencies, startFromDependency }));
+    command('hydra.cancelQueued', (id: string) => this.handle({ type: 'cancelQueued', id }));
+    command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
     command('hydra.listTasks', () => structuredClone(this.tasks));
     command('hydra.handoffClaude', (id?: string) => this.handoffCommand('claude', id));
@@ -153,6 +174,7 @@ class Manager {
     }));
     try {
       this.tasks = await this.store.load();
+      this.scheduler.reconcile();
       await this.refreshRepositories();
       if (vscode.workspace.isTrusted) {
         // Lock each canonical repository, so different workspace configurations cannot own the same repo.
@@ -182,7 +204,9 @@ class Manager {
       this.handoff = parseHandoff(vscode.workspace.getConfiguration('hydra').get('handoff'));
       if (this.handoff) { await this.verifyHandoffWorkspace(); await this.openAgents(); }
     } catch (error) { this.disabled = true; this.report(error); }
+    this.schedulerReady = true;
     await this.publish();
+    await this.scheduler.drain();
   }
   private async handoffCommand(provider: 'claude' | 'codex', id?: string): Promise<string | undefined> {
     if (!id) {
@@ -211,7 +235,7 @@ class Manager {
     const config = vscode.workspace.getConfiguration('hydra');
     this.providers = await Promise.all(['claude', 'codex'].map(provider => findProvider(provider as 'claude' | 'codex', config.get<string>(`${provider}Path`))));
   }
-  private async refresh(): Promise<void> { this.error = undefined; this.fileCache = undefined; await this.refreshProviders(); await this.publish(); }
+  private async refresh(): Promise<void> { this.error = undefined; this.fileCache = undefined; await this.refreshProviders(); await this.publish(); await this.scheduler.drain(); }
   private describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
   private report(error: unknown): void {
     this.error = this.describe(error);
@@ -235,7 +259,20 @@ class Manager {
     if (await realpath(taskCommon.trim()) !== await realpath(mainCommon.trim())) throw new Error('Task worktree belongs to a different repository.');
     if (branch.trim() !== task.branch) throw new Error('Task worktree branch changed. Restore its recorded branch before launching.');
   }
-  private async persist(): Promise<void> { await this.store.save(this.tasks); await this.publish(); }
+  private async persist(): Promise<void> {
+    for (const task of this.tasks) {
+      const s = task.schedule;
+      if (!s || !['running', 'waiting-for-approval'].includes(s.state)) continue;
+      if (this.managed.has(task.id)) s.state = this.managed.view(task.id)?.approvals?.length ? 'waiting-for-approval' : 'running';
+      else if (!this.terminals.has(task.id)) {
+        s.state = task.state === 'idle' ? 'finished' : task.state === 'error' ? 'blocked' : 'interrupted';
+        s.reason = task.error;
+        if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;
+      }
+    }
+    await this.store.save(this.tasks); await this.publish();
+    if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
+  }
   private reviewBlocked(task: Task): boolean { return this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
     if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
@@ -322,7 +359,7 @@ class Manager {
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.css'));
     return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
   }
-  private async handle(value: unknown): Promise<void> {
+  private async handle(value: unknown, scheduledLaunch = false): Promise<void> {
     const message = parseMessage(value);
     if (message.type === 'ready') { await this.publish(); if (this.pendingNewTask) { this.pendingNewTask = false; await this.panel?.webview.postMessage({ type: 'newTask' }); } return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
@@ -363,7 +400,7 @@ class Manager {
       return;
     }
     if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -371,7 +408,7 @@ class Manager {
       await this.publish();
       try {
         const id = randomBytes(6).toString('hex');
-        const worktree = await createWorktree(message.repository, message.title, id, vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'));
+        const worktree = await createWorktree(message.repository, message.title, id, vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), message.startingCommit);
         const now = new Date().toISOString();
         this.tasks.push({ id, title: message.title.trim(), prompt: message.prompt.trim(), provider: message.provider,
           repository: message.repository, ...worktree, interface: 'interactive-cli', state: 'idle', createdAt: now, updatedAt: now });
@@ -379,14 +416,39 @@ class Manager {
         this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
         await this.persist();
         await this.panel?.webview.postMessage({ type: 'taskCreated' });
-      } finally { this.busy = false; await this.publish(); }
+      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
     if (message.type === 'select') { this.selectedId = task.id; await this.publish(); return; }
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
+    if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
+    if (message.type === 'configureSchedule') {
+      if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
+      configureSchedule(task, this.tasks, message.dependencies, message.startFromDependency);
+      await this.persist(); return;
+    }
+    if (message.type === 'cancelQueued') { if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop the owned writer first.'); await this.scheduler.cancel(task); return; }
+    if (message.type === 'reconcileWriter') {
+      if (this.terminals.has(task.id) || this.managed.has(task.id)) throw new Error('Stop the owned writer first.');
+      const answer = await vscode.window.showWarningMessage('Confirm you have stopped any surviving provider process for this task. Hydra cannot prove writer absence after a restart.', { modal: true }, 'Writer stopped');
+      if (answer === 'Writer stopped') await this.scheduler.reconcileStopped(task);
+      return;
+    }
+    if (!scheduledLaunch && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) {
+      if ((message.type === 'launch' || message.type === 'terminal') && this.terminals.has(task.id)) { this.terminals.get(task.id)!.show(false); return; }
+      assertCliAllowed(task);
+      if (this.managed.has(task.id) || this.terminals.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this task writer before queueing another launch.');
+      if (message.type === 'startManaged' && task.sessionId) throw new Error('Send a follow-up to resume this session.');
+      if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task before sending a follow-up.');
+      await this.scheduler.enqueue(task, message.type === 'followUp' ? { type: 'followUp', prompt: message.prompt } : { type: message.type as 'launch' | 'terminal' | 'startManaged' });
+      return;
+    }
+    if (!scheduledLaunch && pendingSchedule(task) && ['handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Cancel queued work or reconcile the writer before this action.');
     if (message.type === 'stop') {
+      if (task.schedule?.state === 'starting') throw new Error('This launch is being prepared. Stop it once startup finishes.');
+      if (task.schedule && ['queued', 'blocked'].includes(task.schedule.state)) { await this.scheduler.cancel(task); return; }
       if (this.managed.has(task.id)) { await this.managed.stop(task.id); return; }
       if (this.busy && task.state === 'running') throw new Error('This process is still being prepared. Stop it once startup finishes.');
       const terminal = this.terminals.get(task.id);
@@ -414,10 +476,12 @@ class Manager {
           this.commitReviews.delete(task.id);
           this.pendingCommit = commitReviewed(task.worktree, prepared, message.message, () => this.guardCommitReview(task));
           task.reviewedCommit = await this.pendingCommit;
+          task.state = 'idle'; task.error = undefined;
+          if (task.schedule && !task.schedule.uncertain) { task.schedule.state = 'finished'; task.schedule.request = undefined; task.schedule.reason = undefined; }
           task.updatedAt = new Date().toISOString();
           await this.persist();
         }
-      } finally { this.pendingCommit = undefined; this.fileCache = undefined; this.busy = false; await this.publish(); }
+      } finally { this.pendingCommit = undefined; this.fileCache = undefined; this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
     if (message.type === 'openCommitReview') {
@@ -469,7 +533,7 @@ class Manager {
       } catch (error) {
         if (!this.managed.has(task.id)) { task.state = 'error'; task.error = this.describe(error); await this.persist(); }
         throw error;
-      } finally { this.diagnosticChecks.delete(controller); this.busy = false; await this.publish(); }
+      } finally { this.diagnosticChecks.delete(controller); this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
     if (message.type === 'releaseExternal') {
@@ -487,7 +551,7 @@ class Manager {
       try {
         await handoffTask(task, path.join(this.context.globalStorageUri.fsPath, 'handoffs'), message.provider, this.terminals.has(task.id),
           () => this.persist(), async workspace => { await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspace), { forceNewWindow: true }); });
-      } finally { this.busy = false; await this.publish(); }
+      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
     if (message.type === 'openWorktree') {
@@ -531,6 +595,7 @@ class Manager {
     await this.pendingCommit?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.managed.shutdown();
+    this.scheduler.reconcile();
     for (const [id, terminal] of this.terminals) {
       terminal.dispose();
       const task = this.getTask(id);

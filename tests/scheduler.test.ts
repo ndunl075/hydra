@@ -1,0 +1,115 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
+import path from 'node:path';
+import { TaskScheduler, configureSchedule, validateSchedule } from '../src/core/scheduler';
+import { prepareScheduledTask } from '../src/core/schedulerGit';
+import { LocalStore } from '../src/core/store';
+import { createWorktree, git } from '../src/core/worktrees';
+import { prepareCommitReview, commitReviewed } from '../src/core/reviewCommit';
+import { parseMessage, type Task } from '../src/core/model';
+
+const now = new Date().toISOString();
+function task(n: number): Task { return { id: n.toString(16).padStart(12, '0'), title: `Task ${n}`, prompt: 'Implement this', repository: path.resolve('fixture'), worktree: path.resolve(`fixture-${n}`), branch: `agent/task-${n}`, baseCommit: 'a'.repeat(40), integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: now, updatedAt: now }; }
+function harness(tasks: Task[], persist = async () => {}, limit = 2) {
+  const live = new Set<string>(), launches: string[] = [], writes: string[][] = [];
+  const scheduler = new TaskScheduler({ tasks: () => tasks, capacity: () => limit, liveCount: () => live.size, enabled: () => true,
+    persist: async () => { writes.push(tasks.map(item => item.schedule?.state || 'none')); await persist(); },
+    prepare: async item => ({ commit: item.baseCommit, artifacts: item.schedule?.artifacts || [] }),
+    launch: async item => { assert.equal(item.schedule?.state, 'starting'); assert.equal(item.schedule?.actualStartingCommit, item.baseCommit); assert.ok(!live.has(item.id)); live.add(item.id); launches.push(item.id); item.state = 'running'; }
+  });
+  return { scheduler, live, launches, writes };
+}
+
+test('FIFO excess queue persists across reload, reserves uncertain capacity, and never duplicates launches', async () => {
+  const directory = path.resolve('.test-build/scheduler-store'); await mkdir(directory, { recursive: true });
+  const root = await mkdtemp(path.join(directory, 'queue-'));
+  try {
+    const tasks = [task(1), task(2), task(3), task(4)]; const store = new LocalStore(root);
+    const first = harness(tasks, () => store.save(tasks));
+    await Promise.all(tasks.map(item => first.scheduler.enqueue(item, { type: 'startManaged' })));
+    assert.deepEqual(first.launches, [tasks[0]!.id, tasks[1]!.id]);
+    assert.deepEqual(tasks.map(item => item.schedule?.state), ['running', 'running', 'queued', 'queued']);
+    const restored = await store.load(), next = harness(restored, () => store.save(restored));
+    next.scheduler.reconcile(); await store.save(restored); await next.scheduler.drain();
+    assert.equal(next.launches.length, 0);
+    assert.equal(restored[0]!.schedule?.uncertain, true);
+    await assert.rejects(next.scheduler.enqueue(restored[0]!, { type: 'startManaged' }), /unreconciled/);
+    await next.scheduler.reconcileStopped(restored[0]!);
+    assert.deepEqual(next.launches, [tasks[2]!.id]);
+    await next.scheduler.reconcileStopped(restored[1]!);
+    await Promise.all([next.scheduler.drain(), next.scheduler.drain(), next.scheduler.drain()]);
+    assert.deepEqual(next.launches, [tasks[2]!.id, tasks[3]!.id]);
+    assert.deepEqual((await store.load()).slice(2).map(item => item.schedule?.actualStartingCommit), ['a'.repeat(40), 'a'.repeat(40)]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('dependency cycles refuse atomically, failed prerequisites require explicit retry, cancellation never launches', async () => {
+  const tasks = [task(1), task(2), task(3)];
+  configureSchedule(tasks[1]!, tasks, [tasks[0]!.id]); configureSchedule(tasks[2]!, tasks, [tasks[1]!.id]);
+  assert.throws(() => configureSchedule(tasks[0]!, tasks, [tasks[2]!.id]), /cycle/);
+  assert.equal(tasks[0]!.schedule, undefined);
+  const h = harness(tasks); tasks[0]!.state = 'error';
+  await h.scheduler.enqueue(tasks[1]!, { type: 'launch' });
+  assert.equal(tasks[1]!.schedule?.state, 'blocked'); assert.equal(h.launches.length, 0);
+  tasks[0]!.state = 'idle'; tasks[0]!.reviewedCommit = { commit: 'b'.repeat(40), tree: 'c'.repeat(40), baseCommit: tasks[0]!.baseCommit, reviewedAt: now };
+  await h.scheduler.drain(); assert.equal(h.launches.length, 0);
+  configureSchedule(tasks[1]!, tasks, [tasks[0]!.id]); await h.scheduler.drain();
+  assert.deepEqual(h.launches, [tasks[1]!.id]);
+  await h.scheduler.enqueue(tasks[2]!, { type: 'startManaged' });
+  assert.equal(tasks[2]!.schedule?.state, 'queued'); await h.scheduler.cancel(tasks[2]!);
+  await h.scheduler.drain(); assert.equal(h.launches.length, 1);
+});
+
+test('launch persistence failure prevents provider invocation and preparation failure stays blocked', async () => {
+  const tasks = [task(1)]; let saves = 0;
+  const h = harness(tasks, async () => { if (++saves === 2) throw new Error('Disk full'); });
+  await assert.rejects(h.scheduler.enqueue(tasks[0]!, { type: 'launch' }), /Disk full/);
+  assert.equal(h.launches.length, 0);
+  const failed = task(2);
+  const scheduler = new TaskScheduler({ tasks: () => [failed], capacity: () => 2, liveCount: () => 0, enabled: () => true, persist: async () => {}, prepare: async () => { throw new Error('Changed predecessor'); }, launch: async () => assert.fail('must not launch') });
+  await scheduler.enqueue(failed, { type: 'launch' }); await scheduler.drain();
+  assert.equal(failed.schedule?.state, 'blocked'); assert.match(failed.schedule?.reason || '', /Changed/);
+});
+
+test('schedule storage and messages reject malformed identities and follow-up requests', () => {
+  const s = { state: 'queued', dependencies: [], artifacts: [], request: { type: 'followUp', prompt: '' } };
+  assert.throws(() => validateSchedule(s), /Invalid/);
+  assert.throws(() => validateSchedule({ ...s, request: { type: 'launch' }, dependencies: ['bad'] }), /Invalid/);
+  assert.throws(() => parseMessage({ type: 'configureSchedule', id: task(1).id, dependencies: [42] }), /Invalid/);
+  assert.deepEqual(parseMessage({ type: 'configureSchedule', id: task(1).id, dependencies: [] }), { type: 'configureSchedule', id: task(1).id, dependencies: [], startFromDependency: undefined });
+});
+
+test('real Git pins selected base and reviewed predecessor, refuses changed/dirty results, fast-forwards only a clean unstarted dependent', async () => {
+  const directory = path.resolve('.test-build/scheduler-git'); await mkdir(directory, { recursive: true });
+  const root = await mkdtemp(path.join(directory, 'git-')), repository = path.join(root, 'main'); await mkdir(repository);
+  try {
+    await git(repository, ['init', '-b', 'main']); await git(repository, ['config', 'user.email', 'scheduler@example.invalid']); await git(repository, ['config', 'user.name', 'Scheduler test']); await git(repository, ['config', 'core.autocrlf', 'false']);
+    await writeFile(path.join(repository, 'base.txt'), 'base\n'); await git(repository, ['add', '.']); await git(repository, ['commit', '-m', 'Base']);
+    const base = (await git(repository, ['rev-parse', 'HEAD'])).trim();
+    await writeFile(path.join(repository, 'later.txt'), 'later\n'); await git(repository, ['add', '.']); await git(repository, ['commit', '-m', 'Later']);
+    const predecessor: Task = { ...task(1), repository: await realpath(repository), ...await createWorktree(repository, 'Parent', task(1).id, undefined, base) };
+    const dependent: Task = { ...task(2), repository: predecessor.repository, ...await createWorktree(repository, 'Child', task(2).id, undefined, base) };
+    assert.equal(predecessor.baseCommit, base); assert.equal((await git(dependent.worktree, ['rev-parse', 'HEAD'])).trim(), base);
+    await writeFile(path.join(predecessor.worktree, 'result.txt'), 'reviewed result\n'); await git(predecessor.worktree, ['add', '.']);
+    predecessor.reviewedCommit = await commitReviewed(predecessor.worktree, await prepareCommitReview(predecessor.worktree, base, predecessor.branch), 'Reviewed result', () => {});
+    const tasks = [predecessor, dependent]; configureSchedule(dependent, tasks, [predecessor.id], predecessor.id);
+    await writeFile(path.join(predecessor.worktree, 'result.txt'), 'dirty\n');
+    await assert.rejects(prepareScheduledTask(dependent, tasks, async () => {}), /clean/);
+    await git(predecessor.worktree, ['restore', '--', 'result.txt']);
+    await writeFile(path.join(dependent.worktree, 'mine.txt'), 'keep this\n');
+    await assert.rejects(prepareScheduledTask(dependent, tasks, async () => {}), /clean/);
+    await rm(path.join(dependent.worktree, 'mine.txt'));
+    const prepared = await prepareScheduledTask(dependent, tasks, async () => {});
+    assert.equal(prepared.commit, predecessor.reviewedCommit.commit); assert.equal(dependent.baseCommit, prepared.commit);
+    assert.deepEqual(prepared.artifacts, [{ taskId: predecessor.id, ...predecessor.reviewedCommit }]);
+    dependent.schedule!.actualStartingCommit = prepared.commit; dependent.schedule!.artifacts = prepared.artifacts;
+    await writeFile(path.join(predecessor.worktree, 'more.txt'), 'changed result\n'); await git(predecessor.worktree, ['add', '.']);
+    predecessor.reviewedCommit = await commitReviewed(predecessor.worktree, await prepareCommitReview(predecessor.worktree, base, predecessor.branch), 'New review', () => {});
+    await assert.rejects(prepareScheduledTask(dependent, tasks, async () => {}), /review changed/);
+    configureSchedule(dependent, tasks, [predecessor.id], predecessor.id);
+    const resumed = await prepareScheduledTask(dependent, tasks, async () => {});
+    assert.equal(resumed.commit, prepared.commit); assert.notEqual(resumed.artifacts[0]!.commit, prepared.artifacts[0]!.commit);
+    assert.notEqual((await git(repository, ['rev-parse', 'HEAD'])).trim(), prepared.commit);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

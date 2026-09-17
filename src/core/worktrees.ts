@@ -19,10 +19,11 @@ export async function resolveTaskFile(root: string, relative: string): Promise<s
 export async function repositoryRoot(folder: string): Promise<string> {
   return realpath((await git(folder, ['rev-parse', '--show-toplevel'])).trim());
 }
-export async function createWorktree(repository: string, title: string, id: string, configuredRoot?: string) {
+export async function createWorktree(repository: string, title: string, id: string, configuredRoot?: string, startingCommit?: string) {
   if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
   repository = await repositoryRoot(repository);
-  const baseCommit = (await git(repository, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+  if (startingCommit && !/^[a-f0-9]{40,64}$/.test(startingCommit)) throw new Error('Starting commit must be a full commit SHA.');
+  const baseCommit = (await git(repository, ['rev-parse', '--verify', `${startingCommit || 'HEAD'}^{commit}`])).trim();
   const integrationTarget = (await git(repository, ['symbolic-ref', '--short', 'HEAD'])).trim();
   const root = configuredRoot || path.join(path.dirname(repository), `${path.basename(repository)}.worktrees`);
   if (!path.isAbsolute(root)) throw new Error('Worktree root must be an absolute path.');

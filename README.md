@@ -10,6 +10,8 @@ A Windows-first standalone IDE for switching between ordinary editing and an age
 
 The target application is **Hydra.exe**. VS Code is a development test host, not a runtime dependency of the bundled IDE. Native Windows x64 builds require the pinned Node/toolchain prerequisites described in the [build guide](docs/Standalone_Build.md).
 
+The empty editor displays a subtle, one-color version of the README Hydra logo. It uses a transparent background and follows dark, light, and high-contrast themes.
+
 ```powershell
 npm.cmd ci
 npm.cmd run desktop:build

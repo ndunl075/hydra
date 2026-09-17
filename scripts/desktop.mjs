@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { stageWatermarks, verifyWatermarks } from './desktop-watermark.mjs';
 const execute = promisify(execFile);
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cache = path.join(root, '.desktop');
@@ -90,6 +91,7 @@ export async function prepare() {
   const electron = await git(['show', `${pin.commit}:build/lib/electron.ts`]);
   if (!electron.includes("companyName: 'Microsoft Corporation'")) throw new Error('Pinned executable publisher metadata changed.');
   await fs.writeFile(path.join(source, 'build', 'lib', 'electron.ts'), electron.replace("companyName: 'Microsoft Corporation'", "companyName: 'Nico Dunlap'"));
+  await stageWatermarks(path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
   console.log(`Prepared Hydra ${manifest.version}: Code - OSS ${pin.tag} at ${pin.commit}.`);
 }
 export async function stageHydra(destination) {
@@ -112,6 +114,7 @@ export async function verify() {
   if (manifest.publisher !== 'nico-dunlap' || manifest.name !== 'hydra-agent-manager') throw new Error('Built-in Hydra extension is missing.');
   await fs.access(path.join(bundled, 'dist', 'extension.cjs'));
   await fs.access(path.join(bundled, 'themes', 'hydra-light.json'));
+  await verifyWatermarks(path.join(output, 'resources', 'app', 'out', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
   console.log(`Verified standalone executable and built-in Hydra ${manifest.version}: ${output}`);
 }
 export async function build() {

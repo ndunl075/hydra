@@ -6,7 +6,10 @@ export interface Task {
   interface: 'interactive-cli' | 'official-extension' | 'managed-cli'; state: TaskState; createdAt: string; updatedAt: string;
   sessionId?: string; sessionProvider?: Provider; providerVersion?: string;
   error?: string;
+  reviewedCommit?: ReviewedCommit;
 }
+export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
+export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }
 export type DiffLayer = 'combined' | 'committed' | 'staged' | 'unstaged' | 'untracked';
 export const diffLabels: Record<DiffLayer, string> = { combined: 'Base → saved files', committed: 'Committed', staged: 'Staged', unstaged: 'Unstaged', untracked: 'Untracked' };
 export interface FileChange { path: string; beforePath?: string; status: string; layer: DiffLayer }
@@ -38,6 +41,7 @@ export interface Snapshot {
   session?: SessionView;
   /** Local activity only; no other task's transcript or approval details. */
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
+  commitReview?: PreparedReview;
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
@@ -49,6 +53,9 @@ export type ClientMessage =
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
   | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
+  | { type: 'prepareCommitReview'; id: string }
+  | { type: 'openCommitReview'; id: string; token: string; path: string }
+  | { type: 'commitReviewed'; id: string; token: string; message: string }
   | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string }
   | { type: 'draft'; title: string; prompt: string; provider: Provider };
 
@@ -61,6 +68,17 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'prepareCommitReview' || type === 'openCommitReview' || type === 'commitReviewed') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'prepareCommitReview') return { type, id };
+    const token = string('token');
+    if (!/^[a-f0-9]{24}$/.test(token)) throw new Error('Invalid review token.');
+    if (type === 'openCommitReview') return { type, id, token, path: string('path', 4096) };
+    const message = string('message', 500);
+    if (!message.trim()) throw new Error('Enter a commit message.');
+    return { type, id, token, message };
+  }
   if (type === 'approve') {
     const id = string('id'), approvalId = string('approvalId'), decision = string('decision');
     if (!/^[a-f0-9]{12}$/.test(id) || !/^[a-f0-9]{12}$/.test(approvalId) || !['accept', 'decline'].includes(decision)) throw new Error('Invalid approval decision.');

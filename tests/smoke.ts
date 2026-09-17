@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Handoff, Task, ProviderDiagnostic, SessionView, TaskFile, DiffLayer } from '../src/core/model';
+import type { Handoff, Task, ProviderDiagnostic, SessionView, TaskFile, DiffLayer, PreparedReview, ReviewedCommit } from '../src/core/model';
 import { git } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
@@ -49,7 +49,7 @@ export async function run(): Promise<void> {
   }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
-    assert.equal(tasks?.length, 3, 'All three task records are recovered');
+    assert.equal(tasks?.length, 4, 'All task records, including the reviewed commit, are recovered');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
@@ -66,7 +66,10 @@ export async function run(): Promise<void> {
     assert.equal(codexSession.turns[2]?.status, 'interrupted'); assert.equal(codexSession.approvals, undefined);
     const workspaces = await Promise.all((['claude', 'codex'] as const).map((provider, index) => createHandoffWorkspace(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs'), tasks[index]!, provider)));
     await writeFile(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs.json'), JSON.stringify(workspaces));
-    console.log('PASS: fresh host recovers three tasks without inventing completion or launching a model request.');
+    const reviewedTask = tasks.find(task => task.title === 'Reviewed commit'); assert.ok(reviewedTask?.reviewedCommit);
+    assert.equal((await git(reviewedTask.worktree, ['rev-parse', 'HEAD'])).trim(), reviewedTask.reviewedCommit.commit);
+    assert.equal((await git(reviewedTask.worktree, ['rev-parse', 'HEAD^{tree}'])).trim(), reviewedTask.reviewedCommit.tree);
+    console.log('PASS: fresh host recovers tasks and the exact reviewed commit without inventing completion or launching a model request.');
     return;
   }
   const document = await vscode.workspace.openTextDocument({ content: 'unsaved buffer\nkeep this selection\n', language: 'plaintext' });
@@ -292,10 +295,30 @@ export async function run(): Promise<void> {
     assert.ok(binaryInput instanceof vscode.TabInputText, 'Binary review opens a native metadata document instead of a text diff');
     assert.ok((await vscode.workspace.openTextDocument(binaryInput.uri)).getText().includes('No text diff generated'));
     assert.equal(editDocument.isDirty, true); assert.ok(editDocument.getText().startsWith('unsaved editor change\n'), 'Review preserves the unsaved live editor');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.prepareCommitReview', reviewTask.id), /unsaved task editor buffers/);
     assert.equal(await git(reviewTask.worktree, ['status', '--porcelain=v1', '-z']), statusBefore);
     assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore);
     assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.openDiff', reviewTask.id, '../../keep.txt', 'unstaged'), /relative/);
     console.log('PASS: native read-only diff tabs show committed/staged/unstaged/untracked/renamed/deleted snapshots, preserve dirty buffers, show binary metadata, and make zero provider requests.');
+    const commitTask = await vscode.commands.executeCommand<Task>('hydra.createTask', { repository, provider: 'codex', title: 'Reviewed commit', prompt: 'Local Git review only; no model request.' });
+    assert.ok(commitTask);
+    await writeFile(path.join(commitTask.worktree, 'commit review ü.txt'), 'fixed staged review\n'); await git(commitTask.worktree, ['add', '-A']);
+    const prepared = await vscode.commands.executeCommand<PreparedReview>('hydra.prepareCommitReview', commitTask.id); assert.ok(prepared);
+    await vscode.commands.executeCommand('hydra.openCommitReview', commitTask.id, prepared.token, 'commit review ü.txt');
+    const preparedTab = vscode.window.tabGroups.activeTabGroup.activeTab?.input; assert.ok(preparedTab instanceof vscode.TabInputTextDiff);
+    assert.equal((await vscode.workspace.openTextDocument(preparedTab.modified)).getText(), 'fixed staged review\n');
+    await writeFile(path.join(commitTask.worktree, 'commit review ü.txt'), 'stale saved edit\n');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.commitReviewed', commitTask.id, prepared.token, 'Reviewed commit'), /Stage all/);
+    assert.equal((await git(commitTask.worktree, ['rev-parse', 'HEAD'])).trim(), commitTask.baseCommit);
+    await git(commitTask.worktree, ['add', '-A']);
+    const fresh = await vscode.commands.executeCommand<PreparedReview>('hydra.prepareCommitReview', commitTask.id); assert.ok(fresh);
+    const receipt = await vscode.commands.executeCommand<ReviewedCommit>('hydra.commitReviewed', commitTask.id, fresh.token, 'Reviewed task commit'); assert.ok(receipt);
+    assert.equal(receipt.tree, fresh.tree); assert.equal((await git(commitTask.worktree, ['rev-parse', 'HEAD'])).trim(), receipt.commit);
+    assert.equal(await git(commitTask.worktree, ['status', '--porcelain=v1']), '');
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === commitTask.id)?.reviewedCommit?.commit, receipt.commit);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.commitReviewed', commitTask.id, fresh.token, 'Duplicate'), /Review expired/);
+    assert.equal(editDocument.isDirty, true); assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore); assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
+    console.log('PASS: native prepared review uses fixed Git objects, refuses dirty buffers and stale state, records the exact reviewed commit, and makes zero provider requests.');
   }
 }

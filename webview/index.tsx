@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
-import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile } from '../src/core/model';
+import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
 
 declare function acquireVsCodeApi(): { postMessage(message: ClientMessage): void; getState(): unknown; setState(state: unknown): void };
@@ -71,8 +71,9 @@ function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: Officia
     <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={task.worktree}>{task.worktree}</code></div></footer>
   </>;
 }
-function Changes({ task, files, busy }: { task: Task; files: TaskFile[]; busy: boolean }) {
-  const blocked = busy || task.state === 'running' || task.state === 'external';
+function Changes({ task, files, busy, prepared }: { task: Task; files: TaskFile[]; busy: boolean; prepared?: PreparedReview }) {
+  const [message, setMessage] = useState('');
+  const blocked = busy || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension';
   return <section className="changes" aria-label="Changed files">
     <div className="section-label">CHANGES <span>{files.length}</span><button className="text-button" onClick={() => send({ type: 'refresh' })}>Refresh</button></div>
     {files.length ? files.map(file => <div className="change-row" key={file.path}>
@@ -80,6 +81,21 @@ function Changes({ task, files, busy }: { task: Task; files: TaskFile[]; busy: b
       <div className="change-layers">{file.changes?.map(change => <button className="diff-button" key={change.layer} disabled={blocked} title={`${change.beforePath ? `${change.beforePath} → ` : ''}${change.path} · ${diffLabels[change.layer]}`} onClick={() => send({ type: 'openDiff', id: task.id, path: change.path, layer: change.layer })}>{diffLabels[change.layer]} <Icon name="arrow" /></button>)}</div>
     </div>) : <p className="quiet">No changes yet. Refresh to check this worktree.</p>}
     <p className="review-note">{blocked ? 'Stop the task writer or acknowledge official-extension handback to review changes.' : 'Choose a layer to open a read-only native diff. Saved files exclude unsaved editor buffers. Snapshots stay fixed; reopen after edits. Binary and large files show metadata.'} Integration and discard are still pending.</p>
+    <section className="commit-review" aria-label="Reviewed task commit">
+      <div className="section-label">REVIEWED COMMIT</div>
+      <p className="quiet">Stage all saved task changes first. Preparing captures the complete task tree, including earlier commits. It makes no model request.</p>
+      <button className="secondary" disabled={blocked} onClick={() => send({ type: 'prepareCommitReview', id: task.id })}>{prepared ? 'Prepare fresh review' : 'Prepare commit review'}</button>
+      {prepared && <>
+        <p className="quiet" role="status">Prepared tree <code>{prepared.tree.slice(0, 8)}</code> · {prepared.files.length} files. Inspect these fixed snapshots before committing.</p>
+        {prepared.files.map(file => <div className="change-row" key={file.path}><div className="change-path"><span className="file-status">{file.status}</span><span title={file.path}>{file.path}</span><button className="diff-button" disabled={blocked} onClick={() => send({ type: 'openCommitReview', id: task.id, token: prepared.token, path: file.path })}>Review snapshot <Icon name="arrow" /></button></div></div>)}
+        <form onSubmit={event => { event.preventDefault(); if (message.trim()) send({ type: 'commitReviewed', id: task.id, token: prepared.token, message }); }}>
+          <label>Commit message<input maxLength={500} value={message} disabled={blocked} onChange={event => setMessage(event.target.value)} placeholder={`Complete ${task.title}`} /></label>
+          <button className="primary" type="submit" disabled={blocked || !message.trim()}>Commit reviewed tree</button>
+          <p className="quiet">Records your review of this exact tree. If already committed, records the current commit. Changed files or unsaved buffers require another review. Git hooks still apply.</p>
+        </form>
+      </>}
+      {task.reviewedCommit && <p className="quiet" role="status">Recorded reviewed commit <code>{task.reviewedCommit.commit.slice(0, 8)}</code>. Later edits require a fresh review. Integration is pending.</p>}
+    </section>
   </section>;
 }
 function App() {
@@ -168,7 +184,7 @@ function App() {
               {selected.interface === 'interactive-cli' && <ProviderCheck provider={selected.provider} diagnostic={snapshot.diagnostics?.find(item => item.provider === selected.provider)} />}
             </article>
             </>}
-            <Changes task={selected} files={snapshot.files} busy={snapshot.busy} />
+            <Changes key={selected.id} task={selected} files={snapshot.files} busy={snapshot.busy} prepared={snapshot.commitReview} />
           </div>
           <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={selected.worktree}>{selected.worktree}</code></div><div className="footer-actions"><div className="handoff-actions">{(['claude', 'codex'] as const).map(provider => <button key={provider} className="secondary" disabled={snapshot.busy || selected.state === 'external' || selected.state === 'running' || selected.interface === 'official-extension'} onClick={() => send({ type: 'handoff', id: selected.id, provider })}>Open in {providerName(provider)} <Icon name="arrow" /></button>)}</div>{selected.state === 'external' && selected.interface === 'interactive-cli' && <button className="stop-button" onClick={() => send({ type: 'stop', id: selected.id })}>Stop terminal</button>}</div></footer>
         </>}

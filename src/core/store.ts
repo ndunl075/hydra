@@ -1,3 +1,4 @@
+import { validateSchedule } from './scheduler';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -28,6 +29,7 @@ export class LocalStore {
       if (task.brief !== undefined && buildTaskPrompt(parseBrief(task.brief)) !== task.prompt) throw new Error('Task brief and saved prompt disagree. Original data has been retained.');
       if (task.handoffSummary !== undefined) parseHandoffSummary(task.handoffSummary);
       if (task.contextLockedAt !== undefined && (typeof task.contextLockedAt !== 'string' || !Number.isFinite(Date.parse(task.contextLockedAt)))) throw new Error('Invalid task context lock.');
+      if (task.schedule !== undefined) validateSchedule(task.schedule);
       if (task.reviewedCommit !== undefined) {
         const record = task.reviewedCommit;
         if (!record || typeof record !== 'object' || ![record.commit, record.tree, record.baseCommit].every(value => typeof value === 'string' && /^[a-f0-9]{40,64}$/.test(value)) || record.baseCommit !== task.baseCommit || typeof record.reviewedAt !== 'string' || !Number.isFinite(Date.parse(record.reviewedAt))) throw new Error('Invalid reviewed commit. Original data has been retained.');

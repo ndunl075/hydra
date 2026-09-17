@@ -204,3 +204,7 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 .usage-provider dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; margin: 12px 0; }
 .usage-provider dt { color: var(--muted); font-size: 11px; }
 .usage-provider dd { font-variant-numeric: tabular-nums; margin: 5px 0 0; font-size: 13px; }
+.schedule-controls fieldset { border: 1px solid var(--vscode-panel-border); padding: 12px; margin: 12px 0; }
+.schedule-controls fieldset label { display: block; margin: 8px 0; }
+.schedule-controls input[type="checkbox"] { width: auto; margin-right: 8px; }
+.schedule-controls code { overflow-wrap: anywhere; }

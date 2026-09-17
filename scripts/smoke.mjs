@@ -28,6 +28,9 @@ await git(['init', '-b', 'main']);
 await git(['config', 'user.email', 'hydra-test@example.invalid']);
 await git(['config', 'user.name', 'Hydra Test']);
 await git(['config', 'core.autocrlf', 'false']);
+// Harness configuration and read-only capability evidence are fixture-local,
+// rather than user changes considered by native integration acceptance.
+await fs.writeFile(path.join(repository, '.git', 'info', 'exclude'), '.vscode/\nhydra-probes.jsonl\n');
 await fs.writeFile(path.join(repository, 'keep.txt'), 'base\n');
 await git(['add', '.']);
 await git(['commit', '-m', 'fixture']);

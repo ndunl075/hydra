@@ -223,6 +223,7 @@ export async function run(): Promise<void> {
     await waitFor(() => correctCwd(tasks[2]!));
     console.log('PASS: both provider routes launch in exact worktrees, reuse terminals, enforce the two-terminal limit, and survive mode changes.');
     for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.filter(task => tasks.slice(1).some(item => item.id === task.id)).every(task => !['queued', 'starting', 'running'].includes(task.schedule?.state || '')) || false);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
     await vscode.commands.executeCommand('hydra.startManaged', tasks[0]!.id);
     await waitFor(async () => { const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id); return session?.turns[0]?.status === 'completed' && !session.active; });

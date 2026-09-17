@@ -406,6 +406,8 @@ class Manager {
   }
   private async handle(value: unknown, scheduledLaunch = false): Promise<void> {
     const message = parseMessage(value);
+    const expectedSchedule = scheduledLaunch && 'id' in message ? this.getTask(message.id).schedule : undefined;
+    const assertLaunchCurrent = () => { if (scheduledLaunch && (!expectedSchedule || !('id' in message) || this.getTask(message.id).schedule !== expectedSchedule || expectedSchedule.state !== 'starting' || !expectedSchedule.request)) throw new Error('Queued launch cancelled before provider start.'); };
     if (message.type === 'ready') { await this.publish(); if (this.pendingNewTask) { this.pendingNewTask = false; await this.panel?.webview.postMessage({ type: 'newTask' }); } return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
@@ -500,7 +502,7 @@ class Manager {
       if (this.managed.has(task.id)) { await this.managed.stop(task.id); return; }
       const terminal = this.terminals.get(task.id);
       if (terminal) { terminal.dispose(); return; }
-      if (task.schedule?.state === 'starting') throw new Error('This launch is being prepared. Stop it once startup finishes.');
+      if (task.schedule?.state === 'starting') { await this.scheduler.cancel(task); return; }
       if (task.schedule && ['queued', 'blocked'].includes(task.schedule.state)) { await this.scheduler.cancel(task); return; }
       if (this.busy && task.state === 'running') throw new Error('This process is still being prepared. Stop it once startup finishes.');
       return;
@@ -608,10 +610,11 @@ class Manager {
         this.diagnostics.set(task.provider, diagnostic);
         const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
         if (diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Managed ${task.provider} supports tested CLI ${testedVersion} only. Use the terminal for another version; see provider diagnostics.`);
+        assertLaunchCurrent();
         task.providerVersion = diagnostic.version;
         await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt);
       } catch (error) {
-        if (!this.managed.has(task.id)) { task.state = 'error'; task.error = this.describe(error); await this.persist(); }
+        if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); await this.persist(); }
         throw error;
       } finally { this.diagnosticChecks.delete(controller); this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
@@ -660,6 +663,7 @@ class Manager {
       const duplicate = this.terminals.get(task.id);
       if (duplicate) { duplicate.show(false); return; }
       if (this.terminals.size + this.managed.count >= max) throw new Error('The task concurrency limit is reached.');
+      assertLaunchCurrent();
       const terminal = vscode.window.createTerminal({ name: `Hydra · ${task.title}`, cwd: task.worktree, ...terminalLaunch(provider.executable), isTransient: true });
       this.terminals.set(task.id, terminal);
       task.interface = 'interactive-cli';

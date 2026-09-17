@@ -87,7 +87,7 @@ export class TaskScheduler {
   }
   async cancel(task: Task): Promise<void> {
     const s = task.schedule;
-    if (!s || !['queued', 'blocked', 'interrupted'].includes(s.state) || s.uncertain) throw new Error('Stop and reconcile this writer before cancelling queued work.');
+    if (!s || !['queued', 'starting', 'blocked', 'interrupted'].includes(s.state) || s.uncertain) throw new Error('Stop and reconcile this writer before cancelling queued work.');
     s.state = 'cancelled'; s.request = undefined; s.reason = 'Queued launch cancelled.';
     await this.hooks.persist();
   }
@@ -119,23 +119,29 @@ export class TaskScheduler {
         await this.hooks.persist(); continue;
       }
       if (dependency.some(item => item!.state === 'running' || item!.state === 'external' || pendingSchedule(item!) || !item!.reviewedCommit)) continue;
+      const cancelled = () => task.schedule !== s || s.state === 'cancelled' || !s.request;
       s.state = 'starting'; s.reason = undefined;
       await this.hooks.persist();
       try {
         const prepared = await this.hooks.prepare(task);
+        // Preparation can fast-forward the checkout. Retain reconciled base metadata even if Stop arrived meanwhile.
+        if (cancelled()) { await this.hooks.persist(); continue; }
         s.actualStartingCommit = prepared.commit; s.artifacts = prepared.artifacts;
         await this.hooks.persist();
+        if (cancelled()) continue;
         const reservations = this.hooks.tasks().filter(item => item.schedule?.uncertain).length;
         if (!this.hooks.enabled() || this.hooks.liveCount() + reservations >= this.hooks.capacity()) {
           s.state = 'queued'; s.reason = 'Waiting for task operations or capacity before provider start.';
           await this.hooks.persist(); return;
         }
-        await this.hooks.launch(task, s.request);
+        await this.hooks.launch(task, s.request!);
+        if (cancelled()) continue;
         s.state = task.state === 'error' ? 'blocked' : task.state === 'interrupted' ? 'interrupted' : task.state === 'idle' ? 'finished' : 'running';
         if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;
         s.reason = task.error;
         await this.hooks.persist();
       } catch (error) {
+        if (cancelled()) continue;
         // A save can fail after process creation. Retain the live writer state so Stop still stops it.
         s.state = task.state === 'running' || task.state === 'external' ? 'running' : 'blocked';
         s.reason = error instanceof Error ? error.message : String(error);

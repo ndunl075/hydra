@@ -8,6 +8,8 @@ import { LocalStore } from '../src/core/store';
 import { createWorktree, git } from '../src/core/worktrees';
 import { prepareCommitReview, commitReviewed } from '../src/core/reviewCommit';
 import { parseMessage, type Task } from '../src/core/model';
+import { ManagedSessions } from '../src/core/managedSessions';
+import { SessionStore } from '../src/core/sessionStore';
 
 const now = new Date().toISOString();
 function task(n: number): Task { return { id: n.toString(16).padStart(12, '0'), title: `Task ${n}`, prompt: 'Implement this', repository: path.resolve('fixture'), worktree: path.resolve(`fixture-${n}`), branch: `agent/task-${n}`, baseCommit: 'a'.repeat(40), integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: now, updatedAt: now }; }
@@ -141,6 +143,61 @@ test('integration activity or capacity changes during preparation hold intent fo
     enabled = true; live = 0; await scheduler.drain(); await scheduler.drain();
     assert.equal(launches, 1); assert.equal(item.schedule?.state, 'running');
   }
+});
+
+test('cancelling preparation or asynchronous launch startup never creates a writer and retains cancellation', async () => {
+  for (const stage of ['prepare', 'launch']) {
+    const item = task(1); let spawned = false;
+    const scheduler = new TaskScheduler({ tasks: () => [item], capacity: () => 2, liveCount: () => 0, enabled: () => true,
+      persist: async () => {},
+      prepare: async () => { if (stage === 'prepare') await scheduler.cancel(item); return { commit: item.baseCommit, artifacts: [] }; },
+      launch: async () => {
+        if (stage === 'launch') { await scheduler.cancel(item); throw new Error('Queued launch cancelled before provider start.'); }
+        spawned = true;
+      }
+    });
+    await scheduler.enqueue(item, { type: 'launch' }); await scheduler.drain();
+    assert.equal(spawned, false); assert.equal(item.schedule?.state, 'cancelled'); assert.equal(item.schedule?.request, undefined);
+  }
+});
+
+test('cancel then immediate requeue cannot launch the stale request or steal the replacement intent', async () => {
+  const item = task(1), prompts: string[] = [];
+  let replacement: Promise<void> | undefined, preparations = 0;
+  const scheduler = new TaskScheduler({ tasks: () => [item], capacity: () => 2, liveCount: () => prompts.length, enabled: () => true,
+    persist: async () => {},
+    prepare: async () => {
+      if (++preparations === 1) {
+        await scheduler.cancel(item);
+        replacement = scheduler.enqueue(item, { type: 'followUp', prompt: 'Only the new intent' });
+      }
+      return { commit: item.baseCommit, artifacts: [] };
+    },
+    launch: async (task, request) => { prompts.push(request.type === 'followUp' ? request.prompt : 'Unexpected initial launch'); task.state = 'running'; }
+  });
+  await scheduler.enqueue(item, { type: 'followUp', prompt: 'Cancelled stale intent' });
+  await replacement; await scheduler.drain();
+  assert.deepEqual(prompts, ['Only the new intent']); assert.equal(item.schedule?.state, 'running');
+});
+
+test('both managed adapters recheck cancellation after startup persistence before spawning', async () => {
+  const directory = path.resolve('.test-build/scheduler-cancel'); await mkdir(directory, { recursive: true });
+  const root = await mkdtemp(path.join(directory, 'cancel-'));
+  try {
+    for (const provider of ['claude', 'codex'] as const) {
+      const item = task(provider === 'claude' ? 1 : 2); item.provider = provider;
+      item.providerVersion = provider === 'claude' ? '2.1.270' : '0.154.0'; item.worktree = root;
+      item.schedule = { state: 'starting', dependencies: [], artifacts: [], request: { type: 'startManaged' } };
+      const sessions = new ManagedSessions(new SessionStore(path.join(root, provider)), async () => {
+        if (item.schedule?.state === 'starting') { item.schedule.state = 'cancelled'; item.schedule.request = undefined; }
+      }, () => {}, error => { throw error; });
+      await sessions.start(item, process.execPath, 'No provider turn may start');
+      assert.equal(sessions.has(item.id), false); assert.equal(sessions.count, 0);
+      assert.equal(item.state, 'interrupted'); assert.equal(item.schedule.state, 'cancelled');
+      assert.equal((await sessions.store.load(item.id)).turns[0]?.status, 'interrupted');
+      assert.match(sessions.view(item.id)?.turns[0]?.error || '', /before provider process started/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('real Git pins selected base and reviewed predecessor, refuses changed/dirty results, fast-forwards only a clean unstarted dependent', async () => {

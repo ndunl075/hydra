@@ -27,6 +27,7 @@ export class ManagedCodex {
     try { await this.startTurn(task, executable, prompt); } finally { this.starting.delete(task.id); }
   }
   private async startTurn(task: Task, executable: string, prompt: string): Promise<void> {
+    const expectedSchedule = task.schedule;
     if (task.provider !== 'codex' || task.providerVersion !== testedCodexVersion) throw new Error('Managed Codex requires CLI 0.154.0.');
     if (task.sessionId && task.sessionProvider !== 'codex') throw new Error('This recorded session belongs to another provider. Create a separate Codex task.');
     if (task.interface === 'official-extension' || task.state === 'external') throw new Error('Stop the existing task writer first.');
@@ -40,6 +41,11 @@ export class ManagedCodex {
       await this.store.save(task.id, view);
       await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'start', cwd: task.worktree, version: testedCodexVersion, prompt });
       await this.persistTask();
+      if (expectedSchedule && (task.schedule !== expectedSchedule || expectedSchedule.state === 'cancelled')) {
+        turn.status = 'interrupted'; turn.error = 'Cancelled before provider process started.';
+        task.state = 'interrupted'; task.error = undefined;
+        await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
+      }
     } catch (error) { turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`; task.state = 'error'; task.error = turn.error; throw error; }
     const launch = processLaunch(executable, ['app-server', '--listen', 'stdio://']);
     const child = spawn(launch.executable, launch.args, { cwd: task.worktree, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });

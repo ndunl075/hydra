@@ -16,6 +16,8 @@ The application is `Hydra.exe`; its normal native user-data directory is the app
 
 The editor's upstream API version remains `1.113.0` so extension engine checks remain valid. Hydra's module version is recorded separately in product metadata. Do not change the editor API version to the module's `0.x` version.
 
+Preparation also replaces the editor's four letterpress assets with the original README Hydra mark. An SVG rendering filter removes the white canvas and makes both green tones a single color: white in dark themes, black in light themes. Normal themes use 6% opacity; high-contrast themes use 12%. The native empty-editor layout and shortcuts stay intact. The source PNG is unchanged and embedded locally, with no external asset request.
+
 ## Build prerequisites
 
 Initial target: native Windows x64, Node `22.22.1` or newer in major 22, supported Python, Visual Studio 2022 C++ tools/SDK, and matching Spectre-mitigated runtime, ATL, and MFC libraries. Use the [official upstream build guide](https://github.com/microsoft/vscode/wiki/How-to-Contribute) and the pinned `.nvmrc` rather than bypassing checks. The build uses workspace-local npm/node-gyp caches. A workspace-local verified Node archive can satisfy the pin without changing the machine's global Node installation.
@@ -32,7 +34,7 @@ npm.cmd run desktop:smoke
 
 `desktop:build` prepares the pinned checkout, converts the icon, builds the Hydra module, installs the upstream locked dependencies, and runs the upstream `vscode-win32-x64` packaging task. It then embeds the actual Hydra runtime, themes, and logo under the app's built-in extensions. The output is `.desktop/VSCode-win32-x64/`; source, dependencies, caches, and builds are ignored in Git.
 
-`desktop:verify` refuses missing/invalid executables, incorrect product/profile identity, inherited Marketplace configuration, or a missing module/theme. `desktop:smoke` launches **Hydra.exe**, with a separate empty development harness so tests run against the **bundled** Hydra module rather than this source checkout. Tests assert the host name and bundled module path, then exercise modes, native appearance, worktrees, provider fixtures, diff review, persistence, and generated workspace loading. Fixtures make no model requests. These are automated native-host checks; manual visual/accessibility and authenticated provider acceptance remain separate.
+`desktop:verify` refuses missing/invalid executables, incorrect product/profile identity, inherited Marketplace configuration, a missing module/theme, or watermark assets that differ from the current README logo and theme treatment. `desktop:smoke` launches **Hydra.exe**, with a separate empty development harness so tests run against the **bundled** Hydra module rather than this source checkout. Tests assert the host name and bundled module path, then exercise modes, native appearance, worktrees, provider fixtures, diff review, persistence, and generated workspace loading. Fixtures make no model requests. These are automated native-host checks; manual visual/accessibility and authenticated provider acceptance remain separate.
 
 ## Installer and remaining work
 

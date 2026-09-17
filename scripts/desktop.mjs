@@ -19,6 +19,14 @@ export function brandedProduct(upstream, version) {
   delete result.updateUrl;
   return result;
 }
+export function isolatedEditorTypes(upstream, declaration, typeRoots) {
+  // A nested checkout otherwise finds Hydra's older @types/vscode through
+  // ancestor node_modules, even with typeRoots set. Resolve imports to the
+  // editor's own API declarations; keep all upstream checking enabled.
+  return { ...upstream, compilerOptions: { ...upstream.compilerOptions,
+    typeRoots: upstream.compilerOptions?.typeRoots ?? typeRoots,
+    paths: { ...upstream.compilerOptions?.paths, vscode: [declaration] } } };
+}
 export function brandedInstaller(text) {
   const replacements = new Map([
     ['AppPublisher=Microsoft Corporation', 'AppPublisher=Nico Dunlap'],
@@ -63,6 +71,13 @@ export async function prepare() {
   await contained(source);
   if (await git(['rev-parse', 'HEAD']) !== pin.commit || await fs.realpath(await git(['rev-parse', '--show-toplevel'])) !== await fs.realpath(source)) throw new Error('Unexpected editor source checkout. Use the exact desktop/upstream.json pin.');
   const manifest = await readJson(path.join(root, 'package.json'));
+  for (const [configPath, declaration, typeRoots] of [
+    ['src/tsconfig.base.json', './vscode-dts/vscode.d.ts', ['../node_modules/@types']],
+    ['extensions/tsconfig.base.json', '../src/vscode-dts/vscode.d.ts', ['./node_modules/@types', '../node_modules/@types']]
+  ]) {
+    const config = JSON.parse(await git(['show', `${pin.commit}:${configPath}`]));
+    await fs.writeFile(path.join(source, configPath), JSON.stringify(isolatedEditorTypes(config, declaration, typeRoots), null, 2) + '\n');
+  }
   const original = JSON.parse(await git(['show', `${pin.commit}:product.json`]));
   await fs.writeFile(path.join(source, 'product.json'), JSON.stringify(brandedProduct(original, manifest.version), null, 2) + '\n');
   const installer = await git(['show', `${pin.commit}:build/win32/code.iss`]);

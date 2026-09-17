@@ -7,8 +7,16 @@ on:
       - '.github/workflows/desktop.yml'
       - 'desktop/**'
       - 'scripts/desktop*'
+      - 'scripts/build.mjs'
       - 'scripts/smoke.mjs'
-      - 'tests/desktop.test.mjs'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/**'
+      - 'webview/**'
+      - 'themes/**'
+      - 'media/**'
+      - 'hydra-logo.png'
 
 permissions:
   contents: read

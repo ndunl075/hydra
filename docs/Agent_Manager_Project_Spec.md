@@ -10,6 +10,8 @@ Build a Windows-first Hydra desktop IDE with two working modes: Editor and Agent
 
 Claude Code and Codex are the primary providers. Both their CLIs and their official VS Code extensions belong in the workflow. Each managed task gets its own Git branch and worktree so parallel agents can change separate checkouts and their results can be reviewed before integration.
 
+Nico's agent-workflow direction is parallel isolated tasks with less duplicated work and retained quality checks. The [agent workflow roadmap](Agent_Workflow_Roadmap.md) makes the remaining scheduling, dependency, integration, context, model/effort, and usage gates explicit. These are planned capabilities until their acceptance checks pass; no token savings have been demonstrated.
+
 ### Core product promise
 
 One development environment for writing code yourself, delegating tasks, watching progress, and reviewing the results. Switching modes changes the workspace view; it does not create a new task, send a model request, switch the repository branch, or erase conversation history.

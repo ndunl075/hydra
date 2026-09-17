@@ -105,6 +105,7 @@ export class ProfileImporter {
       for (const [key, value] of Object.entries(incoming)) {
         const name = prefix + key;
         if (category === 'settings') {
+          if (key === 'hydra.handoff') { items.push({ category, name, state: 'skip', detail: 'Task handoff state is not a preference' }); continue; }
           if (sensitive(value, key)) { items.push({ category, name, state: 'skip', detail: 'Account or credential preference' }); continue; }
           if (location.length === 0 && /^(?:\[[^\[\]]+\])+$/.test(key) && value && typeof value === 'object' && !Array.isArray(value)) {
             const existing = current[key];

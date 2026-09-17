@@ -6,7 +6,7 @@ import { parse } from 'jsonc-parser/lib/esm/main';
 import { ProfileImporter, detectedImportFolder, type ImportOptions, type ProfileResources } from '../src/core/profileImport';
 
 const parent = path.resolve('.test-build', 'import-fixtures');
-const options: ImportOptions = { knownSettings: ['editor.fontSize', 'editor.tabSize', 'editor.minimap.enabled', 'workbench.colorTheme', 'sample.apiKey'], themes: ['Hydra Dark', 'Hydra Light'], commands: ['known.command'], languages: ['typescript'] };
+const options: ImportOptions = { knownSettings: ['editor.fontSize', 'editor.tabSize', 'editor.minimap.enabled', 'workbench.colorTheme', 'sample.apiKey', 'hydra.handoff'], themes: ['Hydra Dark', 'Hydra Light'], commands: ['known.command'], languages: ['typescript'] };
 async function fixture() {
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(path.join(parent, 'spaces ü-'));
@@ -30,7 +30,7 @@ test('import merges JSONC preferences, keeps conflicts, skips accounts/unavailab
     const beforeSnippets = '// My snippet\n{"Hello":{"prefix":"hi","body":"original"}}\n';
     await writeFile(f.profile.settings, beforeSettings); await writeFile(f.profile.keybindings, beforeBindings);
     await writeFile(path.join(f.profile.snippets, 'typescript.json'), beforeSnippets);
-    const sourceSettings = '// From Cursor\n{"editor.fontSize":20,"editor.tabSize":4,"workbench.colorTheme":"Missing Theme","sample.apiKey":"do-not-copy","cursor.privateSetting":true,"[typescript]":{"editor.fontSize":21,"editor.tabSize":2},}';
+    const sourceSettings = '// From Cursor\n{"editor.fontSize":20,"editor.tabSize":4,"workbench.colorTheme":"Missing Theme","sample.apiKey":"do-not-copy","cursor.privateSetting":true,"hydra.handoff":{"version":1},"[typescript]":{"editor.fontSize":21,"editor.tabSize":2,"hydra.handoff":{"version":1}},}';
     await writeFile(path.join(f.source, 'settings.json'), sourceSettings);
     await writeFile(path.join(f.source, 'keybindings.json'), '[{"key":"CTRL+K","command":"other.command","when":"editorTextFocus"},{"key":"ctrl+l","command":"known.command"},{"key":"ctrl+p","command":"extension.command","args":{"apiKey":"no"}}]');
     await writeFile(path.join(f.source, 'snippets', 'typescript.json'), '{"Hello":{"prefix":"hi","body":"incoming"},"New":{"prefix":"new","body":["line 1","$0"]}}');
@@ -39,6 +39,7 @@ test('import merges JSONC preferences, keeps conflicts, skips accounts/unavailab
     assert.ok(plan.items.some(item => item.state === 'conflict' && item.name === 'editor.fontSize'));
     assert.ok(plan.items.some(item => item.name === 'workbench.colorTheme' && item.detail?.includes('Theme')));
     assert.ok(plan.items.some(item => item.name === 'sample.apiKey' && item.state === 'skip'));
+    assert.equal(plan.items.filter(item => item.name.endsWith('hydra.handoff') && item.state === 'skip' && item.detail?.includes('Task handoff')).length, 2);
     assert.equal(await f.importer.apply(plan, ['settings', 'keybindings', 'snippets']), 3);
     const settings = parse(await readFile(f.profile.settings, 'utf8'));
     assert.deepEqual(settings, { 'editor.fontSize': 16, 'editor.tabSize': 4, '[typescript]': { 'editor.fontSize': 17, 'editor.tabSize': 2 } });

@@ -6,8 +6,21 @@ import { promisify } from 'node:util';
 const execute = promisify(execFile);
 const root = process.cwd();
 const localCode = process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Microsoft VS Code', 'Code.exe') : undefined;
+const desktopCode = process.env.HYDRA_TEST_DESKTOP;
+if (desktopCode && path.resolve(desktopCode) !== path.join(root, '.desktop', 'VSCode-win32-x64', 'Hydra.exe')) throw new Error('Desktop smoke must use the workspace-built Hydra executable.');
 await fs.mkdir(path.join(root, '.test-build'), { recursive: true });
 const fixture = await fs.mkdtemp(path.join(root, '.test-build', 'smoke spaces ü-'));
+let developmentPath = root, testsPath = path.join(root, 'dist', 'smoke.cjs');
+if (desktopCode) {
+  // A separate empty development harness runs API tests while Hydra loads from
+  // the application's built-in extensions, never from this source checkout.
+  developmentPath = path.join(fixture, 'harness');
+  await fs.mkdir(developmentPath);
+  await fs.writeFile(path.join(developmentPath, 'package.json'), JSON.stringify({ name: 'desktop-test-harness', publisher: 'hydra-internal', version: '1.0.0', engines: { vscode: '^1.95.0' }, main: './harness.cjs', extensionKind: ['workspace'] }));
+  await fs.writeFile(path.join(developmentPath, 'harness.cjs'), 'exports.activate = () => {};\n');
+  testsPath = path.join(developmentPath, 'smoke.cjs');
+  await fs.copyFile(path.join(root, 'dist', 'smoke.cjs'), testsPath);
+}
 const repository = path.join(fixture, 'main repo');
 await fs.mkdir(repository);
 const git = args => execute('git', args, { cwd: repository, windowsHide: true });
@@ -31,11 +44,12 @@ await fs.writeFile(codexProvider, process.platform === 'win32' ? `@echo off\r\n"
 await fs.mkdir(path.join(repository, '.vscode'));
 await fs.writeFile(path.join(repository, '.vscode', 'settings.json'), JSON.stringify({ 'hydra.codexPath': 'relative-invalid-path' }));
 const options = {
-  extensionDevelopmentPath: root, extensionTestsPath: path.join(root, 'dist', 'smoke.cjs'),
-  ...(localCode ? { vscodeExecutablePath: localCode } : {}),
+  extensionDevelopmentPath: desktopCode && process.platform === 'win32' ? `"${developmentPath}"` : developmentPath,
+  extensionTestsPath: desktopCode && process.platform === 'win32' ? `"${testsPath}"` : testsPath,
+  ...(desktopCode || localCode ? { vscodeExecutablePath: desktopCode || localCode } : {}),
   extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_CODEX_PROVIDER: codexProvider, HYDRA_TEST_FIXTURE: fixture },
   // The official Windows test runner uses cmd.exe and requires explicit quoting for positional folders.
-  launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', 'vscode-user-data')]
+  launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', desktopCode ? 'hydra-user-data' : 'vscode-user-data')]
 };
 let passed = false;
 try {

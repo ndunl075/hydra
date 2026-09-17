@@ -4,7 +4,20 @@
 
 # Hydra
 
-A Windows-first IDE project for switching between ordinary editing and an agent manager, currently delivered as a VS Code extension prototype. The bundled release will be a standalone Windows installer with optional desktop shortcut and first-run onboarding. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md) and [desktop delivery requirements](docs/Desktop_Delivery.md).
+A Windows-first standalone IDE for switching between ordinary editing and an agent manager. Hydra's own editor is built from pinned Code - OSS source with Hydra branding and separate user data; the agent workflow is a built-in module. The Windows installer and first-run onboarding are still in development. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md), [standalone build guide](docs/Standalone_Build.md), and [desktop delivery requirements](docs/Desktop_Delivery.md).
+
+## Standalone editor build
+
+The target application is **Hydra.exe**. VS Code is a development test host, not a runtime dependency of the bundled IDE. Native Windows x64 builds require the pinned Node/toolchain prerequisites described in the [build guide](docs/Standalone_Build.md).
+
+```powershell
+npm.cmd ci
+npm.cmd run desktop:build
+npm.cmd run desktop:verify
+npm.cmd run desktop:smoke
+```
+
+The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the same standalone app and runs the existing acceptance suite against its built-in Hydra module, using a separate empty test harness. A source `.vsix` does not satisfy the standalone release gate.
 
 ## Available features
 
@@ -34,7 +47,7 @@ The default limit is two active managed processes or provider terminals. Extra l
 
 One Hydra window owns each canonical repository at a time. A second owner displays an error and disables task operations. Records are local under VS Code's extension global-storage directory, with atomic, versioned metadata. Corrupt records are preserved for diagnosis. Worktrees isolate files and indexes; they are not a security sandbox.
 
-## Build and run
+## Core development and VS Code test host
 
 Requires Node.js 22 and VS Code 1.95 or newer.
 
@@ -46,7 +59,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.8.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required. The standalone installer, VS Code/Cursor settings import, and subscription-account onboarding remain upcoming desktop features.
+Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.9.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. The standalone installer, VS Code/Cursor settings import, and subscription-account onboarding remain upcoming desktop features.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

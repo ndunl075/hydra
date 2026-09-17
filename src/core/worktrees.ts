@@ -1,18 +1,8 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { realpath, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { TaskFile } from './model';
-const execute = promisify(execFile);
-export async function git(cwd: string, args: string[]): Promise<string> {
-  try {
-    const { stdout } = await execute('git', ['-c', 'core.quotepath=false', ...args], { cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-    return stdout;
-  } catch (error) {
-    const failure = error as Error & { stderr?: string };
-    throw new Error(failure.stderr?.trim() || failure.message);
-  }
-}
+import { git } from './git';
+export { git } from './git';
 export function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));

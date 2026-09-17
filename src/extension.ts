@@ -4,7 +4,9 @@ import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalStore } from './core/store';
 import { OwnershipLock } from './core/ownership';
-import { changedFiles, createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
+import { createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
+import { captureReview, reviewFiles } from './core/review';
+import { ReviewDocuments } from './extensionReview';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -66,12 +68,14 @@ class Manager {
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
+  private readonly review: ReviewDocuments;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
+    this.review = new ReviewDocuments(context);
     this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.publish(); }, error => this.report(error));
   }
   async initialize(): Promise<void> {
@@ -106,6 +110,8 @@ class Manager {
     command('hydra.followUp', (id: string, prompt: string) => this.handle({ type: 'followUp', id, prompt }));
     command('hydra.getSession', (id: string) => structuredClone(this.managed.view(id)));
     command('hydra.approve', (id: string, approvalId: string, decision: string) => this.handle({ type: 'approve', id, approvalId, decision }));
+    command('hydra.openDiff', (id: string, filePath: string, layer: string) => this.handle({ type: 'openDiff', id, path: filePath, layer }));
+    command('hydra.getChanges', async (id: string) => { const task = this.getTask(id); if (!vscode.workspace.isTrusted || this.disabled) throw new Error('Task review requires a trusted, healthy workspace.'); await this.verifyWorktree(task); return reviewFiles(task.worktree, task.baseCommit); });
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
     this.status.show();
@@ -211,6 +217,7 @@ class Manager {
     if (branch.trim() !== task.branch) throw new Error('Task worktree branch changed. Restore its recorded branch before launching.');
   }
   private async persist(): Promise<void> { await this.store.save(this.tasks); await this.publish(); }
+  private reviewBlocked(task: Task): boolean { return this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
@@ -223,7 +230,7 @@ class Manager {
     if (task && vscode.workspace.isTrusted) {
       if (this.fileCache?.id === task.id && this.fileCache.expires > Date.now()) { files = this.fileCache.files; error ||= this.fileCache.error; }
       else {
-        try { await this.verifyWorktree(task); files = await changedFiles(task.worktree, task.baseCommit); }
+        try { await this.verifyWorktree(task); files = await reviewFiles(task.worktree, task.baseCommit); }
         catch (failure) { error = this.describe(failure); }
         this.fileCache = { id: task.id, expires: Date.now() + 1000, files, error };
       }
@@ -361,6 +368,14 @@ class Manager {
       const turn = this.managed.view(task.id)?.turns.at(-1);
       if (!turn) throw new Error('No managed turn diagnostics yet.');
       await vscode.window.showTextDocument(vscode.Uri.file(this.managed.store.rawPath(task.id, turn.id)), { viewColumn: vscode.ViewColumn.Beside, preview: true });
+      return;
+    }
+    if (message.type === 'openDiff') {
+      if (this.reviewBlocked(task)) throw new Error('Stop this task writer or acknowledge official-extension handback before reviewing changes.');
+      const snapshot = await captureReview(task.worktree, task.baseCommit, message.path, message.layer);
+      // A launch may finish its asynchronous checks while snapshot capture is in progress.
+      if (this.reviewBlocked(task)) throw new Error('The task writer restarted. Stop it before reviewing changes.');
+      await this.review.open(`${task.title} · ${task.branch}`, task.worktree, snapshot);
       return;
     }
     if (message.type === 'startManaged' || message.type === 'followUp') {

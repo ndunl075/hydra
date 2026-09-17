@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { CodexMessages, CodexTurn, providerId, record, testedCodexVersion, validateCodexThread, type RpcId } from './codexProtocol';
 import { processLaunch, terminateProcessTree } from './process';
 import { SessionStore } from './sessionStore';
+import { version as hydraVersion } from '../../package.json';
 import type { Approval, SessionView, Task, Turn } from './model';
 import type { InitializeParams } from './generated/codex-0.154.0/InitializeParams';
 import type { ThreadStartParams } from './generated/codex-0.154.0/v2/ThreadStartParams';
@@ -162,7 +163,7 @@ export class ManagedCodex {
     });
     // Run the handshake after handlers/ownership are established. No turn is sent until its thread identity is durably saved.
     void (async () => {
-      const init = record(await request('initialize', { clientInfo: { name: 'hydra', title: 'Hydra', version: '0.6.0' }, capabilities: { experimentalApi: false, requestAttestation: false } } satisfies InitializeParams));
+      const init = record(await request('initialize', { clientInfo: { name: 'hydra', title: 'Hydra', version: hydraVersion }, capabilities: { experimentalApi: false, requestAttestation: false } } satisfies InitializeParams));
       if (typeof init.userAgent !== 'string' || !init.userAgent.includes(testedCodexVersion)) throw new Error('Codex initialization did not identify the tested version.');
       if (stopped) { await kill(); return; }
       send({ method: 'initialized', params: {} });

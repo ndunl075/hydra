@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { ClientMessage, Snapshot, Provider, Draft, Handoff, OfficialExtensionInfo, ProviderDiagnostic, Task, SessionView } from '../src/core/model';
+import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile } from '../src/core/model';
 import './styles.css';
 
 declare function acquireVsCodeApi(): { postMessage(message: ClientMessage): void; getState(): unknown; setState(state: unknown): void };
@@ -69,6 +69,17 @@ function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: Officia
     </div>
     <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={task.worktree}>{task.worktree}</code></div></footer>
   </>;
+}
+function Changes({ task, files, busy }: { task: Task; files: TaskFile[]; busy: boolean }) {
+  const blocked = busy || task.state === 'running' || task.state === 'external';
+  return <section className="changes" aria-label="Changed files">
+    <div className="section-label">CHANGES <span>{files.length}</span><button className="text-button" onClick={() => send({ type: 'refresh' })}>Refresh</button></div>
+    {files.length ? files.map(file => <div className="change-row" key={file.path}>
+      <div className="change-path"><span className="file-status">{file.status.trim()}</span><span title={file.path}>{file.path}</span><button className="text-button" title={`Open ${file.path} in the native editor`} onClick={() => send({ type: 'openFile', id: task.id, path: file.path })}>Open file</button></div>
+      <div className="change-layers">{file.changes?.map(change => <button className="diff-button" key={change.layer} disabled={blocked} title={`${change.beforePath ? `${change.beforePath} → ` : ''}${change.path} · ${diffLabels[change.layer]}`} onClick={() => send({ type: 'openDiff', id: task.id, path: change.path, layer: change.layer })}>{diffLabels[change.layer]} <Icon name="arrow" /></button>)}</div>
+    </div>) : <p className="quiet">No changes yet. Refresh to check this worktree.</p>}
+    <p className="review-note">{blocked ? 'Stop the task writer or acknowledge official-extension handback to review changes.' : 'Choose a layer to open a read-only native diff. Saved files exclude unsaved editor buffers. Snapshots stay fixed; reopen after edits. Binary and large files show metadata.'} Integration and discard are still pending.</p>
+  </section>;
 }
 function App() {
   const [snapshot, setSnapshot] = useState(initial);
@@ -155,7 +166,7 @@ function App() {
               {selected.interface === 'interactive-cli' && <ProviderCheck provider={selected.provider} diagnostic={snapshot.diagnostics?.find(item => item.provider === selected.provider)} />}
             </article>
             </>}
-            <section className="changes" aria-label="Changed files"><div className="section-label">CHANGES <span>{snapshot.files.length}</span></div>{snapshot.files.length ? snapshot.files.map(file => <button className="file-row" key={file.path} onClick={() => send({ type: 'openFile', id: selected.id, path: file.path })}><span className="file-status">{file.status.trim()}</span><span>{file.path}</span><Icon name="arrow" /></button>) : <p className="quiet">No changes yet. Refresh to check this worktree.</p>}<p className="review-note">Files open in the native editor. Full diff review and integration arrive in M4.</p></section>
+            <Changes task={selected} files={snapshot.files} busy={snapshot.busy} />
           </div>
           <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={selected.worktree}>{selected.worktree}</code></div><div className="footer-actions"><div className="handoff-actions">{(['claude', 'codex'] as const).map(provider => <button key={provider} className="secondary" disabled={snapshot.busy || selected.state === 'external' || selected.state === 'running' || selected.interface === 'official-extension'} onClick={() => send({ type: 'handoff', id: selected.id, provider })}>Open in {providerName(provider)} <Icon name="arrow" /></button>)}</div>{selected.state === 'external' && selected.interface === 'interactive-cli' && <button className="stop-button" onClick={() => send({ type: 'stop', id: selected.id })}>Stop terminal</button>}</div></footer>
         </>}

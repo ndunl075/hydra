@@ -15,6 +15,7 @@ A Windows-first VS Code extension for switching between ordinary editing and an 
 - Create titled Claude Code or Codex tasks from the manager or **Hydra: New Task**. Each starts at committed HEAD in a unique `agent/…` branch and sibling worktree; dirty main-checkout edits stay in place.
 - Open the provider in a native terminal at the exact worktree and use **Copy prompt** to paste the task when ready. Provider authentication, conversation, and permissions stay in the official CLI.
 - Search and filter tasks, inspect worktree identity, refresh changed-file inventory, and open existing files in the native editor.
+- Review stopped tasks in native read-only diff tabs: base-to-saved, committed, staged, unstaged, and untracked changes. Renames preserve both paths; deletions compare against an empty side. Binary, large, non-UTF-8, and submodule changes show metadata instead of a simulated text diff.
 - Stop a terminal explicitly. Task worktrees and branches remain available. Closing the manager or switching modes keeps the task terminals alive.
 - Hand off an idle or stopped task with **Open in Claude Code** or **Open in Codex**. A generated `.code-workspace` opens in a separate window with only that exact checkout, the local task prompt, and the official extension recommendation.
 - Run **Check Claude Code / Codex** in the manager to inspect the configured CLI version and public help, or use **Hydra: Check Default Provider Capabilities**. **View diagnostics** opens the captured arguments, stdout, stderr, and exit status locally.
@@ -22,7 +23,7 @@ A Windows-first VS Code extension for switching between ordinary editing and an 
 - **Start managed Codex** uses pinned CLI 0.154.0 App Server: streamed text, recorded thread-ID follow-ups, provider token usage, scoped command/file/network approval cards, and explicit turn interruption. Windows sandbox readiness is checked before any model turn.
 - Saved records recover after reload. Missing sessions become interrupted, never completed. Hydra stops its owned terminals on extension shutdown and does not promise background survival or automatic CLI resume.
 
-The manager occupies a supported editor tab alongside native editors and terminals. It does not promise exact restoration of arbitrary grid layouts. Model controls, broader provider approval prompts, native diff review, integration, and discard are subsequent features. Authenticated Codex acceptance remains pending.
+The manager occupies a supported editor tab alongside native editors and terminals. It does not promise exact restoration of arbitrary grid layouts. Model controls, broader provider approval prompts, integration, and discard are subsequent features. Authenticated Codex acceptance remains pending.
 
 ## Provider and worktree settings
 
@@ -44,7 +45,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.6.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
+Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.7.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 
@@ -87,3 +88,11 @@ On Windows, Hydra checks public `windowsSandbox/readiness` without changing syst
 **Stop process** sends `turn/interrupt` for the exact active thread/turn, waits for completion, and falls back to stopping its owned process tree if cancellation fails. A turn requires a matching final status and clean process exit to finish; a finished turn leaves the code task idle for review. Reload preserves responses and provider-owned IDs, clears pending approvals, marks unfinished turns interrupted, and never restarts a model automatically. A session cannot be resumed through a different provider after handoff.
 
 Version-generated request types are checked into source with provenance. Local fixtures and real VS Code hosts validate streaming, resume, approvals, interruption, storage, errors, writer exclusion, and shared concurrency without model requests. The real Windows CLI passed schema generation and initialization; its isolated test home lacked a ready editing sandbox. **Authenticated Codex model/tool acceptance is still pending**, and that limitation is recorded in [protocol evidence](docs/Provider_Protocol.md). See the [official App Server guide](https://learn.chatgpt.com/docs/app-server).
+
+## Native change review
+
+Stop the task writer, refresh **Changes**, and choose a comparison under a file: **Base → saved files**, **Committed**, **Staged**, **Unstaged**, or **Untracked**. This shows all Git layers, including staged edits canceled by later working edits. Renames compare the original and destination paths; deleted files have an empty after side. Existing files retain **Open file** for normal native editing.
+
+Text comparisons open native read-only snapshot tabs alongside the manager, labeled with task/branch and captured HEAD. Unsaved buffers are preserved and excluded from saved-file comparisons. Snapshots stay fixed after edits; refresh and reopen when needed. Binary, explicit `-diff`, non-UTF-8, submodule, and over-2-MiB content show metadata notices. Open snapshot content is bounded to 32 MiB. Unmerged index layers direct you to native Source Control conflicts.
+
+Review makes no model requests and does not stage, commit, merge, or mark a task completed. Snapshots do not authorize integration. Clean integration, reviewed-state validation, conflict recovery, and confirmed discard remain separate M4 features. See [native review behavior and acceptance evidence](docs/Native_Review.md). Real-Git tests and Windows native host tests cover each layer, rename/deletion, binary handling, path boundaries, dirty-buffer preservation, and unchanged provider request logs.

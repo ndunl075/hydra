@@ -22,17 +22,24 @@ else {
       if (message.params.capabilities.experimentalApi !== false) throw new Error('Unexpected experimental opt-in');
       reply({ userAgent: options.userAgent || 'hydra/0.154.0 (test)', platformFamily: 'test', platformOs: 'test' });
     } else if (message.method === 'initialized') initialized = true;
+    else if (message.method === 'model/list') {
+      if (!initialized) throw new Error('Missing model discovery initialization');
+      if (options.holdCatalog) { holding = true; return; }
+      if (options.catalogError) { emit({ id: message.id, error: { message: 'Fixture catalog unavailable' } }); return; }
+      reply(options.catalog || { data: [{ model: 'fixture-model', displayName: 'Fixture model', hidden: false, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }], defaultReasoningEffort: 'high' }], nextCursor: null });
+    }
     else if (message.method === 'windowsSandbox/readiness') reply({ status: options.readiness || 'ready' });
     else if (message.method === 'thread/start' || message.method === 'thread/resume') {
       if (!initialized) throw new Error('Missing initialization handshake');
       const id = message.params.threadId || threadId;
-      reply({ thread: { id: options.threadId || id, cliVersion: options.version || '0.154.0', cwd: process.cwd() }, cwd: options.cwd || process.cwd(), approvalPolicy: message.params.approvalPolicy, sandbox: { type: options.sandbox || 'workspaceWrite', writableRoots: [process.cwd()], networkAccess: false } });
+      reply({ thread: { id: options.threadId || id, cliVersion: options.version || '0.154.0', cwd: process.cwd() }, cwd: options.cwd || process.cwd(), approvalPolicy: message.params.approvalPolicy, sandbox: { type: options.sandbox || 'workspaceWrite', writableRoots: [process.cwd()], networkAccess: false }, ...(!options.omitModelSettings ? { model: options.effectiveModel || message.params.model || 'fixture-model', reasoningEffort: Object.hasOwn(options, 'effectiveEffort') ? options.effectiveEffort : message.params.config?.model_reasoning_effort || 'high' } : {}) });
     } else if (message.method === 'turn/start') {
       const params = message.params;
       if (params.threadId !== threadId || params.input[0].text_elements.length || params.cwd !== process.cwd() || params.sandboxPolicy.type !== 'workspaceWrite' || params.sandboxPolicy.writableRoots[0] !== process.cwd() || params.sandboxPolicy.networkAccess !== false) throw new Error('Invalid scoped turn');
       prompt = params.input[0].text;
       reply({ turn: { id: turnId, status: 'inProgress', items: [], error: null } });
       notify('turn/started', { threadId, turn: { id: turnId, status: 'inProgress' } });
+      if (prompt === 'reroute') notify('model/rerouted', { threadId, turnId, fromModel: params.model || 'fixture-model', toModel: 'fixture-fallback', reason: 'rateLimit' });
       notify('item/agentMessage/delta', { threadId: 'bbbbbbbb-bbbb-7bbb-9bbb-bbbbbbbbbbbb', turnId, itemId: 'other', delta: 'Never display a different thread' });
       notify('item/agentMessage/delta', { threadId, turnId, itemId: 'message', delta: 'Streaming ü' });
       if (prompt === 'malformed') { process.stdout.write('not-json\n'); holding = true; }
@@ -64,7 +71,8 @@ else {
   });
   function complete() {
     notify('item/completed', { threadId, turnId, item: { id: 'message', type: 'agentMessage', text: 'Codex ü complete' } });
-    notify('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { last: { inputTokens: 12, outputTokens: 4, cachedInputTokens: 3, cacheWriteInputTokens: 2 } } });
+    const usage = { inputTokens: 12, outputTokens: 4, cachedInputTokens: 3, cacheWriteInputTokens: 2 };
+    notify('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { last: usage, total: usage } });
     notify('turn/completed', { threadId, turn: { id: turnId, status: prompt === 'failed' ? 'failed' : 'completed', error: prompt === 'failed' ? { message: 'Fixture failure' } : null } });
     if (prompt === 'badexit') process.exit(7);
   }

@@ -5,6 +5,13 @@ import { Registry } from '../platform/registry/common/platform.js';
 import { IUserDataProfilesService } from '../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from './services/userDataProfile/common/userDataProfile.js';
 import { IWorkbenchThemeService } from './services/themes/common/workbenchThemeService.js';
+import { IWorkbenchEnvironmentService } from './services/environment/common/environmentService.js';
+
+CommandsRegistry.registerCommand('hydra.desktop.startupContext', accessor => {
+	if (accessor.get(IProductService).nameShort !== 'Hydra') { throw new Error('Hydra desktop is required.'); }
+	const environment = accessor.get(IWorkbenchEnvironmentService);
+	return { development: environment.isExtensionDevelopment || !!environment.extensionTestsLocationURI };
+});
 
 // Owned desktop API: extensions do not infer active profiles from global storage.
 CommandsRegistry.registerCommand('hydra.desktop.profileResources', async accessor => {

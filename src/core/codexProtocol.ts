@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Turn } from './model';
+import { parseModelSelection } from './modelSelection';
 
 export const testedCodexVersion = '0.154.0';
 export type RpcId = string | number;
@@ -70,6 +71,16 @@ export class CodexTurn {
       return true;
     }
     if (!this.id || params.turnId !== this.id || this.completed) return false;
+    if (method === 'model/rerouted') {
+      // The service may reroute after a request has started. Never present the old
+      // pre-turn acknowledgement as the effective model after this notification.
+      const from = parseModelSelection({ model: params.fromModel, effort: 'unknown' }).model;
+      const to = parseModelSelection({ model: params.toModel, effort: 'unknown' }).model;
+      if (typeof params.reason !== 'string' || params.reason.length > 200) throw new Error('Invalid Codex model reroute.');
+      this.turn.modelSettings = { ...this.turn.modelSettings, effective: { model: to, effort: null }, rerouted: { from, to, reason: params.reason } };
+      if (this.turn.modelSettings.requested) throw new Error(`Codex rerouted ${from} to ${to} (${params.reason}). The requested selection no longer holds; stopping this process without submitting another turn.`);
+      return true;
+    }
     if (method === 'item/agentMessage/delta') {
       if (typeof params.itemId !== 'string' || typeof params.delta !== 'string') throw new Error('Invalid Codex message delta.');
       this.messages.set(params.itemId, (this.messages.get(params.itemId) || '') + params.delta);
@@ -85,6 +96,14 @@ export class CodexTurn {
       const valid = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
       if (![usage.inputTokens, usage.outputTokens, usage.cachedInputTokens, usage.cacheWriteInputTokens].every(valid)) throw new Error('Invalid Codex token usage.');
       this.turn.usage = { input: usage.inputTokens, output: usage.outputTokens, cacheRead: usage.cachedInputTokens, cacheCreated: usage.cacheWriteInputTokens };
+      this.turn.usageSource = 'codex-last-request';
+      // `last` is the most recent model response, not all requests inside this turn.
+      // Keep the root-thread cumulative snapshot independently for aggregation.
+      if (params.tokenUsage.total !== undefined) {
+        const total = record(params.tokenUsage.total);
+        if (![total.inputTokens, total.outputTokens, total.cachedInputTokens, total.cacheWriteInputTokens].every(valid)) throw new Error('Invalid Codex cumulative token usage.');
+        this.turn.threadUsage = { sessionId: this.threadId, input: total.inputTokens, output: total.outputTokens, cacheRead: total.cachedInputTokens, cacheCreated: total.cacheWriteInputTokens };
+      }
       return true;
     }
     return false;

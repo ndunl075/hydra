@@ -26,6 +26,7 @@ export class ManagedClaude {
     finally { this.starting.delete(task.id); }
   }
   private async startTurn(task: Task, executable: string, prompt: string): Promise<void> {
+    const expectedSchedule = task.schedule;
     if (task.provider !== 'claude' || task.providerVersion !== testedClaudeVersion) throw new Error('Managed Claude requires the tested CLI version 2.1.270. Check the configured provider first.');
     if (task.sessionId && task.sessionProvider && task.sessionProvider !== 'claude') throw new Error('This recorded session belongs to another provider. Create a separate Claude task.');
     if (task.interface === 'official-extension' || task.state === 'external' || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
@@ -40,6 +41,11 @@ export class ManagedClaude {
       await this.store.save(task.id, view);
       await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'start', cwd: task.worktree, version: testedClaudeVersion, args, prompt });
       await this.persistTask();
+      if (expectedSchedule && (task.schedule !== expectedSchedule || expectedSchedule.state === 'cancelled')) {
+        turn.status = 'interrupted'; turn.error = 'Cancelled before provider process started.';
+        task.state = 'interrupted'; task.error = undefined;
+        await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
+      }
     } catch (error) {
       turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`;
       task.state = 'error'; task.error = turn.error;

@@ -21,6 +21,8 @@ export class AppearanceSettings implements vscode.Disposable {
         if (!message || typeof message !== 'object') throw new Error('Invalid settings action.');
         const action = message as Record<string, unknown>;
         if (action.type === 'ready') { this.publish(); await this.publishImportStatus(); return; }
+        if (action.type === 'accounts') { await vscode.commands.executeCommand('hydra.openAccounts'); return; }
+        if (action.type === 'onboarding') { await vscode.commands.executeCommand('hydra.openOnboarding'); return; }
         if (action.type === 'editorSettings') { await vscode.commands.executeCommand('workbench.action.openSettings', 'hydra'); return; }
         if (action.type === 'previewImport') {
           if (!['vscode', 'cursor', 'folder'].includes(String(action.provider))) throw new Error('Unknown import source.');
@@ -82,6 +84,7 @@ export class AppearanceSettings implements vscode.Disposable {
         #preview { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 18px; margin-top: 18px; } #preview p { overflow-wrap: anywhere; } .categories { display: flex; flex-wrap: wrap; gap: 18px; margin: 18px 0; } input { accent-color: var(--vscode-focusBorder); } input:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
         #import-items { max-height: 260px; overflow: auto; padding-left: 22px; line-height: 1.7; overflow-wrap: anywhere; } #import-warnings { color: var(--vscode-descriptionForeground); line-height: 1.7; } [hidden] { display: none !important; }
       </style></head><body><main><header><h1>Settings</h1><p>Make Hydra feel like your editor.</p></header>
+      ${this.imports.available ? '<section aria-labelledby="setup-heading"><h2 id="setup-heading">Set up Hydra</h2><p>Continue your setup or revisit imports, appearance, and provider accounts.</p><button id="onboarding">Open onboarding</button> <button id="accounts">Provider accounts</button></section>' : ''}
       <section aria-labelledby="appearance"><h2 id="appearance">Appearance</h2><p>Choose a theme for the editor, terminals, and agent manager. Both use Hydra's dark green accents.</p>
       <div class="choices" role="group" aria-label="Appearance"><button class="choice" data-mode="dark" aria-pressed="false"><span class="sample dark" aria-hidden="true">Hydra<br><span></span></span>Dark</button><button class="choice" data-mode="light" aria-pressed="false"><span class="sample light" aria-hidden="true">Hydra<br><span></span></span>Light</button></div>
       <p>Choosing a mode applies it to your user profile and turns off automatic system dark/light switching. High-contrast settings remain available in the editor.</p></section>
@@ -94,6 +97,8 @@ export class AppearanceSettings implements vscode.Disposable {
         const vscode = acquireVsCodeApi(); const status = document.getElementById('status'); const choices = [...document.querySelectorAll('[data-mode]')];
         for (const button of choices) button.addEventListener('click', () => { choices.forEach(choice => choice.disabled = true); status.textContent = 'Applying appearance…'; vscode.postMessage({type:'appearance',mode:button.dataset.mode}); });
         document.getElementById('editor-settings').addEventListener('click', () => vscode.postMessage({type:'editorSettings'}));
+        document.getElementById('accounts')?.addEventListener('click', () => vscode.postMessage({type:'accounts'}));
+        document.getElementById('onboarding')?.addEventListener('click', () => vscode.postMessage({type:'onboarding'}));
         window.addEventListener('message', event => { const message = event.data; if (message?.type === 'appearance') { choices.forEach(button => {button.disabled = false; button.setAttribute('aria-pressed', String(button.dataset.mode === message.mode));}); status.textContent = message.status || ''; } if (message?.type === 'error') { choices.forEach(button => button.disabled = false); status.textContent = message.text; } });
         vscode.postMessage({type:'ready'});
         const importStatus = document.getElementById('import-status');

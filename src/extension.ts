@@ -7,6 +7,8 @@ import { OwnershipLock } from './core/ownership';
 import { createWorktree, git, repositoryRoot, resolveTaskFile, isInside } from './core/worktrees';
 import { captureReview, captureCommitReview, reviewFiles } from './core/review';
 import { prepareCommitReview, commitReviewed } from './core/reviewCommit';
+import { Integrations } from './core/integration';
+import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { SettingsImport } from './extensionImport';
@@ -74,6 +76,10 @@ class Manager {
   private readonly review: ReviewDocuments;
   private readonly commitReviews = new Map<string, PreparedReview>();
   private pendingCommit?: Promise<ReviewedCommit>;
+  private readonly integrations: Integrations;
+  private readonly integrationOperations = new Map<string, IntegrationOperation>();
+  private pendingIntegration?: Promise<unknown>;
+  private integrationAbort?: { taskId: string; operationId?: string; controller: AbortController };
   private readonly settings: AppearanceSettings;
   private readonly settingsImport: SettingsImport;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
@@ -85,6 +91,11 @@ class Manager {
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
+    this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
+      this.integrationOperations.set(op.taskId,op);
+      if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
+      void this.publish();
+    });
     this.review = new ReviewDocuments(context);
     this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.publish(); }, error => this.report(error));
   }
@@ -130,6 +141,12 @@ class Manager {
     command('hydra.prepareCommitReview', async (id: string) => { await this.handle({ type: 'prepareCommitReview', id }); return structuredClone(this.commitReviews.get(id)); });
     command('hydra.openCommitReview', (id: string, token: string, filePath: string) => this.handle({ type: 'openCommitReview', id, token, path: filePath }));
     command('hydra.commitReviewed', async (id: string, token: string, message: string) => { await this.handle({ type: 'commitReviewed', id, token, message }); return structuredClone(this.getTask(id).reviewedCommit); });
+    command('hydra.prepareIntegration',async(id:string,checks:unknown)=>{await this.handle({type:'prepareIntegration',id,checks});return structuredClone(this.integrationOperations.get(id));});
+    command('hydra.getIntegration',(id:string)=>structuredClone(this.integrationOperations.get(this.getTask(id).id)));
+    command('hydra.promoteIntegration',(id:string,operationId:string)=>this.handle({type:'promoteIntegration',id,operationId}));
+    command('hydra.reviewIntegrationResolution',async(id:string,operationId:string)=>{await this.handle({type:'reviewIntegrationResolution',id,operationId});return structuredClone(this.integrationOperations.get(id));});
+    command('hydra.acceptIntegrationResolution',(id:string,operationId:string,token:string)=>this.handle({type:'acceptIntegrationResolution',id,operationId,token}));
+    command('hydra.openIntegrationDiff',(id:string,operationId:string,filePath:string)=>this.handle({type:'openIntegrationDiff',id,operationId,path:filePath}));
     command('hydra.getChanges', async (id: string) => { const task = this.getTask(id); if (!vscode.workspace.isTrusted || this.disabled) throw new Error('Task review requires a trusted, healthy workspace.'); await this.verifyWorktree(task); return reviewFiles(task.worktree, task.baseCommit); });
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
@@ -172,6 +189,7 @@ class Manager {
           }
         }
         await this.store.save(this.tasks);
+        for(const op of await this.integrations.recover(this.tasks))this.integrationOperations.set(op.taskId,op);
       }
       this.selectedId = this.tasks[0]?.id;
       this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
@@ -246,6 +264,18 @@ class Manager {
       if (isInside(root, file) || isInside(root, document.uri.fsPath)) throw new Error('Save or revert unsaved task editor buffers before preparing a commit review.');
     }
   }
+  private async guardIntegration(task:Task,paths:string[]):Promise<void>{
+    await this.guardCommitReview(task);
+    for(const directory of paths){
+      const root=await realpath(directory);
+      for(const document of vscode.workspace.textDocuments){
+        if(!document.isDirty||document.uri.scheme!=='file')continue;
+        const file=await realpath(document.uri.fsPath).catch(()=>document.uri.fsPath);
+        if(isInside(root,file)||isInside(root,document.uri.fsPath))throw new Error('Save or revert unsaved task, target, and candidate editor buffers before integration.');
+      }
+    }
+    if(this.closing||this.disabled||!vscode.workspace.isTrusted)throw new Error('Integration cancelled because the workspace closed or lost trust.');
+  }
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
@@ -270,12 +300,16 @@ class Manager {
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
+      integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
         return [item.id, { active: !!view?.active, awaitingApproval: !!view?.active && !!view.approvals?.length }];
       }))
     };
     await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
+  }
+  private integrationSnapshot(op?:IntegrationOperation):IntegrationOperation|undefined{
+    return op?{...op,checks:op.checks.map(({stdout:_stdout,stderr:_stderr,...check})=>check)}:undefined;
   }
   private async openAgents(): Promise<void> {
     if (this.mode !== 'agents') {
@@ -363,7 +397,7 @@ class Manager {
       return;
     }
     if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp', 'prepareCommitReview', 'commitReviewed','prepareIntegration','promoteIntegration','reviewIntegrationResolution','acceptIntegrationResolution'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -395,7 +429,38 @@ class Manager {
       return;
     }
     if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }
+    if(message.type==='cancelIntegration'){
+      if(this.integrationAbort?.taskId!==task.id||this.integrationAbort.operationId!==message.operationId)throw new Error('This integration has no active checks to cancel.');
+      this.integrationAbort.controller.abort();return;
+    }
     await this.verifyWorktree(task);
+    if(message.type==='prepareIntegration'||message.type==='promoteIntegration'||message.type==='reviewIntegrationResolution'||message.type==='acceptIntegrationResolution'){
+      if(this.busy)throw new Error('Another task operation is in progress.');
+      this.busy=true;this.error=undefined;
+      const controller=new AbortController();this.integrationAbort={taskId:task.id,controller};
+      const action=async()=>{
+        const guard=(paths:string[])=>this.guardIntegration(task,paths);
+        if(message.type==='prepareIntegration'){await this.integrations.prepare(task,message.checks,guard,controller.signal);return;}
+        const op=this.getIntegration(task,message.operationId);this.integrationAbort!.operationId=op.id;
+        if(message.type==='promoteIntegration')await this.integrations.promote(task,op,guard);
+        else if(message.type==='reviewIntegrationResolution')await this.integrations.reviewResolution(task,op,guard);
+        else if(message.type==='acceptIntegrationResolution')await this.integrations.acceptResolution(task,op,message.token,guard,controller.signal);
+      };
+      this.pendingIntegration=action();
+      try{await this.pendingIntegration;}finally{this.pendingIntegration=undefined;this.integrationAbort=undefined;this.busy=false;this.fileCache=undefined;await this.publish();}
+      return;
+    }
+    if(message.type==='copyIntegrationCandidate'||message.type==='showIntegrationLog'||message.type==='openIntegrationDiff'){
+      const op=this.getIntegration(task,message.operationId);
+      if(message.type==='copyIntegrationCandidate'){await vscode.env.clipboard.writeText(op.candidate);return;}
+      if(message.type==='showIntegrationLog'){await this.review.openLog(`${task.title} · Integration ${op.id}`,JSON.stringify(op,null,2));return;}
+      if(message.type!=='openIntegrationDiff')return;
+      if(this.reviewBlocked(task)||!op.candidateCommit||!op.candidateTree)throw new Error('Stop task writers and prepare a candidate review before opening its snapshots.');
+      const prepared:PreparedReview={token:op.reviewToken||op.id,head:op.candidateCommit,tree:op.candidateTree,baseCommit:op.targetCommit,branch:op.targetBranch,indexHash:'',createdAt:op.updatedAt,files:op.files};
+      const snapshot=await captureCommitReview(op.candidate,prepared,message.path);
+      if(this.reviewBlocked(task))throw new Error('Task writer restarted. Stop it before reviewing the candidate.');
+      await this.review.open(`${task.title} · Integration into ${op.targetBranch}`,op.candidate,snapshot);return;
+    }
     if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'prepareCommitReview' || message.type === 'commitReviewed') {
       if (this.busy) throw new Error('Another task operation is in progress.');
@@ -528,6 +593,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.managed.shutdown();
@@ -539,5 +605,10 @@ class Manager {
     }
     try { if (!this.disabled) await this.store.save(this.tasks); }
     finally { for (const lock of this.locks) await lock.release(); }
+  }
+  private getIntegration(task:Task,id:string):IntegrationOperation{
+    const op=this.integrationOperations.get(task.id);
+    if(!op||op.id!==id)throw new Error('Integration operation expired. Select the current candidate.');
+    return op;
   }
 }

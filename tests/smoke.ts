@@ -6,6 +6,7 @@ import type { Handoff, Task, ProviderDiagnostic, SessionView, TaskFile, DiffLaye
 import { git } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
+import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   while (!await predicate()) {
@@ -320,5 +321,17 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.commitReviewed', commitTask.id, fresh.token, 'Duplicate'), /Review expired/);
     assert.equal(editDocument.isDirty, true); assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore); assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
     console.log('PASS: native prepared review uses fixed Git objects, refuses dirty buffers and stale state, records the exact reviewed commit, and makes zero provider requests.');
+    const targetFile=path.join(repository,'keep.txt'),targetBytes=await readFile(targetFile),targetBefore=(await git(repository,['rev-parse','HEAD'])).trim();
+    const checks=[{executable:'git',args:['diff','--check',commitTask.baseCommit,'HEAD']}];
+    await assert.rejects(async()=>await vscode.commands.executeCommand('hydra.prepareIntegration',commitTask.id,checks),/clean saved/);
+    try{
+      await git(repository,['restore','keep.txt']);
+      const candidate=await vscode.commands.executeCommand<IntegrationOperation>('hydra.prepareIntegration',commitTask.id,checks);assert.ok(candidate);assert.equal(candidate.phase,'validated');assert.equal((await git(repository,['rev-parse','HEAD'])).trim(),targetBefore);
+      await vscode.commands.executeCommand('hydra.openIntegrationDiff',commitTask.id,candidate.id,'commit review ü.txt');
+      const integrationTab=vscode.window.tabGroups.activeTabGroup.activeTab?.input;assert.ok(integrationTab instanceof vscode.TabInputTextDiff);assert.equal((await vscode.workspace.openTextDocument(integrationTab.modified)).getText(),'stale saved edit\n');
+      await vscode.commands.executeCommand('hydra.promoteIntegration',commitTask.id,candidate.id);assert.equal((await git(repository,['rev-parse','HEAD'])).trim(),candidate.candidateCommit);assert.equal((await git(repository,['rev-parse',`refs/hydra/integration-backups/${candidate.id}`])).trim(),targetBefore);assert.equal((await git(commitTask.worktree,['rev-parse','HEAD'])).trim(),receipt.commit);assert.equal(await readFile(path.join(repository,'commit review ü.txt'),'utf8'),'stale saved edit\n');assert.equal(editDocument.isDirty,true);
+    }finally{await writeFile(targetFile,targetBytes);}
+    assert.equal(await readFile(path.join(tasks[0]!.worktree,'requests.jsonl'),'utf8'),claudeRequestsBefore);assert.equal(await readFile(path.join(tasks[1]!.worktree,'codex-requests.jsonl'),'utf8'),codexRequestsBefore);
+    console.log('PASS: native integration refuses dirty target, reviews immutable candidate diff, runs explicit checks and promotes through owning checkout with retained task and rollback reference, without provider requests.');
   }
 }

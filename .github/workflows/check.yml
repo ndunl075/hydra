@@ -14,5 +14,6 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build
+      - run: npm test
       - run: xvfb-run -a npm run test:smoke
       - run: npm run package

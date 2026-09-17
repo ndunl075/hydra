@@ -30,6 +30,14 @@ The product is its own Hydra IDE, built as a maintained desktop editor distribut
 
 ## The two mode experience
 
+### Agent orchestration visual
+
+Nico's visual reference is an n8n-style workflow canvas above the Agents workspace: a dotted background, recognizable provider logos, visible node ports, curved directional connections, and multiple accent colors. Keep the IDE's black/white primary and dark-green actions; use coral, teal, and blue to distinguish providers and checkout relationships inside the canvas. Keep task text and status labels readable without relying on color alone.
+
+The first map shows recorded repository → worktree → assigned-agent relationships and locally observed managed activity. Selecting an agent opens its task. Motion pauses for approval, inactive or unobserved sessions, the pause control, and reduced-motion preference. Collapse and zoom controls keep the view useful in small windows. Rendering and interaction use local code with zero model calls.
+
+When scheduling and task dependencies are implemented, add actual dependency and handoff edges with event provenance. Do not infer communication between agents from shared repository membership or animate estimated token traffic. Unobserved official-extension sessions remain explicitly labeled.
+
 ### Editor mode
 
 The left side shows the normal Explorer and native navigation. The center contains editor tabs and splits. The bottom contains the integrated terminal, output, problems, and debug console. Official Claude Code and Codex extension panels remain available. A compact status item shows active tasks and approvals that need attention.

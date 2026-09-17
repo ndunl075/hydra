@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { AgentMap } from './AgentMap';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile } from '../src/core/model';
 import './styles.css';
 
@@ -120,6 +121,7 @@ function App() {
       <div className="mode-switch" aria-label="Workspace mode"><button onClick={() => send({ type: 'editor' })}>Editor</button><button className="current" aria-current="page">Agents</button></div>
       <button className="icon-button" title="Hydra settings" aria-label="Hydra settings" onClick={() => send({ type: 'settings' })}>···</button>
     </header>
+    {!snapshot.handoff && snapshot.tasks.length > 0 && <AgentMap snapshot={snapshot} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />}
     <div className="workspace">
       <aside className="task-rail" aria-label="Tasks">
         <div className="rail-header"><h1>Tasks <span>{snapshot.tasks.length}</span></h1><button className="icon-button" disabled={!!snapshot.handoff} aria-label="New task" title="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>

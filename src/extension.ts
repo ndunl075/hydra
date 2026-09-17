@@ -253,7 +253,11 @@ class Manager {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
       providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft,
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
-      diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined
+      diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
+      taskActivity: Object.fromEntries(this.tasks.map(item => {
+        const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
+        return [item.id, { active: !!view?.active, awaitingApproval: !!view?.active && !!view.approvals?.length }];
+      }))
     };
     await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
   }

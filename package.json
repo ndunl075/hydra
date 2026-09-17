@@ -3,7 +3,7 @@
   "displayName": "Hydra",
   "icon": "hydra-logo.png",
   "description": "Hydra IDE's built-in Editor and Agents workflow with isolated Git worktrees and native provider terminals.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "nico-dunlap",
   "repository": {
     "type": "git",
@@ -38,7 +38,7 @@
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node scripts/test.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-core-0.10.0.vsix",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-core-0.11.0.vsix",
     "vscode:prepublish": "npm run check && npm run build",
     "test:smoke": "node scripts/smoke.mjs"
   },

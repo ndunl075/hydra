@@ -31,6 +31,7 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
 - Open the provider in a native terminal at the exact worktree and use **Copy prompt** to paste the task when ready. Provider authentication, conversation, and permissions stay in the official CLI.
 - Search and filter tasks, inspect worktree identity, refresh changed-file inventory, and open existing files in the native editor.
 - Review stopped tasks in native read-only diff tabs: base-to-saved, committed, staged, unstaged, and untracked changes. Renames preserve both paths; deletions compare against an empty side. Binary, large, non-UTF-8, and submodule changes show metadata instead of a simulated text diff.
+- Stage saved task changes, then **Prepare commit review** to inspect a fixed tree against the task base. **Commit reviewed tree** creates the exact reviewed commit, or records an already-committed tree. Stale changes, active writers, and unsaved task buffers refuse; native Git hooks still apply. The local receipt does not integrate the target branch. See [review behavior](docs/Native_Review.md#reviewed-task-commits).
 - Stop a terminal explicitly. Task worktrees and branches remain available. Closing the manager or switching modes keeps the task terminals alive.
 - Hand off an idle or stopped task with **Open in Claude Code** or **Open in Codex**. A generated `.code-workspace` opens in a separate window with only that exact checkout, the local task prompt, and the official extension recommendation.
 - Run **Check Claude Code / Codex** in the manager to inspect the configured CLI version and public help, or use **Hydra: Check Default Provider Capabilities**. **View diagnostics** opens the captured arguments, stdout, stderr, and exit status locally.
@@ -62,7 +63,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.10.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import is unavailable in that development host. The standalone installer and subscription-account onboarding remain upcoming desktop features.
+Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.12.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import is unavailable in that development host. The standalone installer and subscription-account onboarding remain upcoming desktop features.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

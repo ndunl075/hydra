@@ -4,8 +4,9 @@ import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalStore } from './core/store';
 import { OwnershipLock } from './core/ownership';
-import { createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
-import { captureReview, reviewFiles } from './core/review';
+import { createWorktree, git, repositoryRoot, resolveTaskFile, isInside } from './core/worktrees';
+import { captureReview, captureCommitReview, reviewFiles } from './core/review';
+import { prepareCommitReview, commitReviewed } from './core/reviewCommit';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { SettingsImport } from './extensionImport';
@@ -15,7 +16,7 @@ import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { testedClaudeVersion } from './core/claudeProtocol';
 import { testedCodexVersion } from './core/codexProtocol';
-import type { Provider, ProviderDiagnostic } from './core/model';
+import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
@@ -71,6 +72,8 @@ class Manager {
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
   private readonly review: ReviewDocuments;
+  private readonly commitReviews = new Map<string, PreparedReview>();
+  private pendingCommit?: Promise<ReviewedCommit>;
   private readonly settings: AppearanceSettings;
   private readonly settingsImport: SettingsImport;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
@@ -124,6 +127,9 @@ class Manager {
     command('hydra.getSession', (id: string) => structuredClone(this.managed.view(id)));
     command('hydra.approve', (id: string, approvalId: string, decision: string) => this.handle({ type: 'approve', id, approvalId, decision }));
     command('hydra.openDiff', (id: string, filePath: string, layer: string) => this.handle({ type: 'openDiff', id, path: filePath, layer }));
+    command('hydra.prepareCommitReview', async (id: string) => { await this.handle({ type: 'prepareCommitReview', id }); return structuredClone(this.commitReviews.get(id)); });
+    command('hydra.openCommitReview', (id: string, token: string, filePath: string) => this.handle({ type: 'openCommitReview', id, token, path: filePath }));
+    command('hydra.commitReviewed', async (id: string, token: string, message: string) => { await this.handle({ type: 'commitReviewed', id, token, message }); return structuredClone(this.getTask(id).reviewedCommit); });
     command('hydra.getChanges', async (id: string) => { const task = this.getTask(id); if (!vscode.workspace.isTrusted || this.disabled) throw new Error('Task review requires a trusted, healthy workspace.'); await this.verifyWorktree(task); return reviewFiles(task.worktree, task.baseCommit); });
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
@@ -231,6 +237,15 @@ class Manager {
   }
   private async persist(): Promise<void> { await this.store.save(this.tasks); await this.publish(); }
   private reviewBlocked(task: Task): boolean { return this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
+  private async guardCommitReview(task: Task): Promise<void> {
+    if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
+    const root = await realpath(task.worktree);
+    for (const document of vscode.workspace.textDocuments) {
+      if (!document.isDirty || document.uri.scheme !== 'file') continue;
+      const file = await realpath(document.uri.fsPath).catch(() => document.uri.fsPath);
+      if (isInside(root, file) || isInside(root, document.uri.fsPath)) throw new Error('Save or revert unsaved task editor buffers before preparing a commit review.');
+    }
+  }
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
@@ -254,6 +269,7 @@ class Manager {
       providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft,
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
+      commitReview: task ? this.commitReviews.get(task.id) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
         return [item.id, { active: !!view?.active, awaitingApproval: !!view?.active && !!view.approvals?.length }];
@@ -347,7 +363,7 @@ class Manager {
       return;
     }
     if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -381,6 +397,39 @@ class Manager {
     if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }
     await this.verifyWorktree(task);
     if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (message.type === 'prepareCommitReview' || message.type === 'commitReviewed') {
+      if (this.busy) throw new Error('Another task operation is in progress.');
+      this.busy = true;
+      try {
+        this.error = undefined;
+        await this.guardCommitReview(task);
+        if (message.type === 'prepareCommitReview') {
+          this.commitReviews.delete(task.id);
+          const prepared = await prepareCommitReview(task.worktree, task.baseCommit, task.branch);
+          await this.guardCommitReview(task);
+          this.commitReviews.set(task.id, prepared);
+        } else {
+          const prepared = this.commitReviews.get(task.id);
+          if (!prepared || prepared.token !== message.token) throw new Error('Review expired. Prepare a fresh review.');
+          this.commitReviews.delete(task.id);
+          this.pendingCommit = commitReviewed(task.worktree, prepared, message.message, () => this.guardCommitReview(task));
+          task.reviewedCommit = await this.pendingCommit;
+          task.updatedAt = new Date().toISOString();
+          await this.persist();
+        }
+      } finally { this.pendingCommit = undefined; this.fileCache = undefined; this.busy = false; await this.publish(); }
+      return;
+    }
+    if (message.type === 'openCommitReview') {
+      if (this.reviewBlocked(task)) throw new Error('Stop this task writer before reviewing changes.');
+      const prepared = this.commitReviews.get(task.id);
+      if (!prepared || prepared.token !== message.token) throw new Error('Review expired. Prepare a fresh review.');
+      const snapshot = await captureCommitReview(task.worktree, prepared, message.path);
+      if (this.reviewBlocked(task)) throw new Error('Stop this task writer before reviewing changes.');
+      await this.review.open(`${task.title} · Prepared tree ${prepared.tree.slice(0, 8)}`, task.worktree, snapshot);
+      return;
+    }
+    if (['startManaged', 'followUp', 'launch', 'terminal', 'handoff'].includes(message.type)) this.commitReviews.delete(task.id);
     if (message.type === 'showSessionDiagnostics') {
       const turn = this.managed.view(task.id)?.turns.at(-1);
       if (!turn) throw new Error('No managed turn diagnostics yet.');
@@ -479,6 +528,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    await this.pendingCommit?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.managed.shutdown();
     for (const [id, terminal] of this.terminals) {

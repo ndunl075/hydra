@@ -2,7 +2,7 @@ import { lstat, open, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { git, gitBytes } from './git';
 import { isInside } from './worktrees';
-import type { DiffLayer, FileChange, TaskFile } from './model';
+import type { DiffLayer, FileChange, TaskFile, PreparedReview } from './model';
 
 export const textLimit = 2 * 1024 * 1024;
 export interface ReviewContent { kind: 'text' | 'binary' | 'large' | 'submodule' | 'unsupported'; text?: string; bytes: number; mode?: string; oid?: string; absent?: boolean }
@@ -117,4 +117,15 @@ export async function captureReview(worktree: string, baseCommit: string, relati
   const attributes = (await git(worktree, ['--literal-pathspecs', 'check-attr', '-z', 'diff', '--', relative])).split('\0');
   if (attributes[2] === 'unset') for (const side of [left, right]) if (!side.absent && side.kind === 'text') { side.kind = 'binary'; delete side.text; }
   return { ...change, left, right, head, createdAt: new Date().toISOString() };
+}
+/** Read both sides from immutable objects; never reread the live index for a prepared review. */
+export async function captureCommitReview(worktree: string, prepared: PreparedReview, relative: string): Promise<ReviewSnapshot> {
+  validatePath(relative);
+  const change = prepared.files.find(file => file.path === relative);
+  if (!change) throw new Error('This file is not part of the prepared review.');
+  const left = await blob(worktree, prepared.baseCommit, change.beforePath || relative);
+  const right = await blob(worktree, prepared.tree, relative);
+  const attributes = (await git(worktree, ['--literal-pathspecs', 'check-attr', `--source=${prepared.tree}`, '-z', 'diff', '--', relative])).split('\0');
+  if (attributes[2] === 'unset') for (const side of [left, right]) if (!side.absent && side.kind === 'text') { side.kind = 'binary'; delete side.text; }
+  return { ...change, layer: 'combined', left, right, head: prepared.head, createdAt: prepared.createdAt };
 }

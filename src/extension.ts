@@ -6,7 +6,9 @@ import { LocalStore } from './core/store';
 import { OwnershipLock } from './core/ownership';
 import { changedFiles, createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
 import { findProvider, terminalLaunch } from './core/providers';
-import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft } from './core/model';
+import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
+import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
+import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
 
 let manager: Manager | undefined;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -53,6 +55,7 @@ class Manager {
   private readonly storageDirectory: string;
   private snapshotGeneration = 0;
   private pendingNewTask = false;
+  private handoff?: Handoff;
   constructor(private readonly context: vscode.ExtensionContext) {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
@@ -76,6 +79,11 @@ class Manager {
     command('hydra.launchTask', (id: string) => this.handle({ type: 'launch', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
     command('hydra.listTasks', () => structuredClone(this.tasks));
+    command('hydra.handoffClaude', (id?: string) => this.handoffCommand('claude', id));
+    command('hydra.handoffCodex', (id?: string) => this.handoffCommand('codex', id));
+    command('hydra.releaseExternal', (id: string) => this.handle({ type: 'releaseExternal', id }));
+    command('hydra.openOfficialExtension', () => this.handle({ type: 'openOfficial' }));
+    command('hydra.getHandoff', () => structuredClone(this.handoff));
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
     this.status.show();
@@ -103,7 +111,7 @@ class Manager {
           this.locks.push(lock);
         }
         for (const task of this.tasks) {
-          if (task.state === 'external') task.state = 'interrupted';
+          if (task.state === 'external' && task.interface === 'interactive-cli') task.state = 'interrupted';
           try { await this.verifyWorktree(task); }
           catch (error) { task.state = 'error'; task.error = this.describe(error); }
         }
@@ -114,7 +122,26 @@ class Manager {
     } catch (error) { this.disabled = true; this.report(error); }
     try { await this.refreshProviders(); }
     catch (error) { this.report(error); }
+    try {
+      this.handoff = parseHandoff(vscode.workspace.getConfiguration('hydra').get('handoff'));
+      if (this.handoff) { await this.verifyHandoffWorkspace(); await this.openAgents(); }
+    } catch (error) { this.disabled = true; this.report(error); }
     await this.publish();
+  }
+  private async handoffCommand(provider: 'claude' | 'codex', id?: string): Promise<string | undefined> {
+    if (!id) {
+      const picked = await vscode.window.showQuickPick(this.tasks.map(task => ({ label: task.title, description: task.branch, id: task.id })), { title: `Open task in ${provider === 'claude' ? 'Claude Code' : 'Codex'}` });
+      if (!picked) return;
+      id = picked.id;
+    }
+    await this.handle({ type: 'handoff', id, provider });
+    return path.join(this.context.globalStorageUri.fsPath, 'handoffs', `${id}-${provider}.code-workspace`);
+  }
+  private async verifyHandoffWorkspace(): Promise<void> {
+    if (!this.handoff) throw new Error('Open the task handoff workspace to use this action.');
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length !== 1 || path.relative(await realpath(folders[0]!.uri.fsPath), await realpath(this.handoff.task.worktree)) !== '') throw new Error('Handoff workspace does not match the exact task worktree.');
+    await this.verifyWorktree(this.handoff.task);
   }
   private async refreshRepositories(): Promise<void> {
     const repositories: string[] = [];
@@ -141,7 +168,7 @@ class Manager {
     if (!task) throw new Error('Task not found.');
     return task;
   }
-  private async verifyWorktree(task: Task): Promise<void> {
+  private async verifyWorktree(task: Pick<HandoffTask, 'repository' | 'worktree' | 'branch'>): Promise<void> {
     const actual = await realpath(task.worktree);
     if (actual !== await repositoryRoot(actual)) throw new Error('Saved worktree is not a repository root.');
     const [taskCommon, mainCommon, branch] = await Promise.all([
@@ -169,7 +196,8 @@ class Manager {
     if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
-      providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft
+      providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft,
+      handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex'))
     };
     await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
   }
@@ -227,6 +255,17 @@ class Manager {
     if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider }; return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use task worktrees and terminals.');
     if (this.disabled) throw new Error('Hydra task operations are disabled. Resolve the storage or ownership error and reload this window.');
+    if (message.type === 'openOfficial' || message.type === 'showOfficial' || message.type === 'copyHandoffPrompt') {
+      await this.verifyHandoffWorkspace();
+      const handoff = this.handoff!;
+      if (message.type === 'openOfficial') await openOfficialExtension(handoff.task.provider);
+      else if (message.type === 'showOfficial') await vscode.commands.executeCommand('workbench.extensions.search', `@id:${officialProviders[handoff.task.provider].extensionId}`);
+      else await vscode.env.clipboard.writeText(handoff.task.prompt);
+      await this.publish();
+      return;
+    }
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -256,9 +295,26 @@ class Manager {
       return;
     }
     await this.verifyWorktree(task);
+    if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (message.type === 'releaseExternal') {
+      if (task.interface !== 'official-extension') return;
+      task.interface = 'interactive-cli';
+      task.state = 'idle';
+      task.error = undefined;
+      task.updatedAt = new Date().toISOString();
+      await this.persist();
+      return;
+    }
+    if (message.type === 'handoff') {
+      this.busy = true;
+      try {
+        await handoffTask(task, path.join(this.context.globalStorageUri.fsPath, 'handoffs'), message.provider, this.terminals.has(task.id),
+          () => this.persist(), async workspace => { await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspace), { forceNewWindow: true }); });
+      } finally { this.busy = false; await this.publish(); }
+      return;
+    }
     if (message.type === 'openWorktree') {
-      if (this.terminals.has(task.id)) throw new Error('Stop this task terminal before handing off to another window.');
-      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(task.worktree), { forceNewWindow: true });
+      await this.handle({ type: 'handoff', id: task.id, provider: task.provider });
       return;
     }
     if (message.type === 'openFile') {
@@ -267,6 +323,7 @@ class Manager {
       return;
     }
     if (message.type === 'terminal' || message.type === 'launch') {
+      assertCliAllowed(task);
       const existing = this.terminals.get(task.id);
       if (existing) { existing.show(false); return; }
       const max = vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2);
@@ -275,6 +332,8 @@ class Manager {
       const provider = this.providers.find(item => item.provider === task.provider);
       if (!provider?.executable) throw new Error(`${task.provider} CLI not found. Install it or set Hydra's ${task.provider} path. Authentication remains with the official CLI.`);
       // Recheck after async probes to prevent simultaneous webview launches exceeding the limit.
+      if (this.busy) throw new Error('Another task operation is in progress.');
+      assertCliAllowed(task);
       const duplicate = this.terminals.get(task.id);
       if (duplicate) { duplicate.show(false); return; }
       if (this.terminals.size >= max) throw new Error('The terminal concurrency limit is reached.');

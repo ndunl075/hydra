@@ -18,7 +18,7 @@ export class LocalStore {
       if (!/^[a-f0-9]{12}$/.test(task.id) || ids.has(task.id) ||
         !['title', 'prompt', 'repository', 'worktree', 'branch', 'baseCommit', 'integrationTarget', 'createdAt', 'updatedAt'].every(key => typeof (task as unknown as Record<string, unknown>)[key] === 'string') ||
         !path.isAbsolute(task.repository) || !path.isAbsolute(task.worktree) || !/^[a-f0-9]{40,64}$/.test(task.baseCommit) ||
-        !['claude', 'codex'].includes(task.provider) || task.interface !== 'interactive-cli' ||
+        !['claude', 'codex'].includes(task.provider) || !['interactive-cli', 'official-extension'].includes(task.interface) ||
         !['idle', 'external', 'interrupted', 'error'].includes(task.state)) throw new Error('Invalid task record. Original data has been retained.');
       ids.add(task.id);
     }

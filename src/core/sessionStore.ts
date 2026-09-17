@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { SessionView } from './model';
 import { validThreadUsage } from './usage';
+import { validateTurnModelSettings } from './modelSelection';
 
 export class SessionStore {
   private queue: Promise<void> = Promise.resolve();
@@ -46,6 +47,10 @@ export class SessionStore {
         (turn.usage !== undefined && (!turn.usage || !number(turn.usage.input) || !number(turn.usage.output) || ['cacheRead', 'cacheCreated', 'estimatedUsd'].some(key => {
           const value = (turn.usage as unknown as Record<string, unknown>)[key]; return value !== undefined && !number(value);
         })))) return true;
+      if (turn.modelSettings !== undefined) {
+        if (turn.provider !== 'codex') return true;
+        validateTurnModelSettings(turn.modelSettings);
+      }
       ids.add(turn.id); return false;
     })) throw new Error('Invalid managed session history. Original data retained.');
     for (const turn of data.turns) if (turn.status === 'running') { turn.status = 'interrupted'; turn.error = 'The previous provider process is unavailable. Resume only after checking the task worktree.'; }

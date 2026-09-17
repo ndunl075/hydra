@@ -22,6 +22,8 @@ import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
 import { usageSnapshot } from './core/usage';
+import { discoverCodexModels } from './core/codexModels';
+import { requireAdvertisedSelection, type ModelCatalog } from './core/modelSelection';
 import { testedClaudeVersion } from './core/claudeProtocol';
 import { testedCodexVersion } from './core/codexProtocol';
 import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
@@ -77,6 +79,7 @@ class Manager {
   private pendingNewTask = false;
   private handoff?: Handoff;
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
+  private readonly modelCatalogs = new Map<string, ModelCatalog>();
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
@@ -160,6 +163,8 @@ class Manager {
     command('hydra.saveHandoffSummary', (id: string, handoffSummary: unknown) => this.handle({ type: 'saveHandoffSummary', id, handoffSummary }));
     command('hydra.showTaskHandoff', (id: string) => this.handle({ type: 'showTaskHandoff', id }));
     command('hydra.getUsage', () => structuredClone(usageSnapshot(this.tasks, id => this.managed.view(id))));
+    command('hydra.checkModels', async (id: string) => { await this.handle({ type: 'checkModels', id }); return structuredClone(this.modelCatalogs.get(id)); });
+    command('hydra.saveModelSelection', (id: string, selection: unknown) => this.handle({ type: 'saveModelSelection', id, selection }));
     command('hydra.handoffClaude', (id?: string) => this.handoffCommand('claude', id));
     command('hydra.handoffCodex', (id?: string) => this.handoffCommand('codex', id));
     command('hydra.releaseExternal', (id: string) => this.handle({ type: 'releaseExternal', id }));
@@ -201,7 +206,7 @@ class Manager {
       }
     }), vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('hydra')) {
-        this.diagnosticGeneration++; this.diagnostics.clear();
+        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear();
         for (const controller of this.diagnosticChecks) controller.abort();
         void this.refresh().catch(error => this.report(error));
       }
@@ -360,6 +365,7 @@ class Manager {
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
+      modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
@@ -480,6 +486,37 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
+    if (task.modelSelection && ['launch', 'terminal', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('This task has an explicit managed Codex model selection. Start it with Run managed task; terminal and official-extension settings cannot be verified by Hydra. Clear the selection before its first launch to use those interfaces.');
+    if (message.type === 'saveModelSelection') {
+      if (this.busy || !canEditBrief(task, this.managed.view(task.id))) throw new Error('Model settings are locked after launch. Create a new task to use another selection.');
+      if (task.provider !== 'codex') throw new Error('Verified model and effort controls are currently available only for managed Codex. Claude can silently cap effort in structured output; use its official client.');
+      if (message.selection) {
+        const catalog = this.modelCatalogs.get(task.id);
+        if (catalog?.status !== 'ready') throw new Error('Load available Codex models before saving a selection.');
+        requireAdvertisedSelection(catalog.models, message.selection);
+      }
+      task.modelSelection = message.selection || undefined; task.updatedAt = new Date().toISOString();
+      await this.persist(); await this.publish(); return;
+    }
+    if (message.type === 'checkModels') {
+      if (task.provider !== 'codex') throw new Error('Verified model discovery is available only for Codex.');
+      if (this.busy || this.modelCatalogs.get(task.id)?.status === 'checking') throw new Error('Another task or model check is in progress.');
+      const controller = new AbortController(), generation = this.diagnosticGeneration;
+      this.diagnosticChecks.add(controller);
+      this.modelCatalogs.set(task.id, { status: 'checking', models: [], checkedAt: new Date().toISOString() });
+      await this.publish();
+      try {
+        await this.verifyWorktree(task);
+        const info = await findProvider('codex', vscode.workspace.getConfiguration('hydra').get<string>('codexPath'));
+        const diagnostic = await checkProvider(info, task.worktree, controller.signal);
+        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedCodexVersion) throw new Error('Model discovery requires the configured official Codex 0.154.0 executable.');
+        const models = await discoverCodexModels(info.executable, task.worktree, controller.signal);
+        if (generation === this.diagnosticGeneration && !this.closing) this.modelCatalogs.set(task.id, { status: 'ready', models, checkedAt: new Date().toISOString() });
+      } catch (error) {
+        if (generation === this.diagnosticGeneration && !this.closing) this.modelCatalogs.set(task.id, { status: 'error', models: [], checkedAt: new Date().toISOString(), error: this.describe(error) });
+      } finally { this.diagnosticChecks.delete(controller); await this.publish(); }
+      return;
+    }
     if (message.type === 'saveBrief' || message.type === 'saveHandoffSummary' || message.type === 'showTaskHandoff') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (message.type === 'saveBrief') {

@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
 import { BriefFields, PromptPreview, TaskContext, UsagePanel } from './TaskContext';
 import { buildTaskPrompt, emptyBrief } from '../src/core/taskContext';
+import { ModelControls, TurnModelLabel } from './ModelControls';
 import { IntegrationPanel } from './IntegrationPanel';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
@@ -33,6 +34,7 @@ function SessionThread({ task, session, busy }: { task: Task; session: SessionVi
     {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
       <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{turn.prompt}</p></article>
       <article className="message assistant-message"><div className="message-author"><span className="avatar hydra-avatar">c</span><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div><p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
+        <TurnModelLabel turn={turn} />
         {turn.error && <p className="session-error" role="status">{turn.error}</p>}
         {turn.textTruncated && <p className="session-note">Showing the first 50,000 characters here. Full output is retained in local raw diagnostics; model context is unchanged.</p>}
         {!!turn.permissionDenials && <p className="session-note">{turn.permissionDenials} permission request(s) denied. Interactive approvals are unavailable here; use the provider terminal when needed.</p>}
@@ -175,7 +177,7 @@ function App() {
               <div className="form-bottom"><label className="provider-select">Provider<select value={draft.provider} onChange={event => updateDraft({ provider: event.target.value as Provider })}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><button className="primary" type="submit" disabled={snapshot.busy || !repository || draft.prompt.length > 32000}>Create task <Icon name="arrow" /></button></div>
               {draft.prompt.length > 32000 && <p role="alert">Shorten the complete brief to 32,000 characters.</p>}
               <p className="form-note">Starts from committed HEAD. Uncommitted edits stay in your main checkout. Creating a task makes no model request.</p>
-              <p className="form-note">Model and effort follow official provider settings. Verified per-task overrides are not available in Hydra yet.</p>
+              <p className="form-note">Model and effort start with official provider settings. After creating a Codex task, load available models to choose an explicit managed selection.</p>
             </form>
             {snapshot.repositories.length === 0 && <div className="inline-notice">Open a local Git repository with an initial commit to create tasks.</div>}
             <label>Starting commit (optional full SHA)<input maxLength={64} value={startingCommit} onChange={event => setStartingCommit(event.target.value)} placeholder="Defaults to current repository HEAD" /></label>
@@ -186,6 +188,7 @@ function App() {
           <div className="task-context"><Icon name="branch" /><span title={selected.branch}>{selected.branch}</span><span className={`state ${selected.state}`}>{selected.interface === 'official-extension' ? 'External · status unavailable' : selected.state === 'external' ? 'Terminal active' : selected.state}</span></div>
           <div className="thread">
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} send={send} />
+            <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={snapshot.busy} send={send} />
             <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} />
             {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} /> : <>
             <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{selected.prompt}</p></article>

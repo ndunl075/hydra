@@ -17,4 +17,6 @@ Primary evidence: [Codex app-server authentication](https://developers.openai.co
 
 Fixture tests cover passive construction, public account reads, login/completion, matching login IDs, cancellation during initialization and pending login, failure/retry, destination validation, pinned versions, Claude status interpretation, and actual JSONL transport without model methods. Native smoke opens/reuses the account panel and verifies that provider state remains unchecked and dirty documents survive.
 
+The actual generated account-panel HTML was also exercised in a browser under its own Content Security Policy. The fixture passed passive ready-only load, provider-scoped login/refresh/cancel message dispatch, pending-state disabling of login/refresh with cancellation available, and cancelled-state retry. No JavaScript or CSP errors occurred. The browser fixture intercepted messages: no real provider action or sign-in was executed.
+
 Real browser sign-in success, cancellation during a live OAuth callback, OS keychain behavior, and subscription eligibility still require user-driven acceptance with the pinned providers. Tests neither open a real provider browser nor send authenticated model calls. Native smoke assertions require the built standalone artifact; they are not evidence of completed live authentication.

@@ -1,5 +1,6 @@
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
 import type { UsageSummary } from './usage';
+import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 export type Provider = 'claude' | 'codex';
@@ -16,6 +17,7 @@ export interface Task {
   brief?: TaskBrief;
   contextLockedAt?: string;
   handoffSummary?: TaskHandoffSummary;
+  modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
@@ -40,6 +42,7 @@ export interface Turn {
   usageSource?: 'claude-result' | 'codex-last-request';
   /** Cumulative root-thread snapshot; never sum these across turns. */
   threadUsage?: { sessionId: string; input: number; output: number; cacheRead?: number; cacheCreated?: number };
+  modelSettings?: TurnModelSettings;
 }
 export interface Approval { id: string; kind: 'command' | 'file' | 'network'; detail: string }
 export interface SessionView { version: 1; turns: Turn[]; active?: boolean; totalTurns?: number; approvals?: Approval[] }
@@ -56,6 +59,7 @@ export interface Snapshot {
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
   usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary> };
+  modelCatalogs?: Record<string, ModelCatalog>;
   integration?: IntegrationOperation;
 }
 export type ClientMessage =
@@ -66,6 +70,8 @@ export type ClientMessage =
   | { type: 'saveBrief'; id: string; brief: TaskBrief }
   | { type: 'saveHandoffSummary'; id: string; handoffSummary: TaskHandoffSummary }
   | { type: 'showTaskHandoff'; id: string }
+  | { type: 'checkModels'; id: string }
+  | { type: 'saveModelSelection'; id: string; selection: ModelSelection | null }
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
@@ -91,8 +97,13 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'checkModels' || type === 'saveModelSelection') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    return type === 'checkModels' ? { type, id } : { type, id, selection: message.selection === null ? null : parseModelSelection(message.selection) };
+  }
   if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['model', 'effort', 'reasoningEffort', 'reasoning_effort'].some(key => key in message)) {
-    throw new Error('Per-task model and effort overrides are not verified for these managed adapters. Configure the official provider or use its terminal; Hydra cannot confirm an Astra High preset.');
+    throw new Error('Direct launch-time model and effort fields are unsupported. Save a verified managed Codex selection before launching; Hydra cannot confirm an Astra High preset unless the exact model and effort are advertised.');
   }
   if (type === 'saveBrief' || type === 'saveHandoffSummary' || type === 'showTaskHandoff') {
     const id = string('id');

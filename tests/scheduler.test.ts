@@ -91,6 +91,30 @@ test('post-launch save failure retains writer ownership and legacy active tasks 
   assert.equal(legacy.schedule?.uncertain, true); assert.equal(external.schedule, undefined);
 });
 
+test('a writer stopped before startup persistence completes stays interrupted and releases capacity once', async () => {
+  const tasks = [task(1), task(2)]; const live = new Set<string>(), launches: string[] = [];
+  let signalWriter!: () => void, finishStartup!: () => void;
+  const writerVisible = new Promise<void>(resolve => { signalWriter = resolve; });
+  const startupSaved = new Promise<void>(resolve => { finishStartup = resolve; });
+  const scheduler = new TaskScheduler({ tasks: () => tasks, capacity: () => 1, liveCount: () => live.size, enabled: () => true,
+    persist: async () => {}, prepare: async item => ({ commit: item.baseCommit, artifacts: [] }),
+    launch: async item => {
+      launches.push(item.id); live.add(item.id); item.state = 'external';
+      if (item === tasks[0]) { signalWriter(); await startupSaved; }
+    }
+  });
+  const first = scheduler.enqueue(tasks[0]!, { type: 'launch' });
+  await writerVisible;
+  assert.equal(tasks[0]!.schedule?.state, 'starting');
+  const second = scheduler.enqueue(tasks[1]!, { type: 'launch' });
+  // Mirrors the terminal-close notification while the launch save is still in flight.
+  live.delete(tasks[0]!.id); tasks[0]!.state = 'interrupted'; finishStartup();
+  await Promise.all([first, second]); await scheduler.drain();
+  assert.equal(tasks[0]!.schedule?.state, 'interrupted'); assert.equal(tasks[0]!.schedule?.request, undefined);
+  assert.equal(tasks[1]!.schedule?.state, 'running');
+  assert.deepEqual(launches, tasks.map(item => item.id)); assert.equal(live.size, 1);
+});
+
 test('persisted cyclic dependencies block and explicit follow-up text survives capacity waiting', async () => {
   const tasks = [task(1), task(2)];
   tasks[0]!.schedule = { state: 'queued', dependencies: [tasks[1]!.id], artifacts: [], request: { type: 'followUp', prompt: 'Resume with only this delta' } };

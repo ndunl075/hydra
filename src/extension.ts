@@ -449,13 +449,14 @@ class Manager {
     if (['handoff', 'openWorktree'].includes(message.type) && this.managed.has(task.id)) throw new Error('Stop the managed process before handing off.');
     if (!scheduledLaunch && pendingSchedule(task) && ['handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed'].includes(message.type)) throw new Error('Cancel queued work or reconcile the writer before this action.');
     if (message.type === 'stop') {
+      // Process handles become available before startup's final metadata save completes.
+      // Stop an owned writer even while its scheduling record still says starting.
+      if (this.managed.has(task.id)) { await this.managed.stop(task.id); return; }
+      const terminal = this.terminals.get(task.id);
+      if (terminal) { terminal.dispose(); return; }
       if (task.schedule?.state === 'starting') throw new Error('This launch is being prepared. Stop it once startup finishes.');
       if (task.schedule && ['queued', 'blocked'].includes(task.schedule.state)) { await this.scheduler.cancel(task); return; }
-      if (this.managed.has(task.id)) { await this.managed.stop(task.id); return; }
       if (this.busy && task.state === 'running') throw new Error('This process is still being prepared. Stop it once startup finishes.');
-      const terminal = this.terminals.get(task.id);
-      if (!terminal) return;
-      terminal.dispose();
       return;
     }
     if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }

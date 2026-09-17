@@ -38,7 +38,9 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
 - **Start managed Codex** uses pinned CLI 0.154.0 App Server: streamed text, recorded thread-ID follow-ups, provider token usage, scoped command/file/network approval cards, and explicit turn interruption. Windows sandbox readiness is checked before any model turn.
 - Saved records recover after reload. Missing sessions become interrupted, never completed. Hydra stops its owned terminals on extension shutdown and does not promise background survival or automatic CLI resume.
 
-The manager occupies a supported editor tab alongside native editors and terminals. It does not promise exact restoration of arbitrary grid layouts. Model controls, broader provider approval prompts, integration, and discard are subsequent features. Authenticated Codex acceptance remains pending.
+The manager occupies a supported editor tab alongside native editors and terminals. Its compact **Agent map** connects each repository to its worktrees and assigned agents. Select an agent node to open the task; collapse the map or pause its motion at any time. Moving arrows indicate locally observed running managed sessions and stop for approvals. External sessions remain static because their progress is unavailable. Connections show checkout context; agent-to-agent dependencies and message flow are not implemented yet. The map follows the editor theme and reduced-motion preference, and makes no model requests.
+
+The manager does not promise exact restoration of arbitrary grid layouts. Model controls, broader provider approval prompts, integration, and discard are subsequent features. Authenticated Codex acceptance remains pending.
 
 ## Provider and worktree settings
 

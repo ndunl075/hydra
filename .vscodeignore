@@ -14,3 +14,4 @@ dist/smoke.cjs
 tsconfig.json
 package-lock.json
 *.vsix
+image.png

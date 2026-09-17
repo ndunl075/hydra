@@ -36,6 +36,8 @@ export interface Snapshot {
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];
   diagnostics?: ProviderDiagnostic[];
   session?: SessionView;
+  /** Local activity only; no other task's transcript or approval details. */
+  taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }

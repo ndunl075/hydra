@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Handoff, Task, ProviderDiagnostic, SessionView, TaskFile, DiffLayer } from '../src/core/model';
 import { git } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
+import type { ProfileResources } from '../src/core/profileImport';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   while (!await predicate()) {
@@ -129,6 +130,40 @@ export async function run(): Promise<void> {
       await windowConfig.update('autoDetectColorScheme', previousAutomatic, vscode.ConfigurationTarget.Global);
     }
   } finally { terminal.dispose(); }
+  if (process.env.HYDRA_TEST_DESKTOP) {
+    const profile = await vscode.commands.executeCommand<ProfileResources>('hydra.desktop.profileResources');
+    assert.ok(profile); assert.equal(profile.name, 'Hydra Native Acceptance');
+    assert.notEqual(path.dirname(profile.settings), profile.root, 'Native acceptance uses a named profile rather than inferring paths from global storage');
+    const defaultSettings = path.join(profile.root, 'settings.json');
+    const defaultBefore = await readFile(defaultSettings).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    const source = path.join(process.env.HYDRA_TEST_FIXTURE!, 'Cursor preferences'); await mkdir(path.join(source, 'snippets'), { recursive: true });
+    const sourceText = '// Imported preferences\n{"editor.fontSize":25,"editor.tabSize":3,"cursor.unavailable":true,"sample.apiKey":"never-copy","hydra.handoff":{"version":1}}\n';
+    await writeFile(path.join(source, 'settings.json'), sourceText);
+    await writeFile(path.join(source, 'keybindings.json'), '[{"key":"ctrl+alt+shift+9","command":"workbench.action.files.save"}]');
+    await writeFile(path.join(source, 'snippets', 'typescript.json'), '{"Hydra Test":{"prefix":"hydra-test","body":"test $0"}}');
+    const preview = await vscode.commands.executeCommand<{ token: string; items: { name: string; state: string }[] }>('hydra.previewImport', source); assert.ok(preview);
+    assert.ok(preview.items.some(item => item.name === 'cursor.unavailable' && item.state === 'skip'));
+    assert.ok(preview.items.some(item => item.name === 'hydra.handoff' && item.state === 'skip'));
+    const preferenceDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(profile.settings));
+    await vscode.window.showTextDocument(preferenceDocument);
+    const pending = new vscode.WorkspaceEdit(); pending.insert(preferenceDocument.uri, new vscode.Position(0, 0), '// Unsaved preferences\n'); assert.equal(await vscode.workspace.applyEdit(pending), true);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.applyImport', preview.token, ['settings']), /unsaved preference/);
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+    assert.equal(await vscode.commands.executeCommand('hydra.applyImport', preview.token, ['settings', 'keybindings', 'snippets']), 3);
+    assert.equal(vscode.workspace.getConfiguration('hydra').inspect('handoff')?.globalValue, undefined);
+    await waitFor(() => vscode.workspace.getConfiguration('editor').inspect<number>('fontSize')?.globalValue === 25);
+    assert.equal(await readFile(path.join(source, 'settings.json'), 'utf8'), sourceText);
+    assert.equal(await readFile(path.join(profile.snippets, 'typescript.json'), 'utf8').then(text => text.includes('Hydra Test')), true);
+    await vscode.commands.executeCommand('hydra.undoImport');
+    await waitFor(() => vscode.workspace.getConfiguration('editor').inspect<number>('fontSize')?.globalValue === undefined);
+    assert.deepEqual(await readFile(defaultSettings).catch(error => { if (error.code === 'ENOENT') return null; throw error; }), defaultBefore);
+    assert.equal(document.isClosed, false); assert.equal(document.getText(), 'unsaved buffer\nkeep this selection\n');
+    console.log('PASS: native named-profile import, credential/unavailable-setting skips, unsaved-preference refusal, configuration reload, undo, and unchanged default profile/source/unsaved text.');
+  } else {
+    const importStatus = await vscode.commands.executeCommand<{ available: boolean }>('hydra.getImportStatus'); assert.equal(importStatus?.available, false);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.previewImport', path.join(process.env.HYDRA_TEST_FIXTURE!, 'not-a-profile')), /local Hydra desktop/);
+    console.log('PASS: importing is unavailable in the VS Code development host.');
+  }
   if (repository && process.env.HYDRA_TEST_PROVIDER) {
     const config = vscode.workspace.getConfiguration('hydra');
     await config.update('claudePath', process.env.HYDRA_TEST_PROVIDER, vscode.ConfigurationTarget.Workspace);

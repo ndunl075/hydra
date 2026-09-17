@@ -71,6 +71,11 @@ export async function prepare() {
   await contained(source);
   if (await git(['rev-parse', 'HEAD']) !== pin.commit || await fs.realpath(await git(['rev-parse', '--show-toplevel'])) !== await fs.realpath(source)) throw new Error('Unexpected editor source checkout. Use the exact desktop/upstream.json pin.');
   const manifest = await readJson(path.join(root, 'package.json'));
+  const desktopMain = await git(['show', `${pin.commit}:src/vs/workbench/workbench.desktop.main.ts`]);
+  const desktopExport = "export { main } from './electron-browser/desktop.main.js';";
+  if (desktopMain.split(desktopExport).length !== 2) throw new Error('Pinned desktop entrypoint changed.');
+  await fs.copyFile(path.join(root, 'desktop', 'workbench', 'hydraProfile.ts'), path.join(source, 'src', 'vs', 'workbench', 'hydraProfile.ts'));
+  await fs.writeFile(path.join(source, 'src', 'vs', 'workbench', 'workbench.desktop.main.ts'), desktopMain.replace(desktopExport, `import './hydraProfile.js';\n\n${desktopExport}`));
   for (const [configPath, declaration, typeRoots] of [
     ['src/tsconfig.base.json', './vscode-dts/vscode.d.ts', ['../node_modules/@types']],
     ['extensions/tsconfig.base.json', '../src/vscode-dts/vscode.d.ts', ['./node_modules/@types', '../node_modules/@types']]

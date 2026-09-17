@@ -8,6 +8,7 @@ import { createWorktree, git, repositoryRoot, resolveTaskFile } from './core/wor
 import { captureReview, reviewFiles } from './core/review';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
+import { SettingsImport } from './extensionImport';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -71,9 +72,11 @@ class Manager {
   private readonly managed: ManagedSessions;
   private readonly review: ReviewDocuments;
   private readonly settings: AppearanceSettings;
+  private readonly settingsImport: SettingsImport;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
-    this.settings = new AppearanceSettings(context.extensionUri);
+    this.settingsImport = new SettingsImport(context);
+    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
     context.subscriptions.push(this.settings);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
@@ -92,6 +95,10 @@ class Manager {
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
+    command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
+    command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
+    command('hydra.undoImport', () => this.settingsImport.undo());
+    command('hydra.getImportStatus', () => this.settingsImport.status());
     command('hydra.createTask', async (input?: unknown) => {
       if (input === undefined) { this.pendingNewTask = !this.panel; await this.openAgents(); await this.panel?.webview.postMessage({ type: 'newTask' }); return; }
       if (!input || typeof input !== 'object') throw new Error('Expected task options.');

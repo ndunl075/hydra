@@ -49,7 +49,7 @@ const options = {
   ...(desktopCode || localCode ? { vscodeExecutablePath: desktopCode || localCode } : {}),
   extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_CODEX_PROVIDER: codexProvider, HYDRA_TEST_FIXTURE: fixture },
   // The official Windows test runner uses cmd.exe and requires explicit quoting for positional folders.
-  launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', desktopCode ? 'hydra-user-data' : 'vscode-user-data')]
+  launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, ...(desktopCode ? ['--profile', '"Hydra Native Acceptance"'] : []), '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', desktopCode ? 'hydra-user-data' : 'vscode-user-data')]
 };
 let passed = false;
 try {

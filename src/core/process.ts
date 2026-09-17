@@ -13,9 +13,36 @@ export function processLaunch(executable: string, args: string[]): { executable:
   }
   return { executable, args };
 }
+export function checkWindowsTermination(pid: number, error: (Error & { code?: string | number | null }) | null, probe: (pid: number, signal: 0) => unknown = process.kill, stderr = '', stdout = ''): void {
+  if (!error) return;
+  // A descendant can exit while taskkill walks the owned tree. Accept only
+  // complete not-found diagnostics, then independently check every named PID.
+  // Unknown/localized diagnostics and mixed permission failures fail closed.
+  const absent = new Set([pid]);
+  let diagnostic = stderr.trim();
+  if (diagnostic && (error.code === 1 || error.code === 128)) {
+    diagnostic = diagnostic.replace(/ERROR: The process with PID (\d+)(?: \(child process of PID (\d+)\))? could not be terminated\.\s*Reason: There is no running instance of the task\./g, (_match, child: string, parent?: string) => {
+      absent.add(Number(child)); if (parent && Number(child) !== pid) absent.add(Number(parent)); return '';
+    }).replace(/ERROR: The process "(\d+)" not found\./g, (_match, missing: string) => { absent.add(Number(missing)); return ''; }).trim();
+  } else if (error.code !== 128) throw error;
+  if (diagnostic) throw error;
+  // Successful records can name other descendants; their parent can be the
+  // live extension host, so check only the PID actually reported terminated.
+  const remainder = stdout.trim().replace(/SUCCESS: The process with PID (\d+)(?: \(child process of PID \d+\))? has been terminated\./g, (_match, terminated: string) => { absent.add(Number(terminated)); return ''; }).trim();
+  if (remainder) throw error;
+  for (const target of absent) {
+    if (!Number.isSafeInteger(target) || target <= 0) throw error;
+    try { probe(target, 0); }
+    catch (probeError) { if ((probeError as NodeJS.ErrnoException).code === 'ESRCH') continue; }
+    throw error;
+  }
+}
 export async function terminateProcessTree(pid: number): Promise<void> {
   if (process.platform === 'win32') {
-    await new Promise<void>((resolve, reject) => execFile(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, error => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => execFile(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (error, stdout, stderr) => {
+      try { checkWindowsTermination(pid, error, process.kill, stderr, stdout); resolve(); }
+      catch (failure) { reject(failure); }
+    }));
   } else {
     try { process.kill(-pid, 'SIGKILL'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }

@@ -10,6 +10,8 @@ Hydra is a standalone desktop IDE. Its initial agent-manager implementation is r
 
 The nested editor checkout explicitly resolves `vscode` imports to its own pinned API declarations. This prevents Hydra's development `@types/vscode` package from leaking into editor compilation; upstream compiler checks remain enabled.
 
+The owned desktop profile bridge is staged from `desktop/workbench/hydraProfile.ts` and imported into the pinned desktop entrypoint with an exact-anchor check. It returns active profile resources and available settings/themes for import; it does not access credentials or rearrange the editor. Native acceptance runs with a named profile to exercise the distinction from Default storage.
+
 The application is `Hydra.exe`; its normal native user-data directory is the application's `Hydra` profile under Windows AppData, and extension data uses `.hydra`. Installer app IDs and mutexes are distinct from VS Code, Cursor, and Code - OSS. It must not write to their profiles. The README logo is converted into Windows icon sizes without changing the original source image. The staged Hydra module supplies Hydra Dark as an application default; existing/imported user theme choices take precedence.
 
 The editor's upstream API version remains `1.113.0` so extension engine checks remain valid. Hydra's module version is recorded separately in product metadata. Do not change the editor API version to the module's `0.x` version.

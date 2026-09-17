@@ -29,6 +29,8 @@ Snapshot: [c88f9be](https://github.com/ndunl075/hydra/tree/c88f9beea25c6caaa0824
 
 Preserve these foundations. All designs/defaults below are proposals, not claims of shipped functionality.
 
+Review decision: adopt the architecture with the corrections below. The [agent workflow roadmap](Agent_Workflow_Roadmap.md) is the delivery authority; this document supplies design rationale. Safe integration precedes expanded scheduling and concurrency. Each feature still needs its own implementation, acceptance evidence, and PR.
+
 ## 3. Proposed architecture
 
 | Layer | Owns | Must avoid |
@@ -64,13 +66,23 @@ Apply these proposed rules:
 8. **Stop repetition:** detect repeated failing commands or unchanged patches. After a bounded retry budget, return a blocker with evidence; don't loop indefinitely.
 9. **Use narrow review:** acceptance criteria + diff + relevant code/test evidence. Add independent model review for consequential changes; avoid full-repo reviews for every small patch.
 
+These rules have different enforcement boundaries:
+
+| Boundary | Proposed control |
+| --- | --- |
+| Hydra local code | Build the initial brief, filter logs from Hydra-owned validation commands, retain evidence, count submitted turns and scheduler retries, and hold new launches when their configured limits are reached. |
+| Supported provider configuration or hooks | Apply model/effort choices, internal iteration limits, or tool policies only after capability validation for that provider version. Show the effective control and report unsupported limits. |
+| Advisory instructions | Ask provider-owned loops to search narrowly, avoid repeated failures, and return concise summaries. Hydra cannot guarantee these behaviors or filter the provider's hidden tool results. |
+
+One Hydra-submitted turn may contain many internal model requests and tool executions. UI output truncation does not reduce that context. Do not label a submitted-turn budget as a token cap or silently rewrite provider session state.
+
 Prompt caching reduces repeated input processing cost under model-specific rules; it does not shrink the logical context or make output free. Preserve stable instructions/tool definitions where possible, measure actual cache usage, and account for compaction/cache rebuilds. Do not assume cache sharing across workers/providers or apply raw API cache settings to opaque CLI sessions. [OpenAI caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 
 ## 5. Parallelism without runaway spend
 
 Claude documents higher token use and coordination overhead for teams, especially on sequential or same-file tasks. A subagent summary protects its parent's context but the worker still consumes tokens. [Teams](https://code.claude.com/docs/en/agent-teams), [Subagents](https://code.claude.com/docs/en/sub-agents)
 
-**Proposed starting policy:** one worker for small tasks; up to three active workers for independent substantial tasks. These are tuning defaults, not measured optima or provider limits.
+**Starting policy:** use one worker for small tasks and retain the specification's default limit of two active managed tasks. Three workers is an opt-in benchmark configuration after integration and provider acceptance pass, not a new default or a measured optimum. The current limit is per window and excludes official-extension sessions; a future scheduler must define wider capacity accounting before claiming a global cap.
 
 - Decompose by deliverable and file ownership. Stabilize shared interfaces first; queue dependent tasks until prerequisites land.
 - Give each writer one worktree and exclusive lease. Read-only research/review can use an immutable snapshot without another writable checkout.
@@ -90,9 +102,10 @@ Git worktrees share repository objects/refs while maintaining separate working d
 3. Run trusted, idempotent setup without an LLM: locked dependencies, task-specific ports, isolated test database/schema and temporary paths. Share package download caches when safe, not mutable dependency/build directories.
 4. Enforce filesystem/network policy through provider/OS isolation where supported. Separate checkouts do not isolate secrets, processes, ports or databases.
 5. Execute scoped task; record provider identity, turn results, resource usage and test evidence.
-6. Stop writers before review. Record base/head SHA plus fingerprints of staged, unstaged and untracked content. Preserve unsaved editor buffers.
-7. Validate the reviewed state; integrate serially in a dedicated integration checkout against the latest target. Revalidate if either side changed. Resolve conflicts explicitly and run affected integration checks.
-8. Advance target only after successful validation and applicable approval. Keep a rollback reference. Clean up only after preserving recoverable changes and stopping owned processes; never force-delete unknown dirty work.
+6. Stop writers before review. Record base/head SHA plus fingerprints of staged, unstaged and untracked content. Preserve unsaved editor buffers. Require the selected saved changes to be committed, or explicitly commit them through the finish flow; merging a branch does not include uncommitted changes. Recheck that the immutable task commit matches the reviewed selection before validation.
+7. Serialize integration per repository. Record the target commit and create a candidate on a temporary branch or detached integration checkout, since the real target may already be checked out in the main workspace. Merge the reviewed task commit into that candidate and run the affected acceptance checks. Retain both tasks and the candidate if conflicts or tests fail; a resolution changes the reviewed state and requires renewed review and validation.
+8. Before promotion, recheck the target's owning checkout, branch identity, expected commit, clean saved state, and relevant unsaved buffers. Refuse a changed or dirty target; rebuild and revalidate the candidate when either input changed. Promote the validated candidate by a fast-forward through the owning target checkout, without directly moving a checked-out branch ref behind its index and files. Preserve a rollback reference and persist the candidate, expected target, and operation phase before mutation so restart recovery can reconcile what actually completed without blindly repeating it.
+9. Clean up only after successful promotion, preserving recoverable changes and stopping owned processes. Never force-delete unknown dirty work or discard a task simply because its provider turn ended. Implement and test the target rechecks, crash reconciliation, and conflict recovery before advertising safe integration.
 
 ## 7. Minimal task contract
 
@@ -104,20 +117,20 @@ depends_on: []
 write_scope: [src/feature/, tests/feature/]
 context: [relevant-path-or-symbol]
 acceptance: [behavior, test-command]
-budget: {max_turns: 12, max_retries: 2}
+budget: {max_submitted_turns: 12, max_scheduler_retries: 2}
 result: [summary, changed_paths, commit_or_snapshot, tests, blockers]
 ```
 
-Numbers are proposed starting limits. Scope is a coordination rule unless tool/sandbox enforcement exists. Dollar limits apply only where reliable billing and controls exist; never infer subscription quota from an API-price estimate.
+Numbers are proposed starting limits. Submitted turns count Hydra's initial and follow-up requests; scheduler retries count explicit reattempts of a failed preparation or launch step, not internal provider tool retries. Record retry identity and reconcile uncertain launches before retrying. Neither limit bounds internal model iterations or tokens. Scope is a coordination rule unless tool/sandbox enforcement exists. Dollar limits apply only where reliable billing and controls exist; never infer subscription quota from an API-price estimate.
 
 ## 8. Implementation order and measurement
 
 | Priority | Extend | Exit evidence |
 | --- | --- | --- |
-| P0 | Existing adapters/ownership/recovery | Real authenticated Claude/Codex tool, approval, interrupt and resume acceptance; no duplicate writer |
-| P1 | Usage ledger + task brief/checkpoint | Correct per-turn versus cumulative accounting, known missing usage, smaller prompts with equivalent acceptance |
-| P2 | Scheduler + environment setup | Dependency queue, reservations, bounded retries and crash recovery; distinct ports/DBs |
-| P3 | Existing native review → integration | Stale-review rejection, serialized integration, conflict recovery and recoverable cleanup |
+| Prerequisite | Existing adapters/ownership/recovery | Real authenticated Claude/Codex tool, approval, interrupt and resume acceptance before expanded agent execution; no duplicate writer. M4 development can use bounded fixtures meanwhile. |
+| P1 | Existing native review → commit and integration | Reviewed saved changes captured in a commit, stale-review and dirty-target rejection, validated candidate promotion, conflict/crash recovery and recoverable cleanup |
+| P2 | Scheduler + environment setup | After P1 and provider acceptance: dependency queue, reservations, bounded retries and crash recovery; distinct ports/DBs |
+| P3 | Task brief/checkpoint + model/effort and usage controls | Supported effective selections, correct per-turn versus cumulative accounting, known missing usage, smaller prompts with equivalent acceptance. Basic instrumentation can proceed alongside P1 without increasing concurrency. |
 | P4 | Optional ACP + retrieval improvements | Capability/version fixtures; better measured interoperability or accepted-work efficiency |
 
 Benchmark a fixed set of small fixes, cross-file features and refactors against single-agent baseline. Repeat runs; keep provider/model/effort and acceptance checks comparable. Measure:

@@ -41,6 +41,25 @@ export function brandedInstaller(text) {
     text = text.replace(before, after);
   }
   if (!/Name: "desktopicon";[^\r\n]*Flags: unchecked/.test(text) || !/Tasks: desktopicon/.test(text)) throw new Error('Installer desktop-shortcut checkbox contract changed.');
+  const deleteSection = '[InstallDelete]';
+  if (text.split(deleteSection).length !== 2) throw new Error('Pinned installer delete section changed.');
+  // Explicitly opting out on reinstall removes the previously installed shortcut.
+  // Background updates retain it through the upstream shortcut-update predicate.
+  text = text.replace(deleteSection, `${deleteSection}\nType: files; Name: "{autodesktop}\\{#NameLong}.lnk"; Tasks: not desktopicon; Check: ShouldUpdateShortcut(ExpandConstant('{autodesktop}\\{#NameLong}.lnk'))`);
+  text = text.replace('If you would like to install VS Code for all users in this system, download the System Installer instead from https://code.visualstudio.com.', 'Hydra currently provides a per-user installer. Restart setup without administrator privileges to install it for your account.');
+  return text;
+}
+export function installerVersionSource(text, version) {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match || match.slice(1, 4).some(part => Number(part) > 65535)) throw new Error('Hydra version is invalid for a Windows installer.');
+  const replacements = new Map([
+    ['Version: pkg.version,', `Version: ${JSON.stringify(version)},`],
+    ["RawVersion: pkg.version.replace(/-\\w+$/, ''),", `RawVersion: ${JSON.stringify(match.slice(1, 4).join('.'))},`]
+  ]);
+  for (const [before, after] of replacements) {
+    if (text.split(before).length !== 2) throw new Error(`Pinned installer version contract changed: ${before}`);
+    text = text.replace(before, after);
+  }
   return text;
 }
 async function git(args) { return (await execute('git', args, { cwd: source, windowsHide: true, maxBuffer: 16 * 1024 * 1024 })).stdout.trim(); }
@@ -134,9 +153,27 @@ export async function smoke() {
   await verify();
   await npm(['run', 'test:smoke'], root, { HYDRA_TEST_DESKTOP: path.join(output, 'Hydra.exe') });
 }
+export async function installer() {
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Installer generation requires native Windows x64.');
+  await verify();
+  await contained(source);
+  if (await git(['rev-parse', 'HEAD']) !== pin.commit) throw new Error('Installer requires the pinned editor checkout.');
+  const manifest = await readJson(path.join(root, 'package.json'));
+  const product = await readJson(path.join(output, 'resources', 'app', 'product.json'));
+  const bundled = await readJson(path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager', 'package.json'));
+  if (product.hydraVersion !== manifest.version || bundled.version !== manifest.version) throw new Error('Build the current Hydra runtime before packaging its installer.');
+  const sourcePath = 'build/gulpfile.vscode.win32.ts';
+  await fs.writeFile(path.join(source, sourcePath), installerVersionSource(await git(['show', `${pin.commit}:${sourcePath}`]), manifest.version));
+  await fs.writeFile(path.join(source, 'build', 'win32', 'code.iss'), brandedInstaller(await git(['show', `${pin.commit}:build/win32/code.iss`])));
+  await npm(['run', 'gulp', '--', 'vscode-win32-x64-user-setup'], source);
+  const setup = path.join(source, '.build', 'win32-x64', 'user-setup', 'HydraSetup.exe');
+  const bytes = await fs.readFile(setup);
+  if (bytes.length < 1024 || bytes.subarray(0, 2).toString() !== 'MZ') throw new Error('Installer executable is missing or invalid.');
+  console.log(`Generated unsigned Hydra ${manifest.version} user installer: ${setup}`);
+}
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const commands = { prepare, build, verify, smoke };
+  const commands = { prepare, build, verify, smoke, installer };
   const command = commands[process.argv[2]];
-  if (!command) throw new Error('Use desktop.mjs prepare, build, verify, or smoke.');
+  if (!command) throw new Error('Use desktop.mjs prepare, build, verify, smoke, or installer.');
   await command();
 }

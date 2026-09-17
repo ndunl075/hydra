@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
-import { brandedProduct, brandedInstaller, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedInstaller, installerVersionSource, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
 
 test('nested editor compiles its own API declarations without loading the parent extension API', async () => {
   const parent = path.join(root, '.test-build');
@@ -61,14 +61,25 @@ test('standalone identity isolates Hydra from VS Code/Code OSS and retains upstr
   assert.equal(original.nameShort, 'Code - OSS');
 });
 test('installer branding preserves optional unchecked desktop shortcut and rejects upstream drift', () => {
-  const original = 'AppPublisher=Microsoft Corporation\nAppPublisherURL=https://code.visualstudio.com/\nAppSupportURL=https://code.visualstudio.com/\nAppUpdatesURL=https://code.visualstudio.com/\nOutputBaseFilename=VSCodeSetup\nName: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked\nName: "{autodesktop}\\Hydra"; Tasks: desktopicon\n';
+  const original = '[InstallDelete]\nAppPublisher=Microsoft Corporation\nAppPublisherURL=https://code.visualstudio.com/\nAppSupportURL=https://code.visualstudio.com/\nAppUpdatesURL=https://code.visualstudio.com/\nOutputBaseFilename=VSCodeSetup\nName: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked\nName: "{autodesktop}\\Hydra"; Tasks: desktopicon\n';
   const result = brandedInstaller(original);
   assert.match(result, /AppPublisher=Nico Dunlap/);
   assert.match(result, /OutputBaseFilename=HydraSetup/);
   assert.match(result, /Name: "desktopicon";[^\n]*Flags: unchecked/);
   assert.match(result, /Tasks: desktopicon/);
+  assert.match(result, /Name: "\{autodesktop\}\\\{#NameLong\}\.lnk"; Tasks: not desktopicon; Check: ShouldUpdateShortcut/);
   assert.throws(() => brandedInstaller(original.replace('Flags: unchecked', 'Flags: checkedonce')), /checkbox contract/);
   assert.throws(() => brandedInstaller(original.replace('VSCodeSetup', 'ChangedSetup')), /Pinned installer changed/);
+});
+test('installer versions follow Hydra while preserving the editor API version and refusing source drift', () => {
+  const original = "Version: pkg.version,\nRawVersion: pkg.version.replace(/-\\w+$/, ''),\nEditorVersion: pkg.version";
+  const changed = installerVersionSource(original, '0.12.3-preview.1');
+  assert.match(changed, /Version: "0.12.3-preview.1"/);
+  assert.match(changed, /RawVersion: "0.12.3"/);
+  assert.match(changed, /EditorVersion: pkg.version/);
+  assert.throws(() => installerVersionSource(original, '70000.0.0'), /invalid/);
+  assert.throws(() => installerVersionSource(original, '1.2.3";process.exit()'), /invalid/);
+  assert.throws(() => installerVersionSource(original.replace('Version: pkg.version,', 'Version: changed,'), '1.2.3'), /contract changed/);
 });
 test('standalone staging embeds the real Hydra runtime and themes with an app-only default', async () => {
   const parent = path.join(root, '.test-build');

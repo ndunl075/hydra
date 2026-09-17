@@ -35,6 +35,7 @@
     "desktop:build": "node scripts/desktop.mjs build",
     "desktop:verify": "node scripts/desktop.mjs verify",
     "desktop:smoke": "node scripts/desktop.mjs smoke",
+    "desktop:installer": "node scripts/desktop.mjs installer",
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node scripts/test.mjs",

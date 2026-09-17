@@ -10,6 +10,7 @@ A Windows-first VS Code extension for switching between ordinary editing and an 
 
 - Open **Hydra: Toggle Editor / Agents** from the Command Palette or press **Ctrl+Alt+A**.
 - A persistent status-bar control switches modes.
+- The README's Hydra logo is used for the extension, sidebar, and agent-manager tab icons.
 - The manager uses near-black (`#141414`), white text (`#F5F5F5`), and dark green (`#173C2C`). Select **Hydra Dark** through VS Code's color-theme picker to apply it to native surfaces too.
 - Returning to Editor restores the previously focused text document, selections, and visible range. The extension does not close text tabs or touch terminal processes.
 - Create titled Claude Code or Codex tasks from the manager or **Hydra: New Task**. Each starts at committed HEAD in a unique `agent/…` branch and sibling worktree; dirty main-checkout edits stay in place.
@@ -45,7 +46,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.7.0.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
+Press **F5** in this repository to launch an Extension Development Host. Alternatively install `hydra-0.7.1.vsix` using **Extensions: Install from VSIX**. No marketplace publishing is required.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

@@ -2,7 +2,7 @@
   "name": "hydra-agent-manager",
   "displayName": "Hydra",
   "description": "Editor and Agents modes with isolated Git worktrees and native provider terminals.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "nico-dunlap",
   "repository": {
     "type": "git",
@@ -33,7 +33,7 @@
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node scripts/test.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.4.0.vsix",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-0.5.0.vsix",
     "vscode:prepublish": "npm run check && npm run build",
     "test:smoke": "node scripts/smoke.mjs"
   },

@@ -7,6 +7,9 @@ import { OwnershipLock } from './core/ownership';
 import { changedFiles, createWorktree, git, repositoryRoot, resolveTaskFile } from './core/worktrees';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
+import { ManagedClaude } from './core/managedClaude';
+import { SessionStore } from './core/sessionStore';
+import { testedClaudeVersion } from './core/claudeProtocol';
 import type { Provider, ProviderDiagnostic } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
@@ -61,11 +64,14 @@ class Manager {
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
+  private readonly managed: ManagedClaude;
+  private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
+    this.managed = new ManagedClaude(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.publish(); }, error => this.report(error));
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -95,6 +101,9 @@ class Manager {
       return structuredClone(this.diagnostics.get(provider as Provider));
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
+    command('hydra.startManaged', (id: string) => this.handle({ type: 'startManaged', id }));
+    command('hydra.followUp', (id: string, prompt: string) => this.handle({ type: 'followUp', id, prompt }));
+    command('hydra.getSession', (id: string) => structuredClone(this.managed.view(id)));
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
     this.status.command = 'hydra.toggleMode';
     this.status.show();
@@ -126,9 +135,14 @@ class Manager {
           this.locks.push(lock);
         }
         for (const task of this.tasks) {
+          if (task.state === 'running') task.state = 'interrupted';
           if (task.state === 'external' && task.interface === 'interactive-cli') task.state = 'interrupted';
           try { await this.verifyWorktree(task); }
           catch (error) { task.state = 'error'; task.error = this.describe(error); }
+          if (task.interface === 'managed-cli' || task.sessionId) {
+            try { await this.managed.load(task); }
+            catch (error) { task.state = 'error'; task.error = this.describe(error); }
+          }
         }
         await this.store.save(this.tasks);
       }
@@ -170,7 +184,7 @@ class Manager {
     const config = vscode.workspace.getConfiguration('hydra');
     this.providers = await Promise.all(['claude', 'codex'].map(provider => findProvider(provider as 'claude' | 'codex', config.get<string>(`${provider}Path`))));
   }
-  private async refresh(): Promise<void> { this.error = undefined; await this.refreshProviders(); await this.publish(); }
+  private async refresh(): Promise<void> { this.error = undefined; this.fileCache = undefined; await this.refreshProviders(); await this.publish(); }
   private describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
   private report(error: unknown): void {
     this.error = this.describe(error);
@@ -198,22 +212,26 @@ class Manager {
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
-    const active = this.terminals.size;
+    const active = this.terminals.size + this.managed.count;
     this.status.text = `$(layout) ${this.mode === 'agents' ? 'Agents' : 'Editor'}${active ? ` · ${active} active` : ''}${this.error ? ' $(warning)' : ''}`;
     this.status.tooltip = 'Hydra: Switch Editor / Agents (Ctrl+Alt+A)';
     const task = this.tasks.find(item => item.id === this.selectedId);
     let files: Snapshot['files'] = [];
     let error = this.error;
     if (task && vscode.workspace.isTrusted) {
-      try { await this.verifyWorktree(task); files = await changedFiles(task.worktree, task.baseCommit); }
-      catch (failure) { error = this.describe(failure); }
+      if (this.fileCache?.id === task.id && this.fileCache.expires > Date.now()) { files = this.fileCache.files; error ||= this.fileCache.error; }
+      else {
+        try { await this.verifyWorktree(task); files = await changedFiles(task.worktree, task.baseCommit); }
+        catch (failure) { error = this.describe(failure); }
+        this.fileCache = { id: task.id, expires: Date.now() + 1000, files, error };
+      }
     }
     if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
       providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft,
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
-      diagnostics: [...this.diagnostics.values()]
+      diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined
     };
     await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
   }
@@ -302,8 +320,8 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -327,13 +345,48 @@ class Manager {
     if (message.type === 'select') { this.selectedId = task.id; await this.publish(); return; }
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
     if (message.type === 'stop') {
+      if (this.managed.has(task.id)) { await this.managed.stop(task.id); return; }
+      if (this.busy && task.state === 'running') throw new Error('This process is still being prepared. Stop it once startup finishes.');
       const terminal = this.terminals.get(task.id);
       if (!terminal) return;
       terminal.dispose();
       return;
     }
     await this.verifyWorktree(task);
-    if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.busy && ['handoff', 'launch', 'terminal', 'releaseExternal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (message.type === 'showSessionDiagnostics') {
+      const turn = this.managed.view(task.id)?.turns.at(-1);
+      if (!turn) throw new Error('No managed turn diagnostics yet.');
+      await vscode.window.showTextDocument(vscode.Uri.file(this.managed.store.rawPath(task.id, turn.id)), { viewColumn: vscode.ViewColumn.Beside, preview: true });
+      return;
+    }
+    if (message.type === 'startManaged' || message.type === 'followUp') {
+      assertCliAllowed(task);
+      if (task.provider !== 'claude') throw new Error('Codex structured sessions are not connected yet. Use its terminal or official extension.');
+      if (this.terminals.has(task.id) || task.state === 'external' || this.managed.has(task.id)) throw new Error('Stop this task writer before starting a managed turn.');
+      if (message.type === 'startManaged' && task.sessionId) throw new Error('This task already has a session. Send a follow-up to resume it.');
+      if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task first before sending a follow-up.');
+      const max = vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2);
+      if (this.terminals.size + this.managed.count >= max) throw new Error('The task concurrency limit is reached. Stop a task writer first.');
+      this.busy = true;
+      const controller = new AbortController(), generation = this.diagnosticGeneration;
+      this.diagnosticChecks.add(controller);
+      try {
+        const info = await findProvider('claude', vscode.workspace.getConfiguration('hydra').get<string>('claudePath'));
+        if (!info.executable) throw new Error('Claude CLI not found. Set its executable path first.');
+        // Re-probe immediately before a model request: cached help must not authorize a changed binary.
+        const diagnostic = await checkProvider(info, task.worktree, controller.signal);
+        if (controller.signal.aborted || this.closing || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because the window closed or provider configuration changed.');
+        this.diagnostics.set('claude', diagnostic);
+        if (diagnostic.status !== 'checked' || diagnostic.version !== testedClaudeVersion) throw new Error('Managed Claude supports verified version 2.1.270 only. Use the terminal for another version; see provider diagnostics.');
+        task.providerVersion = diagnostic.version;
+        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt);
+      } catch (error) {
+        if (!this.managed.has(task.id)) { task.state = 'error'; task.error = this.describe(error); await this.persist(); }
+        throw error;
+      } finally { this.diagnosticChecks.delete(controller); this.busy = false; await this.publish(); }
+      return;
+    }
     if (message.type === 'releaseExternal') {
       if (task.interface !== 'official-extension') return;
       task.interface = 'interactive-cli';
@@ -344,6 +397,7 @@ class Manager {
       return;
     }
     if (message.type === 'handoff') {
+      if (this.managed.has(task.id)) throw new Error('Stop this managed process before handing off to an official extension.');
       this.busy = true;
       try {
         await handoffTask(task, path.join(this.context.globalStorageUri.fsPath, 'handoffs'), message.provider, this.terminals.has(task.id),
@@ -362,21 +416,24 @@ class Manager {
     }
     if (message.type === 'terminal' || message.type === 'launch') {
       assertCliAllowed(task);
+      if (this.managed.has(task.id)) throw new Error('Stop the managed process before opening a terminal writer.');
       const existing = this.terminals.get(task.id);
       if (existing) { existing.show(false); return; }
       const max = vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2);
-      if (this.terminals.size >= max) throw new Error(`The ${max}-terminal concurrency limit is reached. Stop a task terminal before launching another.`);
+      if (this.terminals.size + this.managed.count >= max) throw new Error(`The ${max}-task concurrency limit is reached. Stop a task writer before launching another.`);
       await this.refreshProviders();
       const provider = this.providers.find(item => item.provider === task.provider);
       if (!provider?.executable) throw new Error(`${task.provider} CLI not found. Install it or set Hydra's ${task.provider} path. Authentication remains with the official CLI.`);
       // Recheck after async probes to prevent simultaneous webview launches exceeding the limit.
       if (this.busy) throw new Error('Another task operation is in progress.');
       assertCliAllowed(task);
+      if (this.managed.has(task.id)) throw new Error('Stop the managed process before opening a terminal writer.');
       const duplicate = this.terminals.get(task.id);
       if (duplicate) { duplicate.show(false); return; }
-      if (this.terminals.size >= max) throw new Error('The terminal concurrency limit is reached.');
+      if (this.terminals.size + this.managed.count >= max) throw new Error('The task concurrency limit is reached.');
       const terminal = vscode.window.createTerminal({ name: `Hydra · ${task.title}`, cwd: task.worktree, ...terminalLaunch(provider.executable), isTransient: true });
       this.terminals.set(task.id, terminal);
+      task.interface = 'interactive-cli';
       task.state = 'external';
       task.error = undefined;
       task.updatedAt = new Date().toISOString();
@@ -387,6 +444,7 @@ class Manager {
   async shutdown(): Promise<void> {
     this.closing = true;
     for (const controller of this.diagnosticChecks) controller.abort();
+    await this.managed.shutdown();
     for (const [id, terminal] of this.terminals) {
       terminal.dispose();
       const task = this.getTask(id);

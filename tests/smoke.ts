@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Handoff, Task, ProviderDiagnostic } from '../src/core/model';
+import type { Handoff, Task, ProviderDiagnostic, SessionView } from '../src/core/model';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -46,6 +46,12 @@ export async function run(): Promise<void> {
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
+    const managedTask = tasks.find(task => task.interface === 'managed-cli');
+    assert.ok(managedTask?.sessionId, 'Managed session identity survives reload');
+    const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', managedTask.id);
+    assert.equal(session?.turns.length, 2);
+    assert.equal(session.turns[0]?.text, 'Hello ü');
+    assert.equal(session.turns[1]?.status, 'interrupted');
     const workspaces = await Promise.all((['claude', 'codex'] as const).map((provider, index) => createHandoffWorkspace(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs'), tasks[index]!, provider)));
     await writeFile(path.join(process.env.HYDRA_TEST_FIXTURE!, 'handoffs.json'), JSON.stringify(workspaces));
     console.log('PASS: fresh host recovers three tasks without inventing completion or launching a model request.');
@@ -113,5 +119,26 @@ export async function run(): Promise<void> {
     await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
     await waitFor(() => correctCwd(tasks[2]!));
     console.log('PASS: both provider routes launch in exact worktrees, reuse terminals, enforce the two-terminal limit, and survive mode changes.');
+    for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
+    await vscode.commands.executeCommand('hydra.startManaged', tasks[0]!.id);
+    await waitFor(async () => { const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id); return session?.turns[0]?.status === 'completed' && !session.active; });
+    const completed = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id);
+    assert.equal(completed?.turns[0]?.text, 'Hello ü');
+    assert.equal(completed.turns[0]?.usage?.input, 12);
+    await vscode.commands.executeCommand('hydra.followUp', tasks[0]!.id, 'hold');
+    await waitFor(async () => { try { await readFile(path.join(tasks[0]!.worktree, 'heartbeat.txt')); return true; } catch { return false; } });
+    const requests = (await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].args[requests[1].args.indexOf('--resume') + 1], '12345678-1234-1234-1234-123456789abc');
+    assert.equal(path.relative(await realpath(requests[0].cwd), await realpath(tasks[0]!.worktree)), '');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[0]!.id), /managed process/);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffCodex', tasks[0]!.id), /managed process/);
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[1]!.id);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id), /limit/);
+    await vscode.commands.executeCommand('hydra.stopTask', tasks[0]!.id);
+    assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id))?.turns[1]?.status, 'interrupted');
+    await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
+    console.log('PASS: managed Claude streams and persists a result, resumes its explicit ID, blocks overlapping writers, shares concurrency with terminals, and stops without inventing completion.');
   }
 }

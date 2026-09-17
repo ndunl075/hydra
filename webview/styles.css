@@ -118,6 +118,12 @@ textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
 .provider-check { margin-top: 24px; padding-top: 17px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.7; color: var(--muted); }
 .provider-check p { margin: 10px 0 0; overflow-wrap: anywhere; }
 .diagnostic-actions { display: flex; gap: 16px; margin-top: 9px; }
+.assistant-message { border-top: 1px solid var(--border); padding-top: 20px; }
+.session-note, .session-error { margin: 10px 0 22px 31px; font-size: 11px; color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; }
+.session-error { color: #e0c79b; }
+.follow-up { margin: 24px 0 30px; padding-top: 22px; border-top: 1px solid var(--border); }
+.follow-up .task-actions { margin: 12px 0; flex-wrap: wrap; }
+.status-dot.running { background: var(--green); }
 .handoff-heading { font-size: 23px; font-weight: 500; letter-spacing: -.6px; }
 .handoff-prompt { margin: 28px 0; padding-top: 22px; border-top: 1px solid var(--border); }
 .handoff-prompt .prompt-text { margin-left: 0; }

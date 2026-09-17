@@ -1,9 +1,10 @@
 export type Provider = 'claude' | 'codex';
-export type TaskState = 'idle' | 'external' | 'interrupted' | 'error';
+export type TaskState = 'idle' | 'external' | 'running' | 'interrupted' | 'error';
 export interface Task {
   id: string; title: string; prompt: string; repository: string; worktree: string;
   branch: string; baseCommit: string; integrationTarget: string; provider: Provider;
-  interface: 'interactive-cli' | 'official-extension'; state: TaskState; createdAt: string; updatedAt: string;
+  interface: 'interactive-cli' | 'official-extension' | 'managed-cli'; state: TaskState; createdAt: string; updatedAt: string;
+  sessionId?: string; providerVersion?: string;
   error?: string;
 }
 export interface TaskFile { path: string; status: string }
@@ -14,6 +15,13 @@ export interface ProviderDiagnostic {
   probes: { args: string[]; stdout: string; stderr: string; exitCode: number | null; error?: string }[];
 }
 export interface Draft { title: string; prompt: string; provider: Provider }
+export interface Turn {
+  id: string; prompt: string; text: string; status: 'running' | 'completed' | 'error' | 'interrupted';
+  createdAt: string; error?: string; permissionDenials?: number;
+  textTruncated?: boolean;
+  usage?: { input: number; output: number; cacheRead?: number; cacheCreated?: number; estimatedUsd?: number };
+}
+export interface SessionView { version: 1; turns: Turn[]; active?: boolean; totalTurns?: number }
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
@@ -22,10 +30,12 @@ export interface Snapshot {
   providers: ProviderInfo[]; files: TaskFile[]; busy: boolean; error?: string; draft?: Draft;
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];
   diagnostics?: ProviderDiagnostic[];
+  session?: SessionView;
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
-  | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal'; id: string }
+  | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics'; id: string }
+  | { type: 'followUp'; id: string; prompt: string }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
@@ -54,7 +64,12 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id) || (provider !== 'claude' && provider !== 'codex')) throw new Error('Invalid handoff.');
     return { type, id, provider };
   }
-  if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal'].includes(type)) {
+  if (type === 'followUp') {
+    const id = string('id'), prompt = string('prompt', 32000);
+    if (!/^[a-f0-9]{12}$/.test(id) || !prompt.trim()) throw new Error('Invalid follow-up.');
+    return { type, id, prompt };
+  }
+  if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal', 'startManaged', 'showSessionDiagnostics'].includes(type)) {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return { type, id } as ClientMessage;

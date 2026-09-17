@@ -1,4 +1,8 @@
+import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
+import type { UsageSummary } from './usage';
 export type Provider = 'claude' | 'codex';
+export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
+export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
 export type TaskState = 'idle' | 'external' | 'running' | 'interrupted' | 'error';
 export interface Task {
   id: string; title: string; prompt: string; repository: string; worktree: string;
@@ -7,6 +11,9 @@ export interface Task {
   sessionId?: string; sessionProvider?: Provider; providerVersion?: string;
   error?: string;
   reviewedCommit?: ReviewedCommit;
+  brief?: TaskBrief;
+  contextLockedAt?: string;
+  handoffSummary?: TaskHandoffSummary;
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
 export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }
@@ -20,13 +27,16 @@ export interface ProviderDiagnostic {
   version?: string; checkedAt: string; advertised: string[]; error?: string;
   probes: { args: string[]; stdout: string; stderr: string; exitCode: number | null; error?: string }[];
 }
-export interface Draft { title: string; prompt: string; provider: Provider }
+export interface Draft { title: string; prompt: string; provider: Provider; brief?: TaskBrief }
 export interface Turn {
   provider?: Provider;
   id: string; prompt: string; text: string; status: 'running' | 'completed' | 'error' | 'interrupted';
   createdAt: string; error?: string; permissionDenials?: number;
   textTruncated?: boolean;
   usage?: { input: number; output: number; cacheRead?: number; cacheCreated?: number; estimatedUsd?: number };
+  usageSource?: 'claude-result' | 'codex-last-request';
+  /** Cumulative root-thread snapshot; never sum these across turns. */
+  threadUsage?: { sessionId: string; input: number; output: number; cacheRead?: number; cacheCreated?: number };
 }
 export interface Approval { id: string; kind: 'command' | 'file' | 'network'; detail: string }
 export interface SessionView { version: 1; turns: Turn[]; active?: boolean; totalTurns?: number; approvals?: Approval[] }
@@ -42,11 +52,15 @@ export interface Snapshot {
   /** Local activity only; no other task's transcript or approval details. */
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
+  usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary> };
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics'; id: string }
   | { type: 'followUp'; id: string; prompt: string }
+  | { type: 'saveBrief'; id: string; brief: TaskBrief }
+  | { type: 'saveHandoffSummary'; id: string; handoffSummary: TaskHandoffSummary }
+  | { type: 'showTaskHandoff'; id: string }
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
@@ -56,8 +70,8 @@ export type ClientMessage =
   | { type: 'prepareCommitReview'; id: string }
   | { type: 'openCommitReview'; id: string; token: string; path: string }
   | { type: 'commitReviewed'; id: string; token: string; message: string }
-  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string }
-  | { type: 'draft'; title: string; prompt: string; provider: Provider };
+  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; brief?: TaskBrief }
+  | { type: 'draft'; title: string; prompt: string; provider: Provider; brief?: TaskBrief };
 
 export function parseMessage(value: unknown): ClientMessage {
   if (!value || typeof value !== 'object') throw new Error('Invalid message.');
@@ -68,6 +82,18 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['model', 'effort', 'reasoningEffort', 'reasoning_effort'].some(key => key in message)) {
+    throw new Error('Per-task model and effort overrides are not verified for these managed adapters. Configure the official provider or use its terminal; Hydra cannot confirm an Astra High preset.');
+  }
+  if (type === 'saveBrief' || type === 'saveHandoffSummary' || type === 'showTaskHandoff') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'showTaskHandoff') return { type, id };
+    if (type === 'saveHandoffSummary') return { type, id, handoffSummary: parseHandoffSummary(message.handoffSummary) };
+    const brief = parseBrief(message.brief);
+    if (!brief.goal.trim()) throw new Error('Enter a task goal.');
+    return { type, id, brief };
+  }
   if (type === 'prepareCommitReview' || type === 'openCommitReview' || type === 'commitReviewed') {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
@@ -119,9 +145,11 @@ export function parseMessage(value: unknown): ClientMessage {
   if (type === 'create' || type === 'draft') {
     const provider = string('provider');
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
-    const common = { title: string('title', 120), prompt: string('prompt', 32000), provider };
+    const common = { title: string('title', 120), prompt: string('prompt', 32000), provider, ...(message.brief === undefined ? {} : { brief: parseBrief(message.brief) }) };
     if (type === 'draft') return { type, ...common } as ClientMessage;
     if (!common.title.trim() || !common.prompt.trim()) throw new Error('Enter a title and task prompt.');
+    if (common.brief && !common.brief.goal.trim()) throw new Error('Enter a task goal.');
+    if (common.brief && buildTaskPrompt(common.brief) !== common.prompt) throw new Error('The prompt preview does not match the task brief. Refresh before creating the task.');
     return { type, ...common, repository: string('repository', 4096) } as ClientMessage;
   }
   throw new Error('Unknown command.');

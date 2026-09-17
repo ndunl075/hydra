@@ -6,6 +6,8 @@ import type { Handoff, Task, ProviderDiagnostic, SessionView, TaskFile, DiffLaye
 import { git } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
+import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/taskContext';
+import type { UsageSummary } from '../src/core/usage';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   while (!await predicate()) {
@@ -185,7 +187,16 @@ export async function run(): Promise<void> {
       tasks.push(task);
     }
     assert.equal(new Set(tasks.map(task => task.worktree)).size, 3);
+    const brief = { ...emptyBrief(), goal: 'Test launch mechanics only; do not call a model.', constraints: 'Literal $(text) stays data.', relevantPaths: 'keep.txt', acceptance: 'Fake provider receives this exact prompt.' };
+    await vscode.commands.executeCommand('hydra.saveBrief', tasks[0]!.id, brief);
+    const submittedPrompt = buildTaskPrompt(brief);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.prompt, submittedPrompt);
+    await vscode.commands.executeCommand('hydra.saveHandoffSummary', tasks[0]!.id, { ...emptyHandoffSummary(), summary: 'Local fixture handoff', validation: 'No provider call for this action.', evidenceRefs: 'keep.txt' });
+    await vscode.commands.executeCommand('hydra.showTaskHandoff', tasks[0]!.id);
+    assert.ok(vscode.window.activeTextEditor?.document.getText().includes('Local fixture handoff'));
+    assert.ok(vscode.window.activeTextEditor?.document.getText().includes('No reviewed commit'));
     for (const task of tasks.slice(0, 2)) await vscode.commands.executeCommand('hydra.launchTask', task.id);
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveBrief', tasks[0]!.id, brief), /locked after launch/);
     for (const task of tasks.slice(0, 2)) {
       await waitFor(() => correctCwd(task));
     }
@@ -211,9 +222,13 @@ export async function run(): Promise<void> {
     const completed = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id);
     assert.equal(completed?.turns[0]?.text, 'Hello ü');
     assert.equal(completed.turns[0]?.usage?.input, 12);
+    assert.equal(completed.turns[0]?.prompt, submittedPrompt);
+    const reported = await vscode.commands.executeCommand<{ tasks: Record<string, UsageSummary> }>('hydra.getUsage');
+    assert.equal(reported?.tasks[tasks[0]!.id]?.claude?.input, 12);
     await vscode.commands.executeCommand('hydra.followUp', tasks[0]!.id, 'hold');
     await waitFor(async () => { try { await readFile(path.join(tasks[0]!.worktree, 'heartbeat.txt')); return true; } catch { return false; } });
     const requests = (await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(requests[0].prompt, submittedPrompt, 'The provider receives the exact inspected initial brief');
     assert.equal(requests.length, 2);
     assert.equal(requests[1].args[requests[1].args.indexOf('--resume') + 1], '12345678-1234-1234-1234-123456789abc');
     assert.equal(path.relative(await realpath(requests[0].cwd), await realpath(tasks[0]!.worktree)), '');

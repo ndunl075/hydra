@@ -51,12 +51,15 @@ export class ClaudeProtocol {
       if (event.is_error || event.subtype !== 'success') this.turn.error = `Claude returned ${event.subtype}. ${Array.isArray(event.errors) ? event.errors.join(' ') : typeof event.result === 'string' ? event.result : 'See raw diagnostics.'}`;
       if (event.usage) {
         const number = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
-        if (number(event.usage.input_tokens) && number(event.usage.output_tokens)) this.turn.usage = {
-          input: event.usage.input_tokens, output: event.usage.output_tokens,
-          cacheRead: number(event.usage.cache_read_input_tokens) ? event.usage.cache_read_input_tokens : undefined,
-          cacheCreated: number(event.usage.cache_creation_input_tokens) ? event.usage.cache_creation_input_tokens : undefined,
-          estimatedUsd: number(event.total_cost_usd) ? event.total_cost_usd : undefined
-        };
+        if (number(event.usage.input_tokens) && number(event.usage.output_tokens)) {
+          this.turn.usageSource = 'claude-result';
+          this.turn.usage = {
+            input: event.usage.input_tokens, output: event.usage.output_tokens,
+            cacheRead: number(event.usage.cache_read_input_tokens) ? event.usage.cache_read_input_tokens : undefined,
+            cacheCreated: number(event.usage.cache_creation_input_tokens) ? event.usage.cache_creation_input_tokens : undefined,
+            estimatedUsd: number(event.total_cost_usd) ? event.total_cost_usd : undefined
+          };
+        }
       }
     }
     // Future event types remain available in the owned append-only raw log.

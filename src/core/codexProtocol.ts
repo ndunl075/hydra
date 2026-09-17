@@ -85,6 +85,14 @@ export class CodexTurn {
       const valid = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
       if (![usage.inputTokens, usage.outputTokens, usage.cachedInputTokens, usage.cacheWriteInputTokens].every(valid)) throw new Error('Invalid Codex token usage.');
       this.turn.usage = { input: usage.inputTokens, output: usage.outputTokens, cacheRead: usage.cachedInputTokens, cacheCreated: usage.cacheWriteInputTokens };
+      this.turn.usageSource = 'codex-last-request';
+      // `last` is the most recent model response, not all requests inside this turn.
+      // Keep the root-thread cumulative snapshot independently for aggregation.
+      if (params.tokenUsage.total !== undefined) {
+        const total = record(params.tokenUsage.total);
+        if (![total.inputTokens, total.outputTokens, total.cachedInputTokens, total.cacheWriteInputTokens].every(valid)) throw new Error('Invalid Codex cumulative token usage.');
+        this.turn.threadUsage = { sessionId: this.threadId, input: total.inputTokens, output: total.outputTokens, cacheRead: total.cachedInputTokens, cacheCreated: total.cacheWriteInputTokens };
+      }
       return true;
     }
     return false;

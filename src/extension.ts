@@ -14,6 +14,8 @@ import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
+import { buildTaskPrompt, canEditBrief, renderTaskHandoff } from './core/taskContext';
+import { usageSnapshot } from './core/usage';
 import { testedClaudeVersion } from './core/claudeProtocol';
 import { testedCodexVersion } from './core/codexProtocol';
 import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
@@ -111,6 +113,10 @@ class Manager {
     command('hydra.launchTask', (id: string) => this.handle({ type: 'launch', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
     command('hydra.listTasks', () => structuredClone(this.tasks));
+    command('hydra.saveBrief', (id: string, brief: unknown) => this.handle({ type: 'saveBrief', id, brief }));
+    command('hydra.saveHandoffSummary', (id: string, handoffSummary: unknown) => this.handle({ type: 'saveHandoffSummary', id, handoffSummary }));
+    command('hydra.showTaskHandoff', (id: string) => this.handle({ type: 'showTaskHandoff', id }));
+    command('hydra.getUsage', () => structuredClone(usageSnapshot(this.tasks, id => this.managed.view(id))));
     command('hydra.handoffClaude', (id?: string) => this.handoffCommand('claude', id));
     command('hydra.handoffCodex', (id?: string) => this.handoffCommand('codex', id));
     command('hydra.releaseExternal', (id: string) => this.handle({ type: 'releaseExternal', id }));
@@ -270,6 +276,7 @@ class Manager {
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
+      usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
         return [item.id, { active: !!view?.active, awaitingApproval: !!view?.active && !!view.approvals?.length }];
@@ -328,7 +335,7 @@ class Manager {
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
-    if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider }; return; }
+    if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider, brief: message.brief }; return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use task worktrees and terminals.');
     if (this.disabled) throw new Error('Hydra task operations are disabled. Resolve the storage or ownership error and reload this window.');
     if (message.type === 'checkProvider' || message.type === 'showProviderDiagnostics') {
@@ -373,7 +380,7 @@ class Manager {
         const id = randomBytes(6).toString('hex');
         const worktree = await createWorktree(message.repository, message.title, id, vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'));
         const now = new Date().toISOString();
-        this.tasks.push({ id, title: message.title.trim(), prompt: message.prompt.trim(), provider: message.provider,
+        this.tasks.push({ id, title: message.title.trim(), prompt: message.brief ? buildTaskPrompt(message.brief) : message.prompt.trim(), brief: message.brief, provider: message.provider,
           repository: message.repository, ...worktree, interface: 'interactive-cli', state: 'idle', createdAt: now, updatedAt: now });
         this.selectedId = id;
         this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
@@ -384,6 +391,22 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
+    if (message.type === 'saveBrief' || message.type === 'saveHandoffSummary' || message.type === 'showTaskHandoff') {
+      if (this.busy) throw new Error('Another task operation is in progress.');
+      if (message.type === 'saveBrief') {
+        if (!canEditBrief(task, this.managed.view(task.id))) throw new Error('The initial task brief is locked after launch. Send changes as an explicit follow-up.');
+        task.brief = message.brief; task.prompt = buildTaskPrompt(message.brief);
+      } else if (message.type === 'saveHandoffSummary') {
+        task.handoffSummary = message.handoffSummary;
+      } else {
+        const content = renderTaskHandoff(task, this.managed.store.historyPath(task.id), (this.managed.view(task.id)?.turns || []).map(turn => ({ id: turn.id, status: turn.status, evidencePath: this.managed.store.rawPath(task.id, turn.id) })));
+        const filename = await this.managed.store.saveHandoff(task.id, content);
+        await vscode.window.showTextDocument(vscode.Uri.file(filename), { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        return;
+      }
+      task.updatedAt = new Date().toISOString();
+      await this.persist(); await this.publish(); return;
+    }
     if (message.type === 'select') { this.selectedId = task.id; await this.publish(); return; }
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
     if (message.type === 'stop') {
@@ -429,7 +452,11 @@ class Manager {
       await this.review.open(`${task.title} · Prepared tree ${prepared.tree.slice(0, 8)}`, task.worktree, snapshot);
       return;
     }
-    if (['startManaged', 'followUp', 'launch', 'terminal', 'handoff'].includes(message.type)) this.commitReviews.delete(task.id);
+    if (['startManaged', 'followUp', 'launch', 'terminal', 'handoff'].includes(message.type)) {
+      this.commitReviews.delete(task.id);
+      // Persist before any writer can start; failures remain locked for an inspectable history.
+      if (!task.contextLockedAt) { task.contextLockedAt = new Date().toISOString(); await this.persist(); }
+    }
     if (message.type === 'showSessionDiagnostics') {
       const turn = this.managed.view(task.id)?.turns.at(-1);
       if (!turn) throw new Error('No managed turn diagnostics yet.');

@@ -12,6 +12,7 @@ import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { SettingsImport } from './extensionImport';
+import { Onboarding } from './extensionOnboarding';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -27,6 +28,7 @@ let manager: Manager | undefined;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   manager = new Manager(context);
   await manager.initialize();
+  await manager.showFirstRun();
 }
 export async function deactivate(): Promise<void> { await manager?.shutdown(); }
 
@@ -82,11 +84,13 @@ class Manager {
   private integrationAbort?: { taskId: string; operationId?: string; controller: AbortController };
   private readonly settings: AppearanceSettings;
   private readonly settingsImport: SettingsImport;
+  private readonly onboarding: Onboarding;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
-    context.subscriptions.push(this.settings);
+    this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
+    context.subscriptions.push(this.settings, this.onboarding);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
@@ -108,6 +112,8 @@ class Manager {
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
+    command('hydra.openOnboarding', () => this.onboarding.show());
+    command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
     command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
@@ -201,6 +207,9 @@ class Manager {
       if (this.handoff) { await this.verifyHandoffWorkspace(); await this.openAgents(); }
     } catch (error) { this.disabled = true; this.report(error); }
     await this.publish();
+  }
+  async showFirstRun(): Promise<void> {
+    if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
   }
   private async handoffCommand(provider: 'claude' | 'codex', id?: string): Promise<string | undefined> {
     if (!id) {

@@ -16,6 +16,7 @@ import { prepareDiscard, confirmDiscard, restoreDiscarded, type DiscardReview } 
 import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
+import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
@@ -121,7 +122,7 @@ class Manager {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
-    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
+    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport, () => this.delegationPreferences(), mode => this.setDelegationMode(mode));
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
     context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
@@ -180,6 +181,8 @@ class Manager {
     command('hydra.openOnboarding', () => this.onboarding.show());
     command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
+    command('hydra.getDelegationPreferences', () => structuredClone(this.delegationPreferences()));
+    command('hydra.setDelegationMode', (mode: unknown) => this.setDelegationMode(requireDelegationMode(mode)));
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
     command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
     command('hydra.undoImport', () => this.settingsImport.undo());
@@ -368,6 +371,15 @@ class Manager {
     if (branch.trim() !== task.branch) throw new Error('Task worktree branch changed. Restore its recorded branch before launching.');
   }
   private profileLimit(): number { return Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentProfileTasks', 2))); }
+  private delegationPreferences(): DelegationPreferences {
+    const config = vscode.workspace.getConfiguration('hydra');
+    return parseDelegationPreferences({ mode: config.get('delegationMode', 'solo'), maxChildren: config.get('maxDelegatedChildren', 2) });
+  }
+  private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
+    await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
+    await this.publish();
+    return this.delegationPreferences();
+  }
   private async settleCapacity(shutdown = false): Promise<void> {
     if (this.disabled || !vscode.workspace.isTrusted || this.closing && !shutdown) return;
     const owned = this.capacity.view(this.profileLimit()).owned;
@@ -478,6 +490,7 @@ class Manager {
       discardReview: task ? this.discardReviews.get(task.id) : undefined,
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       budgets: this.budgetSnapshot(),
+      delegation: this.delegationPreferences(),
       resources: this.resources.snapshot(),
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
@@ -565,6 +578,7 @@ class Manager {
     if (message.type === 'newTask') { await vscode.commands.executeCommand('hydra.newTask'); return; }
     if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); await this.publish(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
+    if (message.type === 'setDelegationMode') { await this.setDelegationMode(message.mode); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
     if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider, brief: message.brief }; return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use task worktrees and terminals.');

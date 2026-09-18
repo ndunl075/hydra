@@ -8,6 +8,7 @@ import type { CapacityView } from './profileCapacity';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 import type { ConversationDraft } from './conversationDrafts';
+import { requireDelegationMode, type DelegationPreferences, type DelegationMode } from './delegationPreferences';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -72,6 +73,7 @@ export interface Snapshot {
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
+  delegation?: DelegationPreferences;
 }
 export type ClientMessage =
   | { type: 'saveResources'; id: string; config: ResourceConfig }
@@ -104,7 +106,8 @@ export type ClientMessage =
   | { type: 'acceptIntegrationResolution'; id: string; operationId: string; token: string }
   | { type: 'openIntegrationDiff'; id: string; operationId: string; path: string }
   | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string; brief?: TaskBrief }
-  | { type: 'draft'; title: string; prompt: string; provider: Provider; brief?: TaskBrief };
+  | { type: 'draft'; title: string; prompt: string; provider: Provider; brief?: TaskBrief }
+  | { type: 'setDelegationMode'; mode: DelegationMode };
 
 export function parseMessage(value: unknown): ClientMessage {
   if (!value || typeof value !== 'object') throw new Error('Invalid message.');
@@ -115,6 +118,9 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'setDelegationMode') {
+    return { type, mode: requireDelegationMode(string('mode')) };
+  }
   if (['saveResources', 'runSetup', 'stopSetup', 'reconcileSetup', 'releaseResources', 'reacquireResources', 'showSetupLog'].includes(type)) {
     const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return type === 'saveResources' ? { type, id, config: parseResources(message.config) } : { type, id } as ClientMessage;

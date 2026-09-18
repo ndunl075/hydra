@@ -2,11 +2,12 @@ import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { SettingsImport } from './extensionImport';
 import type { ImportCategory } from './core/profileImport';
+import type { DelegationMode, DelegationPreferences } from './core/delegationPreferences';
 
 export class AppearanceSettings implements vscode.Disposable {
   private panel?: vscode.WebviewPanel;
   private readonly subscription: vscode.Disposable;
-  constructor(private readonly extensionUri: vscode.Uri, private readonly imports: SettingsImport) {
+  constructor(private readonly extensionUri: vscode.Uri, private readonly imports: SettingsImport, private readonly delegation: () => DelegationPreferences, private readonly setDelegation: (mode: DelegationMode) => Promise<DelegationPreferences>) {
     this.subscription = vscode.window.onDidChangeActiveColorTheme(() => this.publish());
   }
   show(): void {
@@ -20,7 +21,7 @@ export class AppearanceSettings implements vscode.Disposable {
       try {
         if (!message || typeof message !== 'object') throw new Error('Invalid settings action.');
         const action = message as Record<string, unknown>;
-        if (action.type === 'ready') { this.publish(); await this.publishImportStatus(); return; }
+        if (action.type === 'ready') { this.publish(); this.publishDelegation(); await this.publishImportStatus(); return; }
         if (action.type === 'accounts') { await vscode.commands.executeCommand('hydra.openAccounts'); return; }
         if (action.type === 'onboarding') { await vscode.commands.executeCommand('hydra.openOnboarding'); return; }
         if (action.type === 'editorSettings') { await vscode.commands.executeCommand('workbench.action.openSettings', 'hydra'); return; }
@@ -37,6 +38,10 @@ export class AppearanceSettings implements vscode.Disposable {
         }
         if (action.type === 'undoImport') {
           await this.imports.undo(); await panel.webview.postMessage({ type: 'importDone', text: 'Restored the preferences from before the last import.' }); await this.publishImportStatus(); return;
+        }
+        if (action.type === 'delegation') {
+          if (action.mode !== 'solo' && action.mode !== 'auto') throw new Error('Unknown delegation choice.');
+          await this.setDelegation(action.mode); this.publishDelegation(); return;
         }
         if (action.type !== 'appearance' || !['dark', 'light'].includes(String(action.mode))) throw new Error('Unknown appearance choice.');
         await this.setAppearance(action.mode as 'dark' | 'light');
@@ -67,6 +72,7 @@ export class AppearanceSettings implements vscode.Disposable {
     const kind = vscode.window.activeColorTheme.kind;
     void this.panel?.webview.postMessage({ type: 'appearance', mode: kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight ? 'light' : 'dark', status });
   }
+  private publishDelegation(): void { void this.panel?.webview.postMessage({ type: 'delegation', ...this.delegation() }); }
   private html(): string {
     const nonce = randomBytes(24).toString('base64');
     return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';"><title>Hydra Settings</title>
@@ -88,18 +94,20 @@ export class AppearanceSettings implements vscode.Disposable {
       <section aria-labelledby="appearance"><h2 id="appearance">Appearance</h2><p>Choose a theme for the editor, terminals, and agent manager. Both use Hydra's dark green accents.</p>
       <div class="choices" role="group" aria-label="Appearance"><button class="choice" data-mode="dark" aria-pressed="false"><span class="sample dark" aria-hidden="true">Hydra<br><span></span></span>Dark</button><button class="choice" data-mode="light" aria-pressed="false"><span class="sample light" aria-hidden="true">Hydra<br><span></span></span>Light</button></div>
       <p>Choosing a mode applies it to your user profile and turns off automatic system dark/light switching. High-contrast settings remain available in the editor.</p></section>
+      <section aria-labelledby="delegation"><h2 id="delegation">Agent delegation</h2><p>Choose how Hydra should prepare future tasks. Auto is a planning preference only while child dispatch is being built.</p><div class="choices" role="group" aria-label="Agent delegation"><button class="choice" data-delegation="solo" aria-pressed="false">Solo<span>One focused task at a time.</span></button><button class="choice" data-delegation="auto" aria-pressed="false">Auto<span>Hydra may plan independent work later.</span></button></div><p>Changing this never starts, stops, or alters an existing task. New tasks still run solo until child dispatch is available.</p></section>
       ${this.imports.available ? `<section aria-labelledby="import-heading"><h2 id="import-heading">Import preferences</h2><p>Bring your settings, keybindings, and snippets from another editor. Preview what will change; current Hydra preferences win on conflicts. Accounts and conversation history stay with their provider.</p>
       <div class="actions"><button data-import="vscode">From VS Code</button><button data-import="cursor">From Cursor</button><button data-import="folder">Choose profile folder…</button></div>
       <div id="preview" tabindex="-1" aria-labelledby="import-preview-heading" hidden><h3 id="import-preview-heading">Import preview</h3><p id="import-source"></p><div class="categories">${['settings', 'keybindings', 'snippets'].map(category => `<label><input type="checkbox" data-category="${category}" checked> ${category[0]!.toUpperCase() + category.slice(1)} <span data-count="${category}"></span></label>`).join('')}</div><p>Add brings a new preference. Keep preserves a conflict. Skip leaves an unavailable, account, or existing preference unchanged.</p><ul id="import-items" tabindex="0" aria-label="Preference changes"></ul><p id="import-truncated" hidden>Showing the first 500 entries. Category totals include all entries.</p><ul id="import-warnings"></ul><div class="actions"><button class="primary" id="apply-import">Import selected preferences</button><button id="cancel-import">Cancel preview</button></div></div>
       <div class="actions"><button id="undo-import" disabled>Undo last import</button></div><p id="import-recovery" hidden>The last import was interrupted. Undo it before importing again. Backups are retained if newer edits prevent safe recovery.</p><p id="import-status" role="status" aria-live="polite"></p></section>` : ''}
       <section aria-labelledby="editor"><h2 id="editor">Editor and providers</h2><p>Change provider paths, worktree location, concurrency, and other editor preferences.</p><button id="editor-settings">Open editor settings</button></section><p id="status" role="status" aria-live="polite"></p></main>
       <script nonce="${nonce}">
-        const vscode = acquireVsCodeApi(); const status = document.getElementById('status'); const choices = [...document.querySelectorAll('[data-mode]')];
+        const vscode = acquireVsCodeApi(); const status = document.getElementById('status'); const choices = [...document.querySelectorAll('[data-mode]')]; const delegationChoices = [...document.querySelectorAll('[data-delegation]')];
         for (const button of choices) button.addEventListener('click', () => { choices.forEach(choice => choice.disabled = true); status.textContent = 'Applying appearance…'; vscode.postMessage({type:'appearance',mode:button.dataset.mode}); });
+        for (const button of delegationChoices) button.addEventListener('click', () => { delegationChoices.forEach(choice => choice.disabled = true); status.textContent = 'Saving delegation preference…'; vscode.postMessage({type:'delegation',mode:button.dataset.delegation}); });
         document.getElementById('editor-settings').addEventListener('click', () => vscode.postMessage({type:'editorSettings'}));
         document.getElementById('accounts')?.addEventListener('click', () => vscode.postMessage({type:'accounts'}));
         document.getElementById('onboarding')?.addEventListener('click', () => vscode.postMessage({type:'onboarding'}));
-        window.addEventListener('message', event => { const message = event.data; if (message?.type === 'appearance') { choices.forEach(button => {button.disabled = false; button.setAttribute('aria-pressed', String(button.dataset.mode === message.mode));}); status.textContent = message.status || ''; } if (message?.type === 'error') { choices.forEach(button => button.disabled = false); status.textContent = message.text; } });
+        window.addEventListener('message', event => { const message = event.data; if (message?.type === 'appearance') { choices.forEach(button => {button.disabled = false; button.setAttribute('aria-pressed', String(button.dataset.mode === message.mode));}); status.textContent = message.status || ''; } if (message?.type === 'delegation') { delegationChoices.forEach(button => { button.disabled = false; button.setAttribute('aria-pressed', String(button.dataset.delegation === message.mode)); }); status.textContent = 'Delegation preference saved.'; } if (message?.type === 'error') { choices.forEach(button => button.disabled = false); delegationChoices.forEach(button => button.disabled = false); status.textContent = message.text; } });
         vscode.postMessage({type:'ready'});
         const importStatus = document.getElementById('import-status');
         if (importStatus) {

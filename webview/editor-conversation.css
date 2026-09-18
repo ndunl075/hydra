@@ -40,6 +40,8 @@ body[data-surface="editor"] {
 .chat-start form input, .chat-start form select, .chat-start form textarea { padding: 9px; font-size: 12px; }
 .chat-create-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .chat-create-options > label { min-width: 0; }
+.editor-conversation .delegation-control { padding: 10px; }
+.editor-conversation .delegation-control .secondary { padding: 5px 8px; }
 .chat-error, .chat-notice { padding: 9px 12px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; max-height: 20vh; overflow-y: auto; flex-shrink: 0; }
 .chat-error { color: var(--vscode-errorForeground, #e0a090); background: var(--vscode-inputValidation-errorBackground, #302020); }
 .chat-notice { color: var(--muted); border-bottom: 1px solid var(--border); }

@@ -1,0 +1,69 @@
+/* Use the native editor palette; the chat remains readable at narrow sidebar widths. */
+body[data-surface="editor"] {
+  --primary: var(--vscode-sideBar-background, #141414);
+  --rail: var(--vscode-sideBar-background, #141414);
+  --surface: var(--vscode-input-background, #1b1b1b);
+  --text: var(--vscode-foreground, #f5f5f5);
+  --body-text: var(--vscode-foreground, #c6ccc8);
+  --muted: var(--vscode-descriptionForeground, #999e9a);
+  --border: var(--vscode-widget-border, #2b2b2b);
+  --input-border: var(--vscode-input-border, #363636);
+  --hover: var(--vscode-list-hoverBackground, #262626);
+  --secondary: var(--vscode-button-background, #173c2c);
+  --secondary-hover: var(--vscode-button-hoverBackground, #24553f);
+  overflow: hidden;
+}
+.editor-conversation { height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.editor-conversation .primary { color: var(--vscode-button-foreground, white); border-color: transparent; }
+.chat-toolbar { display: flex; align-items: center; gap: 4px; padding: 9px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.chat-toolbar .mode-switch { margin: 0 auto 0 0; border: 0; background: transparent; padding: 0; }
+.chat-toolbar .mode-switch button { padding: 5px 10px; }
+.chat-toolbar .mode-switch .current { background: var(--hover); color: var(--text); }
+.chat-task-picker { display: flex; align-items: center; gap: 10px; padding: 10px 12px 7px; }
+.chat-task-picker label { font-size: 10px; color: var(--muted); }
+.chat-task-picker select { flex: 1; min-width: 0; color: var(--text); background: var(--primary); border: 0; padding: 3px 0; text-overflow: ellipsis; }
+.chat-identity { display: flex; gap: 8px; padding: 4px 12px 10px; color: var(--muted); font-size: 10px; }
+.chat-identity > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-details { flex-shrink: 0; border-bottom: 1px solid var(--border); }
+.chat-details > summary { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; font-size: 11px; }
+.chat-details > summary::after { content: '+'; color: var(--muted); }
+.chat-details[open] > summary::after { content: '−'; }
+.chat-details > summary > span { margin-left: auto; color: var(--muted); font-size: 10px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-details-body { padding: 0 12px 12px; max-height: 40vh; overflow-y: auto; }
+.chat-worktree { display: block; font-size: 10px; overflow-wrap: anywhere; margin: 5px 0 14px; }
+.chat-start { padding: 28px 16px 20px; overflow-y: auto; }
+.chat-introduction { margin-bottom: 24px; }
+.chat-start h2 { font-size: 18px; line-height: 1.35; font-weight: 500; letter-spacing: -.3px; margin: 12px 0; }
+.chat-start p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.chat-start form { gap: 14px; }
+.chat-start form label { font-size: 11px; gap: 7px; }
+.chat-start form input, .chat-start form select, .chat-start form textarea { padding: 9px; font-size: 12px; }
+.chat-create-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chat-create-options > label { min-width: 0; }
+.chat-error, .chat-notice { padding: 9px 12px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; max-height: 20vh; overflow-y: auto; flex-shrink: 0; }
+.chat-error { color: var(--vscode-errorForeground, #e0a090); background: var(--vscode-inputValidation-errorBackground, #302020); }
+.chat-notice { color: var(--muted); border-bottom: 1px solid var(--border); }
+.chat-loading { color: var(--muted); padding: 12px; }
+.editor-conversation .session-conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.editor-conversation .session-messages { overflow-y: auto; flex: 1; padding: 22px 14px 12px; overflow-wrap: anywhere; }
+.editor-conversation .message { margin-bottom: 24px; }
+.editor-conversation .message-author { font-size: 11px; gap: 7px; flex-wrap: wrap; }
+.editor-conversation .message-author time { font-size: 9px; }
+.editor-conversation .avatar { width: 19px; height: 19px; font-size: 10px; }
+.editor-conversation .local-tag { font-size: 8px; letter-spacing: .5px; }
+.editor-conversation .prompt-text { font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
+.editor-conversation .session-note, .editor-conversation .turn-model-settings { font-size: 10px; line-height: 1.5; }
+.editor-conversation .follow-up { flex-shrink: 0; border: 1px solid var(--input-border); border-radius: 6px; padding: 10px; margin: 8px 10px 10px; gap: 10px; background: var(--surface); max-height: 46vh; overflow-y: auto; }
+.editor-conversation .follow-up > label { font-size: 10px; color: var(--muted); gap: 5px; }
+.editor-conversation .follow-up textarea { background: transparent; border: 0; padding: 0; border-radius: 0; min-height: 64px; max-height: 160px; font-size: 12px; }
+.editor-conversation .follow-up textarea:focus-visible { outline-offset: 2px; }
+.editor-conversation .follow-up .form-note { font-size: 9px; line-height: 1.45; }
+.editor-conversation .task-actions { gap: 6px; }
+.editor-conversation .primary, .editor-conversation .secondary, .editor-conversation .stop-button { font-size: 11px; line-height: 16px; padding: 6px 9px; }
+.editor-conversation .follow-up .task-actions > .primary { margin-right: auto; }
+.editor-conversation .approval-request { padding: 12px; margin: 12px 0; }
+.editor-conversation .approval-request pre { max-height: 240px; overflow: auto; font-size: 10px; }
+@media (max-width: 300px) {
+  .chat-task-picker label { display: none; }
+  .chat-create-options { grid-template-columns: 1fr; }
+}

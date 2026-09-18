@@ -40,7 +40,9 @@ When scheduling and task dependencies are implemented, add actual dependency and
 
 ### Editor mode
 
-The left side shows the normal Explorer and native navigation. The center contains editor tabs and splits. The bottom contains the integrated terminal, output, problems, and debug console. Official Claude Code and Codex extension panels remain available. A compact status item shows active tasks and approvals that need attention.
+Use the familiar Cursor composition: normal Explorer and native navigation on the left, native editor tabs and splits in the center, agent conversation in the right secondary sidebar, and integrated terminal, output, problems, and debug console below. Hydra's right conversation selects the same isolated-worktree tasks, transcripts, approvals, and provider sessions as Agents mode; it does not create a separate agent loop. The orchestration graph appears only in Agents mode. Official Claude Code and Codex extension panels remain available. A compact status item shows active tasks and approvals that need attention.
+
+Switching modes preserves native tabs (including diffs), split groups, terminal processes, and sidebar choices. Saved moved, hidden, and resized views remain under native workbench control. Unsent follow-up drafts survive mode switches within the current window; application-restart draft persistence is a later increment. Focus, visibility, and mode changes never launch provider requests.
 
 ### Agents mode
 

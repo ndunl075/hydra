@@ -7,11 +7,14 @@ import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
 import { BriefFields, PromptPreview, TaskContext, UsagePanel } from './TaskContext';
 import { buildTaskPrompt, emptyBrief } from '../src/core/taskContext';
-import { ModelControls, TurnModelLabel } from './ModelControls';
+import { ModelControls } from './ModelControls';
 import { IntegrationPanel } from './IntegrationPanel';
 import type { DiscardReview } from '../src/core/discard';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
+import { SessionThread } from './SessionThread';
+import { EditorConversation } from './EditorConversation';
+import './editor-conversation.css';
 
 declare function acquireVsCodeApi(): { postMessage(message: ClientMessage): void; getState(): unknown; setState(state: unknown): void };
 const api = acquireVsCodeApi();
@@ -27,34 +30,6 @@ function ProviderCheck({ provider, diagnostic }: { provider: Provider; diagnosti
     {diagnostic?.status === 'checked' && <p role="status">CLI help advertises: {diagnostic.advertised.join(', ') || 'No recognized structured options'}. These are not verified Hydra session capabilities.</p>}
     <p className="quiet">Checks read public version and help output only. They make no model request or authentication check. Managed sessions require Claude 2.1.270 or Codex 0.154.0. Codex command, network, and file approvals appear in the conversation.</p>
   </section>;
-}
-function SessionThread({ task, session, busy }: { task: Task; session: SessionView; busy: boolean }) {
-  const [prompt, setPrompt] = useState('');
-  const running = task.state === 'running' || !!session.active;
-  const blocked = busy || running || task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
-  return <>
-    {(session.totalTurns || session.turns.length) > 10 && <p className="quiet">Showing the latest ten turns. Full conversation and process events remain in local storage.</p>}
-    {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
-      <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{turn.prompt}</p></article>
-      <article className="message assistant-message"><div className="message-author"><span className="avatar hydra-avatar">c</span><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div><p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
-        <TurnModelLabel turn={turn} />
-        {turn.error && <p className="session-error" role="status">{turn.error}</p>}
-        {turn.textTruncated && <p className="session-note">Showing the first 50,000 characters here. Full output is retained in local raw diagnostics; model context is unchanged.</p>}
-        {!!turn.permissionDenials && <p className="session-note">{turn.permissionDenials} permission request(s) denied. Interactive approvals are unavailable here; use the provider terminal when needed.</p>}
-        {turn.usage && <p className="session-note">{turn.provider === 'codex' ? 'Latest model response (not a turn total)' : 'Provider result'} tokens: {turn.usage.input.toLocaleString()} input · {turn.usage.output.toLocaleString()} output{turn.usage.cacheRead !== undefined && ` · ${turn.usage.cacheRead.toLocaleString()} cache read`}{turn.usage.cacheCreated !== undefined && ` · ${turn.usage.cacheCreated.toLocaleString()} cache created`}{turn.usage.estimatedUsd !== undefined && ` · $${turn.usage.estimatedUsd.toFixed(4)} provider estimate, not your bill`}</p>}
-      </article>
-    </React.Fragment>)}
-    {session.approvals?.map(approval => <article key={approval.id} className="approval-request" aria-label={`${approval.kind} approval`}>
-      <div className="section-label">{approval.kind.toUpperCase()} APPROVAL</div><p>Review this request before allowing Codex to proceed.</p><pre>{approval.detail}</pre>
-      <div className="task-actions"><button className="secondary" disabled={!running} onClick={() => send({ type: 'approve', id: task.id, approvalId: approval.id, decision: 'accept' })}>Allow this request</button><button className="stop-button" disabled={!running} onClick={() => send({ type: 'approve', id: task.id, approvalId: approval.id, decision: 'decline' })}>Decline</button></div>
-    </article>)}
-    {!!task.sessionProvider && task.sessionProvider !== task.provider && <p role="status">This recorded session belongs to {providerName(task.sessionProvider)}. Create a separate task for {providerName(task.provider)}.</p>}
-    <form className="follow-up" onSubmit={event => { event.preventDefault(); if (prompt.trim()) { send({ type: 'followUp', id: task.id, prompt }); setPrompt(''); } }}>
-      <label>Follow-up<textarea rows={3} maxLength={32000} value={prompt} disabled={blocked || !task.sessionId} onChange={event => setPrompt(event.target.value)} placeholder="Continue this task in its recorded provider session." /></label>
-      <div className="task-actions">{task.sessionId ? <button className="primary" disabled={blocked || !prompt.trim()} type="submit">Send follow-up <Icon name="arrow" /></button> : <button className="primary" disabled={blocked} type="button" onClick={() => send({ type: 'startManaged', id: task.id })}>Retry managed task</button>}<button className="secondary" type="button" disabled={busy} onClick={() => send({ type: 'showSessionDiagnostics', id: task.id })}>Raw diagnostics</button>{running ? <button className="stop-button" disabled={busy} type="button" onClick={() => send({ type: 'stop', id: task.id })}>Stop process</button> : <button className="secondary" type="button" disabled={blocked} onClick={() => send({ type: 'launch', id: task.id })}>Open provider terminal</button>}</div>
-      <p className="form-note">Sending submits a model request. Follow-ups resume the recorded session after its process has ended. {task.provider === 'codex' ? 'Stop requests an interrupt, then terminates the owned process if needed. Approvals grant only the displayed request; unsupported prompts stop the turn.' : 'Stop process terminates the process tree. Provider rules and hooks still apply; unresolved permissions are denied.'}</p>
-    </form>
-  </>;
 }
 function Icon({ name }: { name: 'plus' | 'branch' | 'terminal' | 'arrow' | 'refresh' | 'search' | 'close' | 'folder' }) {
   const paths = {
@@ -222,7 +197,7 @@ function App() {
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={taskBusy} send={send} />
             <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} send={send} />
             <BudgetControls key={`budgets-${selected.id}`} task={selected} settings={snapshot.budgets?.settings} observations={snapshot.budgets?.observations[selected.id]} busy={taskBusy} send={send} />
-            {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} /> : <>
+            {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} draft={snapshot.conversationDraft} send={send} /> : <>
             <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{selected.prompt}</p></article>
             <article className="system-message"><div className="message-author"><span className="avatar hydra-avatar">h</span><strong>Hydra</strong><span className="local-tag">LOCAL</span></div><p>{selected.interface === 'official-extension' ? `This task is handed off to ${providerName(selected.provider)} in its own workspace window. Stop the provider session there before returning ownership.` : `Task checkout is ready. Open ${providerName(selected.provider)} in the terminal, then paste your prompt to begin.`}</p><div className="task-actions">{selected.interface === 'official-extension' ? <button className="secondary" disabled={taskBusy} onClick={() => send({ type: 'releaseExternal', id: selected.id })}>I stopped the external session</button> : <button className="primary" disabled={taskBusy || !provider?.available} onClick={() => send({ type: 'launch', id: selected.id })}><Icon name="terminal" />{selected.state === 'external' ? 'Show terminal' : 'Open provider terminal'}</button>}<button className="secondary" onClick={() => send({ type: 'copyPrompt', id: selected.id })}>Copy prompt</button></div>
               {!provider?.available && selected.interface === 'interactive-cli' && <p className="availability">{providerName(selected.provider)} CLI was not found. <button className="text-button" onClick={() => send({ type: 'settings' })}>Set its executable path</button>.</p>}
@@ -243,4 +218,4 @@ function App() {
     </div>
   </main>;
 }
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(document.body.dataset.surface === 'editor' ? <EditorConversation send={send} /> : <App />);

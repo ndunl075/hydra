@@ -143,7 +143,8 @@ export async function stageHydra(destination) {
   const manifest = await readJson(path.join(root, 'package.json'));
   manifest.contributes.configurationDefaults = { ...manifest.contributes.configurationDefaults,
     'workbench.colorTheme': 'Hydra Dark', 'workbench.preferredDarkColorTheme': 'Hydra Dark',
-    'window.autoDetectColorScheme': false };
+    'window.autoDetectColorScheme': false,
+    'workbench.secondarySideBar.defaultVisibility': 'visible' };
   await fs.mkdir(destination, { recursive: true });
   for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.

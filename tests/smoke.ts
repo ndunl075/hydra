@@ -21,6 +21,12 @@ async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<voi
   }
 }
 const managerOpen = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra · Agents');
+const tabIdentity = (tab: vscode.Tab, column: vscode.ViewColumn): string => {
+  const input = tab.input;
+  const resource = input instanceof vscode.TabInputTextDiff ? ['diff', input.original.toString(), input.modified.toString()]
+    : input instanceof vscode.TabInputText ? ['text', input.uri.toString()] : ['other'];
+  return JSON.stringify([column, tab.label, ...resource]);
+};
 async function correctCwd(task: Task): Promise<boolean> {
   try {
     const actual = await readFile(path.join(task.worktree, 'hydra-terminal-cwd.txt'), 'utf8');
@@ -119,6 +125,32 @@ export async function run(): Promise<void> {
       assert.ok(!managerOpen(), 'Manager leaves the editor surface');
     }
     console.log('PASS: three mode cycles preserve unsaved text, selection, focus, and a live terminal process.');
+    assert.ok((await vscode.commands.getCommands(true)).includes('hydra.conversation.focus'), 'Native conversation view has a focus command');
+    const preservedUri = vscode.Uri.file(path.join(repository!, 'keep.txt'));
+    await vscode.commands.executeCommand('vscode.diff', preservedUri, preservedUri, 'Hydra mode diff preservation', { viewColumn: vscode.ViewColumn.Beside, preview: false });
+    await waitFor(() => vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputTextDiff);
+    const diffTab = vscode.window.tabGroups.activeTabGroup.activeTab!;
+    const diffIdentity = tabIdentity(diffTab, vscode.window.tabGroups.activeTabGroup.viewColumn);
+    const groupCount = vscode.window.tabGroups.all.length;
+    const nativeTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs.map(tab => tabIdentity(tab, group.viewColumn)));
+    await vscode.commands.executeCommand('hydra.openAgents');
+    await waitFor(managerOpen);
+    await vscode.commands.executeCommand('hydra.openConversation');
+    await waitFor(() => {
+      const group = vscode.window.tabGroups.activeTabGroup;
+      return !managerOpen() && !!group.activeTab && tabIdentity(group.activeTab, group.viewColumn) === diffIdentity;
+    }).catch(error => {
+      console.error('Expected restored diff:', diffIdentity, 'Actual groups:', vscode.window.tabGroups.all.map(group => ({ column: group.viewColumn, active: group.isActive, tabs: group.tabs.map(tab => ({ identity: tabIdentity(tab, group.viewColumn), active: tab.isActive })) })));
+      throw error;
+    });
+    assert.equal(vscode.window.tabGroups.all.length, groupCount, 'Mode switches preserve split groups');
+    const restoredTabs = vscode.window.tabGroups.all.flatMap(group => group.tabs.map(tab => tabIdentity(tab, group.viewColumn)));
+    assert.deepEqual(restoredTabs.sort(), nativeTabs.sort(), 'Mode switches preserve native tab resources, labels, and groups including the diff');
+    assert.equal(await terminal.processId, processId);
+    assert.ok(!vscode.window.terminals.some(item => item.name.startsWith('Hydra · ')), 'Focusing conversation makes no provider launch');
+    await vscode.window.tabGroups.close(vscode.window.tabGroups.activeTabGroup.activeTab!);
+    await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false });
+    console.log('PASS: Editor conversation focus and mode switches preserve native diff tabs, split groups, and terminal processes without launching a provider.');
     const workbench = vscode.workspace.getConfiguration('workbench');
     const windowConfig = vscode.workspace.getConfiguration('window');
     const previousTheme = workbench.inspect<string>('colorTheme')?.globalValue;
@@ -233,6 +265,20 @@ export async function run(): Promise<void> {
       tasks.push(task);
     }
     assert.equal(new Set(tasks.map(task => task.worktree)).size, 3);
+    const draftTask = tasks[0]!;
+    await vscode.commands.executeCommand('hydra.saveConversationDraft', draftTask.id, 'Preserve across modes', 'smoke-draft-1');
+    await vscode.commands.executeCommand('hydra.openTask', draftTask.id);
+    await vscode.commands.executeCommand('hydra.openConversation');
+    const conversationState = () => vscode.commands.executeCommand<{ mode: string; selectedId: string; draft?: { prompt: string; version: string } }>('hydra.getConversationState');
+    assert.equal((await conversationState())?.draft?.prompt, 'Preserve across modes');
+    await vscode.commands.executeCommand('hydra.openAgents');
+    await vscode.commands.executeCommand('hydra.openConversation');
+    assert.equal((await conversationState())?.selectedId, draftTask.id);
+    assert.equal((await conversationState())?.draft?.version, 'smoke-draft-1');
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.followUp', draftTask.id, 'Preserve across modes', 'smoke-draft-1'), /Start the task/);
+    assert.equal((await conversationState())?.draft?.prompt, 'Preserve across modes', 'Rejected submission preserves the draft');
+    assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', draftTask.id))?.turns.length || 0, 0, 'Draft edits and mode switches do not submit a turn');
+    console.log('PASS: shared conversation draft survives surface switches and a rejected follow-up without a provider turn.');
     const brief = { ...emptyBrief(), goal: 'Test launch mechanics only; do not call a model.', constraints: 'Literal $(text) stays data.', relevantPaths: 'keep.txt', acceptance: 'Fake provider receives this exact prompt.' };
     await vscode.commands.executeCommand('hydra.saveBrief', tasks[0]!.id, brief);
     const submittedPrompt = buildTaskPrompt(brief);
@@ -288,7 +334,10 @@ export async function run(): Promise<void> {
     assert.equal(completed.turns[0]?.prompt, submittedPrompt);
     const reported = await vscode.commands.executeCommand<{ tasks: Record<string, UsageSummary> }>('hydra.getUsage');
     assert.equal(reported?.tasks[tasks[0]!.id]?.claude?.input, 12);
-    await vscode.commands.executeCommand('hydra.followUp', tasks[0]!.id, 'hold');
+    await vscode.commands.executeCommand('hydra.saveConversationDraft', tasks[0]!.id, 'hold', 'smoke-accepted-1');
+    await vscode.commands.executeCommand('hydra.followUp', tasks[0]!.id, 'hold', 'smoke-accepted-1');
+    assert.equal((await conversationState())?.draft?.prompt, '', 'Accepted queued follow-up consumes its exact draft');
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.followUp', tasks[0]!.id, 'hold', 'smoke-accepted-1'), /already submitted|in progress/);
     await waitFor(async () => { try { await readFile(path.join(tasks[0]!.worktree, 'heartbeat.txt')); return true; } catch { return false; } });
     const requests = (await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(requests[0].prompt, submittedPrompt, 'The provider receives the exact inspected initial brief');

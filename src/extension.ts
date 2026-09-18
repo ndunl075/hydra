@@ -23,6 +23,7 @@ import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
+import { ConversationDrafts } from './core/conversationDrafts';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
 import { usageSnapshot } from './core/usage';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
@@ -65,6 +66,8 @@ class Manager {
   private repositories: string[] = [];
   private providers: ProviderInfo[] = [];
   private panel?: vscode.WebviewPanel;
+  private conversation?: vscode.WebviewView;
+  private readonly conversationDrafts = new ConversationDrafts();
   private selectedId?: string;
   private mode: 'editor' | 'agents' = 'editor';
   private busy = false;
@@ -72,7 +75,6 @@ class Manager {
   private disabled = false;
   private closing = false;
   private draft?: Draft;
-  private previousEditor?: { document: vscode.TextDocument; column: vscode.ViewColumn; selections: readonly vscode.Selection[]; range?: vscode.Range };
   private terminals = new Map<string, vscode.Terminal>();
   private readonly tree = new TaskTree(() => this.tasks);
   private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -151,6 +153,9 @@ class Manager {
       Promise.resolve().then(() => callback(...args)).catch(error => { this.report(error); throw error; })));
     command('hydra.toggleMode', () => this.mode === 'editor' ? this.openAgents() : this.openEditor());
     command('hydra.openAgents', () => this.openAgents());
+    command('hydra.openConversation', async () => { await this.openEditor(); await vscode.commands.executeCommand('hydra.conversation.focus'); });
+    command('hydra.getConversationState', () => ({ mode: this.mode, selectedId: this.selectedId, draft: this.selectedId ? this.conversationDrafts.get(this.selectedId) : undefined }));
+    command('hydra.saveConversationDraft', (id: string, prompt: string, version: string) => this.handle({ type: 'conversationDraft', id, prompt, version }));
     command('hydra.newTask', async () => { this.pendingNewTask = !this.panel; await this.openAgents(); await this.panel?.webview.postMessage({ type: 'newTask' }); });
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
@@ -204,7 +209,7 @@ class Manager {
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
     command('hydra.startManaged', (id: string) => this.handle({ type: 'startManaged', id }));
-    command('hydra.followUp', (id: string, prompt: string) => this.handle({ type: 'followUp', id, prompt }));
+    command('hydra.followUp', (id: string, prompt: string, draftVersion?: string) => this.handle({ type: 'followUp', id, prompt, draftVersion }));
     command('hydra.getSession', (id: string) => structuredClone(this.managed.view(id)));
     command('hydra.approve', (id: string, approvalId: string, decision: string) => this.handle({ type: 'approve', id, approvalId, decision }));
     command('hydra.openDiff', (id: string, filePath: string, layer: string) => this.handle({ type: 'openDiff', id, path: filePath, layer }));
@@ -222,6 +227,17 @@ class Manager {
     command('hydra.openIntegrationDiff',(id:string,operationId:string,filePath:string)=>this.handle({type:'openIntegrationDiff',id,operationId,path:filePath}));
     command('hydra.getChanges', async (id: string) => { const task = this.getTask(id); if (!vscode.workspace.isTrusted || this.disabled) throw new Error('Task review requires a trusted, healthy workspace.'); await this.verifyWorktree(task); return reviewFiles(task.worktree, task.baseCommit); });
     this.context.subscriptions.push(vscode.window.registerTreeDataProvider('hydra.tasks', this.tree), this.tree.changed, this.status, this.output);
+    this.context.subscriptions.push(vscode.window.registerWebviewViewProvider('hydra.conversation', {
+      resolveWebviewView: view => {
+        this.conversation = view;
+        view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')] };
+        view.webview.html = this.html(view.webview, 'editor');
+        this.connectWebview(view.webview);
+        view.onDidDispose(() => { if (this.conversation === view) this.conversation = undefined; }, undefined, this.context.subscriptions);
+        view.onDidChangeVisibility(() => { if (view.visible) void this.publish(); }, undefined, this.context.subscriptions);
+      }
+    }));
+    await vscode.commands.executeCommand('setContext', 'hydra.mode', this.mode);
     this.status.command = 'hydra.toggleMode';
     this.status.show();
     this.context.subscriptions.push(vscode.window.onDidCloseTerminal(terminal => {
@@ -412,6 +428,7 @@ class Manager {
     if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
+      conversationDraft: task ? this.conversationDrafts.get(task.id) : undefined,
       providers: this.providers, files, busy: this.busy || this.disabled, error, draft: this.draft,
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
@@ -427,7 +444,7 @@ class Manager {
         return [item.id, { active: !!view?.active, awaitingApproval: !!view?.active && !!view.approvals?.length }];
       }))
     };
-    await this.panel?.webview.postMessage({ type: 'snapshot', snapshot });
+    await this.broadcast({ type: 'snapshot', snapshot });
   }
   private integrationSnapshot(op?:IntegrationOperation):IntegrationOperation|undefined{
     return op?{...op,checks:op.checks.map(({stdout:_stdout,stderr:_stderr,...check})=>check)}:undefined;
@@ -446,14 +463,22 @@ class Manager {
       throw error;
     }
   }
+  private async broadcast(message: unknown): Promise<void> {
+    await Promise.all([this.panel?.webview.postMessage(message), this.conversation?.webview.postMessage(message)]);
+  }
+  private connectWebview(webview: vscode.Webview): void {
+    webview.onDidReceiveMessage(value => {
+      void this.handle(value).then(async () => {
+        // A direct receipt cannot be lost when a newer publish supersedes a draft snapshot.
+        if (value?.type === 'conversationDraft') await webview.postMessage({ type: 'conversationDraftAck', id: value.id, version: value.version, draft: this.conversationDrafts.get(value.id) });
+      }).catch(error => this.report(error));
+    }, undefined, this.context.subscriptions);
+  }
   private async openAgents(): Promise<void> {
-    if (this.mode !== 'agents') {
-      const editor = vscode.window.activeTextEditor;
-      this.previousEditor = editor ? { document: editor.document, column: editor.viewColumn || vscode.ViewColumn.One, selections: editor.selections, range: editor.visibleRanges[0] } : undefined;
-    }
     this.mode = 'agents';
+    const modeChanged = vscode.commands.executeCommand('setContext', 'hydra.mode', this.mode);
     if (!this.panel) {
-      const panel = vscode.window.createWebviewPanel('hydra.manager', 'Hydra · Agents', vscode.ViewColumn.One, {
+      const panel = vscode.window.createWebviewPanel('hydra.manager', 'Hydra · Agents', vscode.ViewColumn.Active, {
         enableScripts: true, retainContextWhenHidden: true,
         localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')]
       });
@@ -461,35 +486,30 @@ class Manager {
       panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, 'hydra-logo.png');
       panel.webview.html = this.html(panel.webview);
       panel.onDidDispose(() => {
-        if (this.panel === panel) this.panel = undefined;
+        if (this.panel !== panel) return;
+        this.panel = undefined;
         this.mode = 'editor';
+        void vscode.commands.executeCommand('setContext', 'hydra.mode', this.mode);
         void this.publish();
       }, undefined, this.context.subscriptions);
-      panel.webview.onDidReceiveMessage(value => {
-        void this.handle(value).catch(error => this.report(error));
-      }, undefined, this.context.subscriptions);
-    } else this.panel.reveal(vscode.ViewColumn.One);
-    await vscode.commands.executeCommand('workbench.view.extension.hydra');
-    this.panel?.reveal(vscode.ViewColumn.One);
+      this.connectWebview(panel.webview);
+    } else this.panel.reveal();
+    await modeChanged;
     await this.publish();
   }
   private async openEditor(): Promise<void> {
     this.mode = 'editor';
+    // Closing only Hydra lets native tab history restore text, diff and custom editors.
+    // Never choose a sidebar, resize a group, or reopen a text document here.
     this.panel?.dispose();
-    await vscode.commands.executeCommand('workbench.view.explorer');
-    const previous = this.previousEditor;
-    if (previous && !previous.document.isClosed) {
-      const editor = await vscode.window.showTextDocument(previous.document, { viewColumn: previous.column, preview: false });
-      editor.selections = [...previous.selections];
-      if (previous.range) editor.revealRange(previous.range, vscode.TextEditorRevealType.Default);
-    }
+    await vscode.commands.executeCommand('setContext', 'hydra.mode', this.mode);
     await this.publish();
   }
-  private html(webview: vscode.Webview): string {
+  private html(webview: vscode.Webview, surface: 'agents' | 'editor' = 'agents'): string {
     const nonce = randomBytes(24).toString('base64');
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.css'));
-    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
+    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-surface="${surface}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
   }
   private async handle(value: unknown, scheduledLaunch = false): Promise<void> {
     const message = parseMessage(value);
@@ -498,6 +518,9 @@ class Manager {
     if (message.type === 'ready') { await this.publish(); if (this.pendingNewTask) { this.pendingNewTask = false; await this.panel?.webview.postMessage({ type: 'newTask' }); } return; }
     if (message.type === 'openQuota') { this.quota.show(); return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
+    if (message.type === 'agents') { await this.openAgents(); return; }
+    if (message.type === 'newTask') { await vscode.commands.executeCommand('hydra.newTask'); return; }
+    if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); await this.publish(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
     if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider, brief: message.brief }; return; }
@@ -550,7 +573,7 @@ class Manager {
         this.selectedId = id;
         this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
         await this.persist();
-        await this.panel?.webview.postMessage({ type: 'taskCreated' });
+        await this.broadcast({ type: 'taskCreated' });
       } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
@@ -710,6 +733,7 @@ class Manager {
       return;
     }
     if (!scheduledLaunch && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) {
+      if (message.type === 'followUp' && message.draftVersion) this.conversationDrafts.requireCurrent(task.id, message.prompt, message.draftVersion);
       if (this.integrationAbort?.taskId === task.id) throw new Error('Finish or cancel this task integration before queueing another writer.');
       if ((message.type === 'launch' || message.type === 'terminal') && this.terminals.has(task.id)) { this.terminals.get(task.id)!.show(false); return; }
       assertCliAllowed(task);
@@ -720,6 +744,10 @@ class Manager {
       await this.resources.check(task.id);
       await lockTaskContext(task, () => this.persist());
       await this.scheduler.enqueue(task, message.type === 'followUp' ? { type: 'followUp', prompt: message.prompt } : { type: message.type as 'launch' | 'terminal' | 'startManaged' });
+      if (message.type === 'followUp' && message.draftVersion) {
+        this.conversationDrafts.accepted(task.id, message.prompt, message.draftVersion);
+        await this.publish();
+      }
       return;
     }
     if (['handoff', 'openWorktree'].includes(message.type) && this.managed.has(task.id)) throw new Error('Stop the managed process before handing off.');

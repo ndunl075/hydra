@@ -14,6 +14,7 @@ import type { DiscardReview } from '../src/core/discard';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
 import { SessionThread } from './SessionThread';
+import { FocusedWorkspace } from './FocusedWorkspace';
 import { EditorConversation } from './EditorConversation';
 import './editor-conversation.css';
 
@@ -197,6 +198,7 @@ function App() {
             <CapacityStatus capacity={snapshot.capacity} task={selected} busy={snapshot.busy} writerUncertain={snapshot.session?.writerUncertain} send={send} />
             <ResourceControls key={`resources-${selected.id}-${JSON.stringify(snapshot.resources?.[selected.id]?.config || {})}`} task={selected} saved={snapshot.resources?.[selected.id]} busy={snapshot.busy} send={send} />
             {selected.state === 'discarded' ? <DiscardControls task={selected} busy={taskBusy} /> : <>
+            <FocusedWorkspace task={selected} files={snapshot.files} session={snapshot.session} />
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} send={send} />
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={taskBusy} send={send} />
             <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} send={send} />

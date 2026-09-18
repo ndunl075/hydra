@@ -18,6 +18,7 @@ import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
+import { DelegationDispatchStore } from './core/delegationDispatch';
 import { hostDelegationPolicy } from './core/delegationHost';
 import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
@@ -121,6 +122,7 @@ class Manager {
   private readonly accounts: ProviderAccounts;
   private readonly quota: ProviderQuota;
   private readonly delegations: DelegationStore;
+  private readonly delegationDispatches: DelegationDispatchStore;
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -139,6 +141,9 @@ class Manager {
     this.budgetStore = new BudgetStore(this.storageDirectory);
     this.delegations = new DelegationStore(path.join(this.storageDirectory, 'delegation'), async () => {
       if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation decisions while this workspace is unavailable.');
+    });
+    this.delegationDispatches = new DelegationDispatchStore(path.join(this.storageDirectory, 'delegation'), async () => {
+      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot materialize delegation worktrees while this workspace is unavailable.');
     });
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
       this.integrationOperations.set(op.taskId,op);
@@ -194,6 +199,12 @@ class Manager {
     command('hydra.getDelegationRun', async (parentId: string, runId: string) => {
       this.getTask(parentId);
       return structuredClone(await this.delegations.load(parentId, runId));
+    });
+    command('hydra.materializeDelegationRun', async (parentId: string, runId: string) => {
+      const parent = this.getTask(parentId);
+      if (parent.state === 'discarded') throw new Error('Restore the parent task before materializing child worktrees.');
+      const decisions = (await this.delegations.load(parent.id, runId)).decisions;
+      return structuredClone(await this.delegationDispatches.materialize({ parentId: parent.id, runId, repository: parent.repository, parentTitle: parent.title, configuredRoot: vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), decisions }));
     });
     command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
       const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;

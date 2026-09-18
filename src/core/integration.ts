@@ -10,6 +10,7 @@ import { git } from './git';
 import { repositoryRoot, isInside } from './worktrees';
 import { parseNameStatus } from './review';
 import { runProbe } from './process';
+import { assertDelegatedVerificationGate } from './delegationEvidence';
 export type IntegrationGuard = (paths: string[]) => void | Promise<void>;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0,8000);
 const same = (a: string,b: string) => path.relative(a,b) === '';
@@ -28,6 +29,7 @@ async function inputs(task: Task, op?: IntegrationOperation): Promise<{target: s
   if(task.state === 'discarded')throw new Error('Restore this discarded task before integration.');
   if(task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before integration.');
   if(!task.reviewedCommit)throw new Error('Commit and record a reviewed task tree before integration.');
+  assertDelegatedVerificationGate(task);
   const receipt=task.reviewedCommit;
   if(receipt.baseCommit!==task.baseCommit)throw new Error('Reviewed task base changed. Prepare a fresh review.');
   const repository=await realpath(task.repository), worktree=await realpath(task.worktree);

@@ -9,6 +9,7 @@ import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 import type { ConversationDraft } from './conversationDrafts';
 import { requireDelegationMode, type DelegationPreferences, type DelegationMode } from './delegationPreferences';
+import type { DelegatedVerificationEvidence } from './delegationEvidence';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -27,6 +28,8 @@ export interface Task {
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
   delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
+  /** Durable verification attempts for a managed delegated child. */
+  verificationEvidence?: DelegatedVerificationEvidence;
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
 export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }

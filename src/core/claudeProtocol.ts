@@ -1,12 +1,13 @@
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Turn } from './model';
+import type { ModelSelection } from './modelSelection';
 
 export const testedClaudeVersion = '2.1.270';
 export const sessionIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-export function claudeArguments(sessionId?: string): string[] {
+export function claudeArguments(sessionId?: string, selection?: ModelSelection): string[] {
   if (sessionId && !sessionIdPattern.test(sessionId)) throw new Error('Invalid Claude session ID.');
-  return ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'default', '--permission-prompts', 'none', ...(sessionId ? ['--resume', sessionId] : [])];
+  return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'default', '--permission-prompts', 'host', ...(sessionId ? ['--resume', sessionId] : []), ...(selection ? ['--model', selection.model, '--effort', selection.effort] : [])];
 }
 export class ClaudeProtocol {
   private decoder = new StringDecoder('utf8');

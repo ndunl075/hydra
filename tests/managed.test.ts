@@ -34,7 +34,7 @@ test('Claude protocol parses split UTF-8, validates identity, reports denials/us
   assert.throws(() => claudeArguments('../../session'));
   const args = claudeArguments(sessionId);
   assert.equal(args[args.indexOf('--resume') + 1], sessionId);
-  assert.equal(args[args.indexOf('--permission-prompts') + 1], 'none');
+  assert.equal(args[args.indexOf('--permission-prompts') + 1], 'host');
   assert.ok(!args.some(arg => arg.includes('skip-permissions') || arg === '--bare'));
 });
 

@@ -141,7 +141,7 @@ export function parseMessage(value: unknown): ClientMessage {
     return type === 'checkModels' ? { type, id } : { type, id, selection: message.selection === null ? null : parseModelSelection(message.selection) };
   }
   if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['model', 'effort', 'reasoningEffort', 'reasoning_effort'].some(key => key in message)) {
-    throw new Error('Direct launch-time model and effort fields are unsupported. Save a verified managed Codex selection before launching; Hydra cannot confirm an Astra High preset unless the exact model and effort are advertised.');
+    throw new Error('Direct launch-time model and effort fields are unsupported. Save a verified managed selection before launching; Hydra cannot confirm an Astra High preset unless the exact model and effort are advertised.');
   }
   if (type === 'saveBrief' || type === 'saveHandoffSummary' || type === 'showTaskHandoff') {
     const id = string('id');

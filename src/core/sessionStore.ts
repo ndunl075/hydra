@@ -49,7 +49,7 @@ export class SessionStore {
           const value = (turn.usage as unknown as Record<string, unknown>)[key]; return value !== undefined && !number(value);
         })))) return true;
       if (turn.modelSettings !== undefined) {
-        if (turn.provider !== 'codex') return true;
+        if (turn.provider !== 'codex' && turn.provider !== 'claude') return true;
         validateTurnModelSettings(turn.modelSettings);
       }
       ids.add(turn.id); return false;

@@ -33,7 +33,7 @@ export class ManagedSessions {
     beforeTurn();
     await this.owner(task.id).start(task, executable, prompt, beforeTurn, environment);
   }
-  approve(id: string, approvalId: string, decision: 'accept' | 'decline'): void { this.codex.approve(id, approvalId, decision); }
+  approve(id: string, approvalId: string, decision: 'accept' | 'decline'): void { this.owner(id).approve(id, approvalId, decision); }
   async stop(id: string): Promise<void> { await this.owner(id).stop(id); }
   async shutdown(): Promise<void> { await Promise.all([this.claude.shutdown(), this.codex.shutdown()]); }
 }

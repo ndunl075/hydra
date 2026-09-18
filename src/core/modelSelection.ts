@@ -2,14 +2,14 @@ import type { ModelListParams } from './generated/codex-0.154.0/v2/ModelListPara
 import type { ModelListResponse } from './generated/codex-0.154.0/v2/ModelListResponse';
 
 export interface ModelSelection { model: string; effort: string }
-export interface ModelOption { model: string; displayName: string; efforts: string[]; defaultEffort: string }
+export interface ModelOption { model: string; displayName: string; efforts: string[]; defaultEffort: string; canonicalModel?: string }
 export interface ModelCatalog { status: 'checking' | 'ready' | 'error'; models: ModelOption[]; checkedAt: string; error?: string }
 export interface EffectiveModel { model: string; effort: string | null }
 export interface TurnModelSettings { requested?: ModelSelection; effective?: EffectiveModel; rerouted?: { from: string; to: string; reason: string } }
-const modelId = (value: unknown): value is string => typeof value === 'string' && value.length <= 200 && /^[a-z0-9][a-z0-9._:/-]*$/i.test(value);
+const modelId = (value: unknown): value is string => typeof value === 'string' && value.length <= 200 && /^[a-z0-9][a-z0-9._:/-]*(?:\[1m\])?$/i.test(value);
 const effortId = (value: unknown): value is string => typeof value === 'string' && value.length <= 40 && /^[a-z][a-z0-9_-]*$/i.test(value);
 export function parseModelSelection(value: unknown): ModelSelection {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Choose a model and effort reported by Codex.');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Choose a model and effort reported by the provider.');
   const selection = value as ModelSelection;
   if (!modelId(selection.model) || !effortId(selection.effort)) throw new Error('Invalid model or effort selection.');
   return { model: selection.model, effort: selection.effort };

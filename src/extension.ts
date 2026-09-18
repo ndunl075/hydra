@@ -17,6 +17,8 @@ import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
+import { DelegationStore } from './core/delegationStore';
+import { hostDelegationPolicy } from './core/delegationHost';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
@@ -117,6 +119,7 @@ class Manager {
   private readonly onboarding: Onboarding;
   private readonly accounts: ProviderAccounts;
   private readonly quota: ProviderQuota;
+  private readonly delegations: DelegationStore;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
@@ -132,6 +135,9 @@ class Manager {
     this.resources = new TaskResources(path.join(this.storageDirectory, 'resources'), path.join(context.globalStorageUri.fsPath, 'resource-reservations'), key, () => { void this.publish(); if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error)); }, error => this.report(error));
     this.store = new LocalStore(this.storageDirectory);
     this.budgetStore = new BudgetStore(this.storageDirectory);
+    this.delegations = new DelegationStore(path.join(this.storageDirectory, 'delegation'), async () => {
+      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation decisions while this workspace is unavailable.');
+    });
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
       this.integrationOperations.set(op.taskId,op);
       if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
@@ -183,6 +189,16 @@ class Manager {
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
     command('hydra.getDelegationPreferences', () => structuredClone(this.delegationPreferences()));
     command('hydra.setDelegationMode', (mode: unknown) => this.setDelegationMode(requireDelegationMode(mode)));
+    command('hydra.getDelegationRun', async (parentId: string, runId: string) => {
+      this.getTask(parentId);
+      return structuredClone(await this.delegations.load(parentId, runId));
+    });
+    command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
+      const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;
+      if (typeof parentId !== 'string') throw new Error('Delegation proposal requires a Hydra parent task.');
+      const bound = hostDelegationPolicy(proposal, policy, this.getTask(parentId), this.delegationPreferences());
+      return structuredClone(await this.delegations.recordDecision(bound.proposal, bound.policy));
+    });
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
     command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
     command('hydra.undoImport', () => this.settingsImport.undo());

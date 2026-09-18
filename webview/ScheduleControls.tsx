@@ -11,6 +11,8 @@ export function ScheduleControls({ task, tasks, busy, send }: { task: Task; task
     <div className="section-label">SCHEDULING <span>{task.interface === 'official-extension' ? 'External session' : schedule?.state || 'Not queued'}</span></div>
     <p className="quiet">Terminal and managed launches share this window's configured capacity (default two). Official-extension sessions run externally. Provider completion does not establish acceptance.</p>
     {schedule?.reason && <p role="status">{schedule.reason}</p>}
+    {schedule?.budgetWarnings?.map(warning => <p role="status" key={warning}>{warning} New work is allowed by this warning setting.</p>)}
+    {schedule?.budgetHold && <button className="secondary" disabled={locked} onClick={() => send({ type: 'retryBudgetHold', id: task.id })}>Retry held launch</button>}
     {schedule?.state === 'queued' && <p role="status">Waiting for capacity or reviewed prerequisites. Hydra will launch automatically when eligible.</p>}
     {!!schedule?.actualStartingCommit && <p className="quiet">Last launch started at <code>{schedule.actualStartingCommit}</code></p>}
     {schedule?.artifacts.map(artifact => <p className="quiet" key={artifact.taskId}>Reviewed prerequisite: {tasks.find(item => item.id === artifact.taskId)?.title || artifact.taskId} <code>{artifact.commit}</code></p>)}

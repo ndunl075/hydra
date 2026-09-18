@@ -23,6 +23,8 @@ import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
 import { usageSnapshot } from './core/usage';
+import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
+import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
 import { requireAdvertisedSelection, type ModelCatalog } from './core/modelSelection';
 import { testedClaudeVersion } from './core/claudeProtocol';
@@ -75,6 +77,9 @@ class Manager {
   private readonly output = vscode.window.createOutputChannel('Hydra');
   private readonly locks: OwnershipLock[] = [];
   private readonly store: LocalStore;
+  private readonly budgetStore: BudgetStore;
+  private budgets: BudgetSettings = emptyBudgets();
+  private pendingBudgetSave?: Promise<void>;
   private readonly storageDirectory: string;
   private snapshotGeneration = 0;
   private pendingNewTask = false;
@@ -110,6 +115,7 @@ class Manager {
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.store = new LocalStore(this.storageDirectory);
+    this.budgetStore = new BudgetStore(this.storageDirectory);
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
       this.integrationOperations.set(op.taskId,op);
       if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
@@ -122,6 +128,7 @@ class Manager {
       liveCount: () => this.terminals.size + this.managed.count,
       enabled: () => this.schedulerReady && !this.busy && !this.closing && !this.disabled && !this.handoff && vscode.workspace.isTrusted,
       persist: () => this.persist(),
+      budget: task => this.checkBudget(task),
       prepare: task => prepareScheduledTask(task, this.tasks, async item => {
         await this.verifyWorktree(item);
         if (this.terminals.has(item.id) || this.managed.has(item.id) || item.state === 'external' || item.state === 'running') throw new Error('Stop the task writer before dependency preparation.');
@@ -166,6 +173,9 @@ class Manager {
     command('hydra.saveHandoffSummary', (id: string, handoffSummary: unknown) => this.handle({ type: 'saveHandoffSummary', id, handoffSummary }));
     command('hydra.showTaskHandoff', (id: string) => this.handle({ type: 'showTaskHandoff', id }));
     command('hydra.getUsage', () => structuredClone(usageSnapshot(this.tasks, id => this.managed.view(id))));
+    command('hydra.getBudgets', () => structuredClone(this.budgetSnapshot()));
+    command('hydra.saveBudgets', (id: string, scope: string, budgets: unknown) => this.handle({ type: 'saveBudgets', id, scope, budgets }));
+    command('hydra.retryBudgetHold', (id: string) => this.handle({ type: 'retryBudgetHold', id }));
     command('hydra.checkModels', async (id: string) => { await this.handle({ type: 'checkModels', id }); return structuredClone(this.modelCatalogs.get(id)); });
     command('hydra.saveModelSelection', (id: string, selection: unknown) => this.handle({ type: 'saveModelSelection', id, selection }));
     command('hydra.handoffClaude', (id?: string) => this.handoffCommand('claude', id));
@@ -219,6 +229,7 @@ class Manager {
     }));
     try {
       this.tasks = await this.store.load();
+      this.budgets = await this.budgetStore.load();
       this.scheduler.reconcile();
       await this.refreshRepositories();
       if (vscode.workspace.isTrusted) {
@@ -392,6 +403,7 @@ class Manager {
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
       discardReview: task ? this.discardReviews.get(task.id) : undefined,
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
+      budgets: this.budgetSnapshot(),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
@@ -403,6 +415,20 @@ class Manager {
   }
   private integrationSnapshot(op?:IntegrationOperation):IntegrationOperation|undefined{
     return op?{...op,checks:op.checks.map(({stdout:_stdout,stderr:_stderr,...check})=>check)}:undefined;
+  }
+  private budgetSnapshot(): NonNullable<Snapshot['budgets']> {
+    const usage = usageSnapshot(this.tasks, id => this.managed.view(id));
+    return { settings: this.budgets, observations: Object.fromEntries(this.tasks.map(task => [task.id, assessBudgets(task, this.budgets, usage)])) };
+  }
+  private checkBudget(task: Task, markHold = false): string[] {
+    try {
+      return checkBudgetLaunch(task.provider, assessBudgets(task, this.budgets, usageSnapshot(this.tasks, id => this.managed.view(id))));
+    } catch (error) {
+      if (markHold && error instanceof BudgetHoldError && task.schedule?.request && !task.schedule.uncertain) {
+        task.schedule.state = 'blocked'; task.schedule.budgetHold = true; task.schedule.reason = error.message;
+      }
+      throw error;
+    }
   }
   private async openAgents(): Promise<void> {
     if (this.mode !== 'agents') {
@@ -491,8 +517,8 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'saveBudgets', 'retryBudgetHold'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -514,6 +540,21 @@ class Manager {
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
+    if (message.type === 'saveBudgets') {
+      this.busy = true;
+      const candidate = structuredClone(this.budgets);
+      const records = message.scope === 'task' ? candidate.tasks : candidate.projects;
+      const key = message.scope === 'task' ? task.id : task.repository;
+      if (message.budgets.length) records[key] = message.budgets; else delete records[key];
+      this.pendingBudgetSave = this.budgetStore.save(candidate);
+      try { await this.pendingBudgetSave; this.budgets = candidate; }
+      finally { this.pendingBudgetSave = undefined; this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+      return;
+    }
+    if (message.type === 'retryBudgetHold') {
+      if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop this writer before retrying held work.');
+      await this.scheduler.retryBudgetHold(task); return;
+    }
     if (message.type === 'copyDiscardLocation') {
       if (task.state !== 'discarded') throw new Error('This task has not been discarded.');
       await vscode.env.clipboard.writeText(task.worktree); return;
@@ -745,8 +786,9 @@ class Manager {
         const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
         if (diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Managed ${task.provider} supports tested CLI ${testedVersion} only. Use the terminal for another version; see provider diagnostics.`);
         assertLaunchCurrent();
+        this.checkBudget(task, true);
         task.providerVersion = diagnostic.version;
-        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt);
+        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt, () => { this.checkBudget(task, true); });
       } catch (error) {
         if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); await this.persist(); }
         throw error;
@@ -798,6 +840,7 @@ class Manager {
       if (duplicate) { duplicate.show(false); return; }
       if (this.terminals.size + this.managed.count >= max) throw new Error('The task concurrency limit is reached.');
       assertLaunchCurrent();
+      this.checkBudget(task, true);
       const terminal = vscode.window.createTerminal({ name: `Hydra · ${task.title}`, cwd: task.worktree, ...terminalLaunch(provider.executable), isTransient: true });
       this.terminals.set(task.id, terminal);
       task.interface = 'interactive-cli';
@@ -814,6 +857,7 @@ class Manager {
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     await this.pendingDiscard?.catch(() => {});
+    await this.pendingBudgetSave?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.managed.shutdown();
     this.scheduler.reconcile();

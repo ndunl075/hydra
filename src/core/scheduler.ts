@@ -1,4 +1,5 @@
 import type { Task, ReviewedCommit } from './model';
+import { BudgetHoldError } from './budgets';
 
 export type ScheduleState = 'queued' | 'starting' | 'running' | 'waiting-for-approval' | 'blocked' | 'interrupted' | 'finished' | 'cancelled';
 export type LaunchRequest = { type: 'launch' | 'terminal' | 'startManaged' } | { type: 'followUp'; prompt: string };
@@ -14,6 +15,8 @@ export interface TaskSchedule {
   reason?: string;
   /** A launch may have escaped the extension host. Holds capacity until explicit reconciliation. */
   uncertain?: boolean;
+  budgetHold?: boolean;
+  budgetWarnings?: string[];
 }
 const activeStates = ['starting', 'running', 'waiting-for-approval'];
 export const pendingSchedule = (task: Task): boolean => !!task.schedule && (['queued', 'blocked', ...activeStates].includes(task.schedule.state) || !!task.schedule.uncertain);
@@ -40,6 +43,8 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
     !s.artifacts.every(a => a && id(a.taskId) && s.dependencies.includes(a.taskId) && oid(a.commit) && oid(a.tree) && oid(a.baseCommit) && typeof a.reviewedAt === 'string' && Number.isFinite(Date.parse(a.reviewedAt))) ||
     (s.actualStartingCommit !== undefined && !oid(s.actualStartingCommit)) || (s.reason !== undefined && typeof s.reason !== 'string') ||
     (s.uncertain !== undefined && typeof s.uncertain !== 'boolean') ||
+    (s.budgetHold !== undefined && (typeof s.budgetHold !== 'boolean' || s.budgetHold && (s.state !== 'blocked' || !s.request || s.uncertain))) ||
+    (s.budgetWarnings !== undefined && (!Array.isArray(s.budgetWarnings) || s.budgetWarnings.length > 4 || !s.budgetWarnings.every(item => typeof item === 'string' && item.length <= 2000))) ||
     (s.queuedAt !== undefined && (typeof s.queuedAt !== 'string' || !Number.isFinite(Date.parse(s.queuedAt)))) ||
     (s.request !== undefined && (!s.request || !['launch', 'terminal', 'startManaged', 'followUp'].includes(s.request.type) || (s.request.type === 'followUp' && (typeof s.request.prompt !== 'string' || !s.request.prompt.trim() || s.request.prompt.length > 32000 || s.request.prompt.includes('\0')))))) throw new Error('Invalid task schedule. Original data has been retained.');
 }
@@ -70,11 +75,14 @@ export class TaskScheduler {
     persist(): Promise<void>;
     prepare(task: Task): Promise<{ commit: string; artifacts: DependencyArtifact[] }>;
     launch(task: Task, request: LaunchRequest): Promise<void>;
+    budget?(task: Task): string[];
   }) {}
   async enqueue(task: Task, request: LaunchRequest): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before queueing a writer.');
     if (pendingSchedule(task)) throw new Error('This task already has queued work or an unreconciled writer.');
-    task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false };
+    task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false, budgetHold: undefined, budgetWarnings: undefined };
+    try { task.schedule.budgetWarnings = this.hooks.budget?.(task); }
+    catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hold(task, error); }
     await this.hooks.persist();
     await this.drain();
   }
@@ -90,8 +98,23 @@ export class TaskScheduler {
   async cancel(task: Task): Promise<void> {
     const s = task.schedule;
     if (!s || !['queued', 'starting', 'blocked', 'interrupted'].includes(s.state) || s.uncertain) throw new Error('Stop and reconcile this writer before cancelling queued work.');
-    s.state = 'cancelled'; s.request = undefined; s.reason = 'Queued launch cancelled.';
+    s.state = 'cancelled'; s.request = undefined; s.reason = 'Queued launch cancelled.'; s.budgetHold = undefined;
     await this.hooks.persist();
+  }
+  private hold(task: Task, error: BudgetHoldError): void {
+    const s = task.schedule!;
+    s.state = 'blocked'; s.budgetHold = true; s.reason = error.message; s.budgetWarnings = undefined;
+  }
+  async retryBudgetHold(task: Task): Promise<void> {
+    const s = task.schedule;
+    if (!s?.budgetHold || s.state !== 'blocked' || !s.request || s.uncertain || task.state === 'running' || task.state === 'external') throw new Error('This task has no stopped budget-held launch.');
+    const warnings = this.hooks.budget?.(task);
+    const previous = { ...s };
+    if (s.request.type === 'startManaged' && task.sessionId) s.request = { type: 'followUp', prompt: task.prompt };
+    s.state = 'queued'; s.budgetHold = undefined; s.reason = undefined; s.budgetWarnings = warnings;
+    try { await this.hooks.persist(); }
+    catch (error) { Object.assign(s, previous); throw error; }
+    await this.drain();
   }
   async reconcileStopped(task: Task): Promise<void> {
     if (!task.schedule?.uncertain) throw new Error('This task has no uncertain writer.');
@@ -109,10 +132,12 @@ export class TaskScheduler {
     const tasks = [...this.hooks.tasks()].sort((a, b) => (a.schedule?.queuedAt || '').localeCompare(b.schedule?.queuedAt || ''));
     for (const task of tasks) {
       if (!this.hooks.enabled()) return;
-      const held = this.hooks.tasks().filter(item => item.schedule?.uncertain).length;
-      if (this.hooks.liveCount() + held >= this.hooks.capacity()) return;
       const s = task.schedule;
       if (!s || s.state !== 'queued' || !s.request) continue;
+      try { s.budgetWarnings = this.hooks.budget?.(task); }
+      catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hold(task, error); await this.hooks.persist(); continue; }
+      const held = this.hooks.tasks().filter(item => item.schedule?.uncertain).length;
+      if (this.hooks.liveCount() + held >= this.hooks.capacity()) continue;
       try { assertDependencyGraph(this.hooks.tasks(), task.id); }
       catch (error) { s.state = 'blocked'; s.reason = String(error); await this.hooks.persist(); continue; }
       const dependency = s.dependencies.map(id => this.hooks.tasks().find(item => item.id === id));
@@ -136,14 +161,19 @@ export class TaskScheduler {
           s.state = 'queued'; s.reason = 'Waiting for task operations or capacity before provider start.';
           await this.hooks.persist(); return;
         }
+        s.budgetWarnings = this.hooks.budget?.(task);
         await this.hooks.launch(task, s.request!);
         if (cancelled()) continue;
+        if (s.budgetHold) { await this.hooks.persist(); continue; }
         s.state = task.state === 'error' ? 'blocked' : task.state === 'interrupted' ? 'interrupted' : task.state === 'idle' ? 'finished' : 'running';
         if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;
         s.reason = task.error;
         await this.hooks.persist();
       } catch (error) {
         if (cancelled()) continue;
+        if (error instanceof BudgetHoldError && task.state !== 'running' && task.state !== 'external') {
+          this.hold(task, error); await this.hooks.persist(); continue;
+        }
         // A save can fail after process creation. Retain the live writer state so Stop still stops it.
         s.state = task.state === 'running' || task.state === 'external' ? 'running' : 'blocked';
         s.reason = error instanceof Error ? error.message : String(error);

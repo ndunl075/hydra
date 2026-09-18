@@ -6,6 +6,7 @@ import type { Task, Turn } from '../src/core/model';
 import { ClaudeProtocol, claudeArguments, testedClaudeVersion } from '../src/core/claudeProtocol';
 import { SessionStore } from '../src/core/sessionStore';
 import { ManagedClaude } from '../src/core/managedClaude';
+import { BudgetHoldError } from '../src/core/budgets';
 
 const sessionId = '12345678-1234-1234-1234-123456789abc';
 const turn = (): Turn => ({ id: '111111111111', prompt: 'literal prompt', text: '', status: 'running', createdAt: new Date().toISOString() });
@@ -52,6 +53,17 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   while (!await predicate()) { if (Date.now() > deadline) throw new Error('Timed out waiting for test process.'); await new Promise(resolve => setTimeout(resolve, 25)); }
 }
+test('Claude budget gate after durable setup prevents spawning a model process', async () => {
+  const { root, executable, task } = await fixture();
+  const store = new SessionStore(path.join(root, 'sessions'));
+  let saved = false;
+  const manager = new ManagedClaude(store, async () => { saved = true; }, () => {}, () => {});
+  try {
+    await assert.rejects(manager.start(task, executable, 'must never submit', () => { assert.ok(saved); throw new BudgetHoldError(['Reached during startup']); }), /Reached during startup/);
+    assert.equal(manager.count, 0); await assert.rejects(readFile(path.join(root, 'requests.jsonl')), { code: 'ENOENT' });
+    assert.notEqual(manager.view(task.id)?.turns.at(-1)?.status, 'completed');
+  } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('managed turns persist raw sequenced evidence, resume explicit IDs, and never invent successful completion', async () => {
   const { root, executable, task } = await fixture();

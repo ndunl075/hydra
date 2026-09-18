@@ -8,6 +8,7 @@ import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
 import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/taskContext';
 import type { UsageSummary } from '../src/core/usage';
+import type { BudgetSettings, BudgetObservation } from '../src/core/budgets';
 import type { ModelCatalog } from '../src/core/modelSelection';
 import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
@@ -57,6 +58,12 @@ export async function run(): Promise<void> {
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
+    const budgetTask = tasks.find(task => task.title === 'Discard preview'); assert.ok(budgetTask);
+    assert.equal(budgetTask.schedule?.budgetHold, true); assert.equal(budgetTask.schedule?.state, 'blocked');
+    assert.deepEqual(budgetTask.schedule?.request, { type: 'followUp', prompt: 'Retained budget-held follow-up ü' });
+    const recoveredBudgets = await vscode.commands.executeCommand<{ settings: BudgetSettings }>('hydra.getBudgets');
+    assert.deepEqual(recoveredBudgets?.settings.tasks[budgetTask.id], [{ provider: 'codex', action: 'hold', inputOutputTokens: 16 }]);
+    assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', budgetTask.id))?.turns.length, 1, 'Budget-held follow-up was not submitted on restart');
     const selectedModelTask = tasks.find(task => task.title === 'Selected model'); assert.ok(selectedModelTask);
     assert.deepEqual(selectedModelTask.modelSelection, { model: 'fixture-model', effort: 'high' });
     const modelHistory = await vscode.commands.executeCommand<SessionView>('hydra.getSession', selectedModelTask.id);
@@ -430,5 +437,28 @@ export async function run(): Promise<void> {
     assert.equal(await readFile(path.join(discardTask.worktree, 'discard ü.txt'), 'utf8'), 'unsaved retained\n');
     assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore); assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
     console.log('PASS: native discard review preserves unsaved buffers, inventories the saved exact checkout, refuses expired tokens and makes zero provider requests. Modal confirmation and restore persistence are covered by separate real-Git tests.');
+    const projectBudget = [{ provider: 'codex', action: 'hold', inputOutputTokens: 16 }];
+    await vscode.commands.executeCommand('hydra.saveBudgets', discardTask.id, 'project', projectBudget);
+    await vscode.commands.executeCommand('hydra.startManaged', discardTask.id);
+    let held = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id);
+    assert.equal(held?.schedule?.budgetHold, true); assert.equal(held?.schedule?.state, 'blocked');
+    await assert.rejects(readFile(path.join(discardTask.worktree, 'codex-requests.jsonl')), { code: 'ENOENT' });
+    const budgetSnapshot = await vscode.commands.executeCommand<{ settings: BudgetSettings; observations: Record<string, BudgetObservation[]> }>('hydra.getBudgets');
+    assert.ok(budgetSnapshot?.observations[discardTask.id]?.some(item => item.scope === 'project' && item.provider === 'codex' && item.reached));
+    await vscode.commands.executeCommand('hydra.saveBudgets', discardTask.id, 'project', [{ ...projectBudget[0], action: 'warn' }]);
+    held = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id);
+    assert.equal(held?.schedule?.budgetHold, true, 'Budget edit never automatically releases held work');
+    await vscode.commands.executeCommand('hydra.retryBudgetHold', discardTask.id);
+    await waitFor(async () => (await vscode.commands.executeCommand<SessionView>('hydra.getSession', discardTask.id))?.turns[0]?.status === 'completed');
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id)?.schedule?.state === 'finished');
+    const allowed = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id);
+    assert.ok(allowed?.schedule?.budgetWarnings?.length, 'Warning permits the configured work and remains visible');
+    await vscode.commands.executeCommand('hydra.saveBudgets', discardTask.id, 'project', []);
+    await vscode.commands.executeCommand('hydra.saveBudgets', discardTask.id, 'task', [{ provider: 'codex', action: 'hold', inputOutputTokens: 16 }]);
+    const requestsBeforeHold = await readFile(path.join(discardTask.worktree, 'codex-requests.jsonl'), 'utf8');
+    await vscode.commands.executeCommand('hydra.followUp', discardTask.id, 'Retained budget-held follow-up ü');
+    assert.equal(await readFile(path.join(discardTask.worktree, 'codex-requests.jsonl'), 'utf8'), requestsBeforeHold);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id)?.schedule?.budgetHold, true);
+    console.log('PASS: native soft budgets hold unmeasured new tasks using reported project usage, retain exact follow-ups without provider requests, require explicit retry, allow warnings, and retain settings/holds for restart.');
   }
 }

@@ -25,12 +25,13 @@ export class ManagedSessions {
     const view = this.view(id);
     return view ? { ...view, totalTurns: view.turns.length, turns: view.turns.slice(-10).map(turn => ({ ...turn, text: turn.text.slice(0, 50000), textTruncated: turn.text.length > 50000 })) } : undefined;
   }
-  async start(task: Task, executable: string, prompt: string): Promise<void> {
+  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before launching a writer.');
     if (this.has(task.id)) throw new Error('Stop the existing task writer first.');
     if (task.sessionId && (task.sessionProvider || 'claude') !== task.provider) throw new Error('The recorded session belongs to another provider. Create a separate task for this provider.');
     this.providers.set(task.id, task.provider);
-    await this.owner(task.id).start(task, executable, prompt);
+    beforeTurn();
+    await this.owner(task.id).start(task, executable, prompt, beforeTurn);
   }
   approve(id: string, approvalId: string, decision: 'accept' | 'decline'): void { this.codex.approve(id, approvalId, decision); }
   async stop(id: string): Promise<void> { await this.owner(id).stop(id); }

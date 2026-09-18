@@ -19,13 +19,13 @@ export class ManagedClaude {
     return view ? { ...view, totalTurns: view.turns.length, turns: view.turns.slice(-10).map(turn => ({ ...turn, text: turn.text.slice(0, 50000), textTruncated: turn.text.length > 50000 })) } : undefined;
   }
   async load(task: Task): Promise<void> { this.views.set(task.id, await this.store.load(task.id)); }
-  async start(task: Task, executable: string, prompt: string): Promise<void> {
+  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}): Promise<void> {
     if (this.starting.has(task.id) || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     this.starting.add(task.id);
-    try { await this.startTurn(task, executable, prompt); }
+    try { await this.startTurn(task, executable, prompt, beforeTurn); }
     finally { this.starting.delete(task.id); }
   }
-  private async startTurn(task: Task, executable: string, prompt: string): Promise<void> {
+  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void): Promise<void> {
     const expectedSchedule = task.schedule;
     if (task.provider !== 'claude' || task.providerVersion !== testedClaudeVersion) throw new Error('Managed Claude requires the tested CLI version 2.1.270. Check the configured provider first.');
     if (task.sessionId && task.sessionProvider && task.sessionProvider !== 'claude') throw new Error('This recorded session belongs to another provider. Create a separate Claude task.');
@@ -46,6 +46,7 @@ export class ManagedClaude {
         task.state = 'interrupted'; task.error = undefined;
         await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
       }
+      beforeTurn();
     } catch (error) {
       turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`;
       task.state = 'error'; task.error = turn.error;

@@ -65,7 +65,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.13.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import is unavailable in that development host. The standalone installer and subscription-account onboarding remain upcoming desktop features.
+Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.14.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import is unavailable in that development host. The standalone installer and subscription-account onboarding remain upcoming desktop features.
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

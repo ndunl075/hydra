@@ -90,6 +90,13 @@ export function brandedThemeStartup(text) {
   return text.replace(constructor, 'new ThemeConfiguration(configurationService, hostColorService, false);')
     .replace(migration, '// Hydra honors its dark default without writing a system-theme preference for new users.');
 }
+export function brandedWatermarkLayout(text) {
+  const container = '\tmax-width: 272px;';
+  const logo = '\tmax-width: 256px;';
+  if (text.split(container).length !== 2 || text.split(logo).length !== 2) throw new Error('Pinned watermark layout contract changed.');
+  // Native group sizing still constrains narrow/split editors; only the full empty editor grows.
+  return text.replace(container, '\twidth: 100%;\n\tmax-width: 380px;').replace(logo, '\tmax-width: 360px;');
+}
 export function brandedNativeThemeStartup(text) {
   const method = /(isAutoDetectColorScheme\(\)(?:: boolean)? \{)\s*if \(Setting\.DETECT_COLOR_SCHEME\.getValue\(this\.configurationService\)\) \{[\s\S]*?return false;\s*\}/g;
   const matches = [...text.matchAll(method)];
@@ -128,6 +135,8 @@ export async function prepare() {
   if (!electron.includes("companyName: 'Microsoft Corporation'")) throw new Error('Pinned executable publisher metadata changed.');
   await fs.writeFile(path.join(source, 'build', 'lib', 'electron.ts'), electron.replace("companyName: 'Microsoft Corporation'", "companyName: 'Nico Dunlap'"));
   await stageWatermarks(path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
+  const watermarkCss = 'src/vs/workbench/browser/parts/editor/media/editorgroupview.css';
+  await fs.writeFile(path.join(source, watermarkCss), brandedWatermarkLayout(await git(['show', `${pin.commit}:${watermarkCss}`])));
   console.log(`Prepared Hydra ${manifest.version}: Code - OSS ${pin.tag} at ${pin.commit}.`);
 }
 export async function stageHydra(destination) {

@@ -3,7 +3,7 @@
   "displayName": "Hydra",
   "icon": "hydra-logo.png",
   "description": "Hydra IDE's built-in Editor and Agents workflow with isolated Git worktrees and native provider terminals.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "publisher": "nico-dunlap",
   "repository": {
     "type": "git",
@@ -232,7 +232,7 @@
           "enum": ["solo", "auto"],
           "default": "solo",
           "scope": "application",
-          "description": "How Hydra prepares future delegation. Auto is a planning preference only until child dispatch is available."
+          "description": "How Hydra prepares future delegation. Auto is a planning preference only; worktree materialization does not launch child agents."
         },
         "hydra.maxDelegatedChildren": {
           "type": "integer",

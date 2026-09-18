@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { assertFreshContext, digest, overlappingScopes, scopePath } from '../src/core/delegationContext';
 import { defaultDelegationPreferences, parseDelegationProposal, prepareDelegation, type DelegationChild, type DelegationPolicy, type DelegationProposal } from '../src/core/delegationPlan';
 import { DelegationStore } from '../src/core/delegationStore';
+import { DelegationDispatchStore } from '../src/core/delegationDispatch';
 
 const parentId = '123456789abc', runId = 'abcdef123456', planId = '0123456789ab', base = 'a'.repeat(40);
 function child(key = 'parser', writeScope = ['src/parser.ts']): DelegationChild {
@@ -23,6 +24,10 @@ async function fixture() { const directory = path.resolve('.test-build/delegatio
 async function clean(directory: string) { assert.ok(directory.startsWith(path.resolve('.test-build/delegation-fixtures') + path.sep)); await rm(directory, { recursive: true, force: true }); }
 const runFile = (directory: string) => path.join(directory, `delegation-${parentId}-${runId}.json`);
 const store = (directory: string, assertOwner = async () => {}) => new DelegationStore(directory, assertOwner);
+const dispatchStore = (directory: string, created: string[] = [], fail = false) => new DelegationDispatchStore(directory, async () => {}, async (_repository, title, taskId, _root, startingCommit) => {
+  created.push(taskId); if (fail) throw new Error('git worktree outcome unknown');
+  return { worktree: path.resolve('fixture-worktrees', taskId), branch: `agent/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32)}-${taskId}`, baseCommit: startingCommit!, integrationTarget: 'main' };
+});
 
 if (!process.env.HYDRA_DELEGATION_WORKER) {
 test('Solo defaults and localized decisions prepare no children or manifests', () => {
@@ -176,6 +181,24 @@ test('overlapping replanning cannot bypass earlier ownership assignments', async
     await store(directory).recordDecision(proposal(), policy());
     await assert.rejects(store(directory).recordDecision(proposal([child('replacement', ['src/Parser.ts'])], '111111111111'), policy()), /already owns/);
     assert.deepEqual((await store(directory).load(parentId, runId)).usedKeys, ['parser']);
+  } finally { await clean(directory); }
+});
+test('child worktrees reserve durable dispatch identities before creation and never create provider sessions', async () => {
+  const directory = await fixture();
+  try {
+    const prepared = prepareDelegation(proposal([child(), child('tests', ['tests/parser.test.ts'])]), policy()), created: string[] = [];
+    const result = await dispatchStore(directory, created).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] });
+    assert.equal(created.length, 2); assert.deepEqual(result.map(item => item.status), ['materialized', 'materialized']); assert.deepEqual(result.map(item => item.childKey), ['parser', 'tests']);
+    assert.ok(result.every(item => /^[a-f0-9]{24}$/.test(item.dispatchKey) && /^[a-f0-9]{12}$/.test(item.worktreeId)));
+    assert.deepEqual(await dispatchStore(directory, created).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] }), result); assert.equal(created.length, 2);
+  } finally { await clean(directory); }
+});
+test('failed child worktree creation stays uncertain and refuses an automatic duplicate retry', async () => {
+  const directory = await fixture();
+  try {
+    const prepared = prepareDelegation(proposal(), policy()), created: string[] = [];
+    await assert.rejects(dispatchStore(directory, created, true).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] }), /uncertain/); assert.equal(created.length, 1);
+    await assert.rejects(dispatchStore(directory, created).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] }), /unresolved/); assert.equal(created.length, 1); assert.equal((await dispatchStore(directory).load(parentId, runId))[0]!.status, 'uncertain');
   } finally { await clean(directory); }
 });
 test('separate processes cannot bypass the run counter with simultaneous writes', async () => {

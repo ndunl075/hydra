@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { replaceAtomic } from './atomicFile';
@@ -52,6 +52,13 @@ export class DelegationStore {
   async load(parentId: string, runId: string): Promise<{ usedKeys: string[]; decisions: PreparedDelegation[] }> {
     const state = await this.read(parentId, runId);
     return { usedKeys: state.run.decisions.flatMap(decision => decision.input.children.map(child => child.key)), decisions: state.prepared };
+  }
+  async list(parentId: string): Promise<{ runId: string; usedKeys: string[]; decisions: PreparedDelegation[] }[]> {
+    const prefix = `delegation-${id(parentId)}-`;
+    let names: string[];
+    try { names = await readdir(this.directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+    const runs = names.filter(name => name.startsWith(prefix) && /^delegation-[a-f0-9]{12}-[a-f0-9]{12}\.json$/.test(name)).map(name => name.slice(prefix.length, -'.json'.length)).sort();
+    return Promise.all(runs.map(async runId => ({ runId, ...await this.load(parentId, runId) })));
   }
   recordDecision(value: unknown, inputPolicy: DelegationPolicy): Promise<PreparedDelegation> {
     // Snapshot before waiting: later caller mutations cannot change an accepted request.

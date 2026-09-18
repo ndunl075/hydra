@@ -56,6 +56,7 @@ export interface SessionView { version: 1; turns: Turn[]; writerUncertain?: bool
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
+export interface DelegationPlanView { runId: string; id: string; rationale: string; mode: 'solo' | 'auto'; children: { key: string; goal: string; provider: Provider; writeScope: string[]; dependencies: string[] }[] }
 export interface Snapshot {
   capacity?: CapacityView;
   resources?: Record<string, ResourceView>;
@@ -74,6 +75,7 @@ export interface Snapshot {
   discardReview?: DiscardReview;
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
   delegation?: DelegationPreferences;
+  delegationPlans?: Record<string, DelegationPlanView[]>;
 }
 export type ClientMessage =
   | { type: 'saveResources'; id: string; config: ResourceConfig }

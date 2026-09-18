@@ -18,6 +18,19 @@ ACP is editor↔agent JSON-RPC with capability negotiation, session updates, per
 
 These are documented interfaces and workflow patterns, not a source-code audit of competitors or comparative efficiency benchmarks.
 
+### Ninebrains review decision (2026-09-18)
+
+Adopt the following product patterns from the [Ninebrains architecture](https://github.com/Advance-Labs/ninebrains/blob/main/docs/guide/architecture.md). This is a review of documentation and selected source files, not runtime acceptance or an efficiency benchmark. These additions are planned, not shipped; retain Hydra's Code OSS foundation, Cursor-style Editor mode, and adaptive Solo/Auto policy.
+
+- **Per-attempt verification evidence:** each task exposes its tested commit/tree, command and exit status, review findings, relevant screenshot artifacts, timestamps, and retry history. Keep complete logs locally and pass concise evidence references to agents. Screenshots and model review apply when relevant to the task; do not impose expensive checks on every trivial edit.
+- **Required checks block completion:** missing runners, absent evidence, interrupted checks, failed checks, and stale snapshot receipts cannot satisfy a required gate. Show the blocker and preserve work. A provider's completion message is not verification; combined integration acceptance still follows child checks. Ninebrains' [verification handler](https://github.com/Advance-Labs/ninebrains/blob/main/apps/emdash-desktop/src/core/features/brain/node/verification.ts) includes a no-runner fallback that records a pass with an unverified note; Hydra must not adopt that behavior for required gates.
+- **Focused agent workspace:** selecting an agent in the orchestration graph opens its worktree identity, terminal/session, diff, verification evidence, and available preview together. Keep the native Editor layout and make unavailable or stopped resources explicit. Selection must not launch a process, submit a model turn, or rerun verification.
+- **Visible lifecycle:** derive queued, running, validating, blocked, and completed indicators from durable host state. Use actual assignment and result events for connecting arrows; distinguish agent execution completion from accepted task completion.
+
+Keep focused briefs, explicit missing-context requests, bounded retries, and deterministic dispatch from Hydra's existing design. Do not switch to an always-running coordinator or assume more agents save tokens. No Ninebrains code is incorporated by this decision; any future reuse needs applicable license and attribution review.
+
+Delivery: complete managed delegation and recovery first (Adaptive Delegation Phase 2), then evidence and required-gate enforcement (Phase 3), then the focused workspace and lifecycle graph (Phase 4). Each is a separate locally verified feature PR. See [delivery gates](Adaptive_Delegation.md#delivery-and-acceptance) and the [roadmap](Agent_Workflow_Roadmap.md#6-adaptive-delegation-and-focused-subagent-context).
+
 ## 2. Hydra baseline
 
 Snapshot: [c88f9be](https://github.com/ndunl075/hydra/tree/c88f9beea25c6caaa0824623b8252b23f9cd8568).

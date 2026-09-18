@@ -64,7 +64,9 @@ Acceptance: authenticated scratch tasks perform edits and tests with verified ow
 
 ### 6. Adaptive delegation and focused subagent context
 
-Status: explicitly planned at Nico's request; not implemented. See [Adaptive delegation](Adaptive_Delegation.md) for the execution contract, phased delivery, and acceptance gates.
+Status: Phase 1 host preparation exists; automatic decomposition and managed child execution remain unimplemented. See [Adaptive delegation](Adaptive_Delegation.md) for the execution contract, phased delivery, and acceptance gates.
+
+2026-09-18 architecture addition: after managed dispatch and recovery (Phase 2), deliver per-attempt verification evidence and blocking required checks (Phase 3), then a focused agent workspace and durable lifecycle indicators in the graph (Phase 4). Missing verification must never count as passing. Opening the workspace or evidence must not start processes or model turns. These planned additions adapt the [Ninebrains review](Agentic_Workflow_Architecture.md#ninebrains-review-decision-2026-09-18) while preserving Hydra's native editor and efficiency policy; acceptance cases are defined in [the delegation specification](Adaptive_Delegation.md#verification-evidence-and-focused-agent-workspace).
 
 In Auto mode, the main agent assesses whether a prompt is best completed alone or split into independently useful subtasks. Delegate only when expected benefit outweighs duplicated discovery, setup, coordination, and integration work. Give children focused briefs with necessary constraints, relevant source references, agreed interfaces, and acceptance criteria, never an automatic copy of the whole conversation. Allow authorized retrieval of missing context. Each writing child uses an isolated worktree and returns concise, evidence-linked results for parent review and combined acceptance.
 

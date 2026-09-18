@@ -11,3 +11,5 @@ The Windows desktop CI job generates the installer only after native desktop acc
 These are same-version reinstall tests. Upgrade acceptance between two distinct released versions, visible wizard/launch-after-install acceptance, and signing remain outstanding; do not label those verified from this check. No lifecycle test is run on a developer's personal Windows installation.
 
 The commands and task-selection behavior follow the [official Inno Setup command-line documentation](https://jrsoftware.org/ishelp/topic_setupcmdline.htm) and [uninstaller documentation](https://jrsoftware.org/ishelp/topic_uninstcmdline.htm).
+
+PR #19 passed Linux and the [final Windows build, bundled-host smoke, installer generation and lifecycle run](https://github.com/ndunl075/hydra/actions/runs/35288625356) at `1410251`, then merged as `9b26fa1`. The run publishes `Hydra-win32-x64-user-installer`, `Hydra-win32-x64` and installer logs. See the [combined acceptance record](Implementation_Status.md#acceptance-record).

@@ -7,7 +7,7 @@ The scheduling record is separate from provider task state. It persists `queued`
 ## Queue and recovery
 
 - Launch intent and `starting` are saved before preparation or process creation. Launches are serialized through one drain operation; running terminals and managed processes share capacity.
-- Cancel queued work without starting a process. Stop running work through the existing provider stop action. Failed preparation or launch is held in `blocked`; it never automatically retries.
+- Stop cancels queued or starting requests before an owned process exists, including during asynchronous preparation and persistence. Captured intent identity prevents an old cancelled request from launching after an immediate requeue. Preparation may already have fast-forwarded a clean dependent checkout; cancellation preserves that recoverable Git state. Stop running work through the existing provider stop action. Failed preparation or launch is held in `blocked`; it never automatically retries.
 - Queued requests survive reload. Any task recorded as starting, running, or awaiting approval becomes interrupted with an uncertain writer reservation. Legacy running terminals/managed sessions receive the same reservation. Such a task continues to occupy capacity until the user stops any surviving process and explicitly acknowledges writer absence. Hydra does not claim OS-level proof that a crashed host's descendants are gone.
 - Resume a recorded managed session by sending an explicit follow-up. If an initial launch partially established a session, cancel its blocked initial request and use a follow-up.
 
@@ -26,3 +26,5 @@ One prerequisite may supply the initial checkout. This requires an unstarted dep
 `tests/scheduler.test.ts` exercises queueing past capacity, persisted reload, uncertain reservations, duplicate dispatch refusal, cancellation, dependency cycles/failure, persistence errors, and real-Git selected bases, reviewed receipts, dirty-state refusal and predecessor fast-forward. Existing managed provider tests supply bounded protocol fixtures; these are not authenticated provider acceptance.
 
 This feature does not increase the default concurrency, implement automatic task decomposition, prove provider authentication/acceptance, isolate ports or databases, impose token budgets, or provide cross-window global capacity. Safe integration and real-provider acceptance remain separate release prerequisites before expanded concurrency.
+
+PR #20 passed Linux and [Windows native acceptance](https://github.com/ndunl075/hydra/actions/runs/35287713387) at `b010f9c`, including queue/dequeue and starting cancellation. See the [combined acceptance record](Implementation_Status.md#acceptance-record) for later bundled revisions.

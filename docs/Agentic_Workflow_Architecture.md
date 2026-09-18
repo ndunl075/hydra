@@ -22,6 +22,8 @@ These are documented interfaces and workflow patterns, not a source-code audit o
 
 Snapshot: [c88f9be](https://github.com/ndunl075/hydra/tree/c88f9beea25c6caaa0824623b8252b23f9cd8568).
 
+This baseline is historical. Subsequent implementation and exact-revision acceptance gates are recorded in [implementation status](Implementation_Status.md#acceptance-record) and the [agent workflow roadmap](Agent_Workflow_Roadmap.md). The proposals below remain design rationale; implemented foundations do not establish authenticated provider acceptance or measured efficiency.
+
 - [worktrees.ts](../src/core/worktrees.ts): unique branch + sibling checkout, pinned base commit, recorded integration target, canonical-path checks.
 - [Provider_Protocol.md](Provider_Protocol.md): Claude CLI 2.1.270 streaming/resume and Codex App Server 0.154.0 pinned protocol; explicit provider identity, approvals and stop behavior.
 - [model.ts](../src/core/model.ts): task/session identity and per-turn input/output/cache usage. [handoff.ts](../src/core/handoff.ts): official-extension workspace handoff.

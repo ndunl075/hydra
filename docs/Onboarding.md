@@ -10,4 +10,4 @@ Provider setup opens the shared account panel from onboarding or Settings. It of
 
 Opening a project uses the native folder picker and saves completion before switching windows. Cancelling the picker keeps setup open. No task is created automatically.
 
-Validation: persisted-state and startup-gate regressions; existing import/appearance tests; native desktop smoke assertions for test-host suppression, one-tab reuse, reopen, and preserved dirty documents. Full Windows native CI and manual visual/keyboard acceptance remain required before release. Installer delivery and authenticated provider acceptance are separate milestones.
+Validation: persisted-state and startup-gate regressions; existing import/appearance tests; native desktop smoke assertions for test-host suppression, one-tab reuse, reopen, and preserved dirty documents. PR #18 passed Linux and [Windows native acceptance](https://github.com/ndunl075/hydra/actions/runs/35285172719) at `9722ae5`. Manual visual/keyboard and authenticated provider acceptance remain outstanding. See the [combined acceptance record](Implementation_Status.md#acceptance-record) for later bundled revisions.

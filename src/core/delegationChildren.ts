@@ -16,3 +16,28 @@ export function createDelegatedChildren(parent: Task, decisions: PreparedDelegat
     return { id: dispatch.worktreeId, title: `${parent.title}: ${item.child.key}`, prompt: item.prompt, repository: parent.repository, worktree: dispatch.worktree!, branch: dispatch.branch!, baseCommit: dispatch.baseCommit, integrationTarget: parent.integrationTarget, provider: item.child.provider, interface: 'managed-cli', state: 'idle', createdAt: now, updatedAt: now, ...(item.child.modelSelection ? { modelSelection: item.child.modelSelection } : {}), delegation: { parentId: parent.id, runId: item.runId, childKey: item.child.key, dispatchKey: dispatch.dispatchKey, dependencies: dependencies as string[] } };
   });
 }
+
+/**
+ * Binds persisted children to the shared scheduler without creating a launch
+ * request. The caller must explicitly invoke a normal Hydra launch later.
+ */
+export function enrollDelegatedChildren(parent: Task, expected: Task[], persisted: Task[], now = new Date().toISOString()): Task[] {
+  if (parent.state === 'discarded' || !expected.length || expected.length !== persisted.length) throw new Error('Delegated children must be materialized before scheduler enrollment.');
+  const expectedByDispatch = new Map(expected.map(task => [task.delegation!.dispatchKey, task]));
+  if (expectedByDispatch.size !== expected.length || new Set(persisted.map(task => task.delegation?.dispatchKey)).size !== persisted.length) throw new Error('Delegated child enrollment has duplicate dispatch identities.');
+  for (const task of persisted) {
+    const link = task.delegation, source = link && expectedByDispatch.get(link.dispatchKey);
+    if (!link || !source || link.parentId !== parent.id || link.runId !== source.delegation!.runId || task.id !== source.id || task.repository !== parent.repository || task.worktree !== source.worktree || task.branch !== source.branch || task.baseCommit !== source.baseCommit || task.integrationTarget !== source.integrationTarget || task.provider !== source.provider || task.interface !== source.interface || task.prompt !== source.prompt || JSON.stringify(task.modelSelection) !== JSON.stringify(source.modelSelection) || task.state !== 'idle') throw new Error('Stored delegated child does not match its immutable materialization receipt. Reconcile it before enrollment.');
+    if (link.childKey !== source.delegation!.childKey || link.dependencies.length !== source.delegation!.dependencies.length || link.dependencies.some((dependency, index) => dependency !== source.delegation!.dependencies[index])) throw new Error('Stored delegated child dependencies do not match the recorded plan. Reconcile them before enrollment.');
+    if (task.schedule) {
+      if (task.schedule.state !== 'enrolled' || task.schedule.request || task.schedule.uncertain || task.schedule.startFromDependency || task.schedule.dependencies.length !== link.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index])) throw new Error('Delegated child is already scheduled differently. Stop and reconcile it before enrollment.');
+    }
+  }
+  for (const task of persisted) {
+    if (task.schedule) continue;
+    const link = task.delegation!;
+    task.schedule = { state: 'enrolled', dependencies: [...link.dependencies], artifacts: [], reason: 'Delegated child enrolled; launch it explicitly when ready.' };
+    task.updatedAt = now;
+  }
+  return persisted;
+}

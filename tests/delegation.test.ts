@@ -7,7 +7,8 @@ import { assertFreshContext, digest, overlappingScopes, scopePath } from '../src
 import { defaultDelegationPreferences, parseDelegationProposal, prepareDelegation, type DelegationChild, type DelegationPolicy, type DelegationProposal } from '../src/core/delegationPlan';
 import { DelegationStore } from '../src/core/delegationStore';
 import { DelegationDispatchStore } from '../src/core/delegationDispatch';
-import { createDelegatedChildren } from '../src/core/delegationChildren';
+import { createDelegatedChildren, enrollDelegatedChildren } from '../src/core/delegationChildren';
+import { TaskScheduler } from '../src/core/scheduler';
 import type { Task } from '../src/core/model';
 
 const parentId = '123456789abc', runId = 'abcdef123456', planId = '0123456789ab', base = 'a'.repeat(40);
@@ -219,6 +220,38 @@ test('child dependency keys become durable Hydra task identities before scheduli
     const prepared = prepareDelegation(proposal([first, second]), policy()), dispatch = await dispatchStore(directory).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] });
     const parent: Task = { id: parentId, title: 'Parent', prompt: 'Parent', repository: path.resolve('fixture'), worktree: path.resolve('parent'), branch: 'agent/parent-123456789abc', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     const tasks = createDelegatedChildren(parent, [prepared], dispatch); assert.deepEqual(tasks[1]!.delegation?.dependencies, [tasks[0]!.id]); assert.equal(tasks[1]!.schedule, undefined);
+  } finally { await clean(directory); }
+});
+test('explicit enrollment preserves immutable dependency order without queuing or launching a provider', async () => {
+  const directory = await fixture();
+  try {
+    const first = child('first'), second = child('second', ['tests/second.ts']); second.dependencies = ['first'];
+    const prepared = prepareDelegation(proposal([first, second]), policy()), dispatch = await dispatchStore(directory).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] });
+    const parent: Task = { id: parentId, title: 'Parent', prompt: 'Parent', repository: path.resolve('fixture'), worktree: path.resolve('parent'), branch: 'agent/parent-123456789abc', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const children = createDelegatedChildren(parent, [prepared], dispatch, '2026-01-01T00:00:00.000Z');
+    const unEnrolledScheduler = new TaskScheduler({ tasks: () => children, capacity: () => 2, liveCount: () => 0, enabled: () => true, persist: async () => {}, prepare: async task => ({ commit: task.baseCommit, artifacts: [] }), launch: async () => assert.fail('Unenrolled children cannot launch.') });
+    await assert.rejects(unEnrolledScheduler.enqueue(children[0]!, { type: 'startManaged' }), /explicitly enrolled/);
+    children[0]!.schedule = { state: 'enrolled', dependencies: [children[1]!.id], artifacts: [] };
+    await assert.rejects(unEnrolledScheduler.enqueue(children[0]!, { type: 'startManaged' }), /immutable dependency graph/);
+    children[0]!.schedule = undefined;
+    const enrolled = enrollDelegatedChildren(parent, children, children, '2026-01-02T00:00:00.000Z');
+    assert.deepEqual(enrolled.map(item => item.schedule), [
+      { state: 'enrolled', dependencies: [], artifacts: [], reason: 'Delegated child enrolled; launch it explicitly when ready.' },
+      { state: 'enrolled', dependencies: [children[0]!.id], artifacts: [], reason: 'Delegated child enrolled; launch it explicitly when ready.' }
+    ]);
+    let launches = 0;
+    const scheduler = new TaskScheduler({ tasks: () => children, capacity: () => 2, liveCount: () => 0, enabled: () => true, persist: async () => {}, prepare: async task => ({ commit: task.baseCommit, artifacts: [] }), launch: async () => { launches++; } });
+    await scheduler.drain(); assert.equal(launches, 0, 'Enrollment never invokes the scheduler launch path.');
+    await scheduler.enqueue(children[1]!, { type: 'startManaged' }); assert.equal(launches, 0, 'A dependent child waits for its reviewed prerequisite.');
+    await scheduler.enqueue(children[0]!, { type: 'startManaged' }); assert.equal(launches, 1, 'Provider launch requires an explicit later request.');
+    children[0]!.sessionId = '12345678-1234-1234-1234-123456789abc'; children[0]!.sessionProvider = 'claude';
+    await scheduler.enqueue(children[0]!, { type: 'followUp', prompt: 'Continue with the recorded task.' }); assert.equal(launches, 2, 'A resumed delegated session can explicitly request a follow-up after initial enrollment.');
+    const tampered = structuredClone(children); for (const task of tampered) task.schedule = undefined; tampered[1]!.delegation!.dependencies = [];
+    assert.throws(() => enrollDelegatedChildren(parent, children, tampered), /dependencies/);
+    const fresh = createDelegatedChildren(parent, [prepared], dispatch), malformed = structuredClone(fresh);
+    malformed[1]!.integrationTarget = 'other-target';
+    assert.throws(() => enrollDelegatedChildren(parent, fresh, malformed), /immutable/);
+    assert.deepEqual(malformed.map(task => task.schedule), [undefined, undefined], 'A later invalid child must not partially enroll an earlier sibling.');
   } finally { await clean(directory); }
 });
 test('separate processes cannot bypass the run counter with simultaneous writes', async () => {

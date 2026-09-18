@@ -19,7 +19,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
-import { createDelegatedChildren } from './core/delegationChildren';
+import { createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { hostDelegationPolicy } from './core/delegationHost';
 import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
@@ -215,6 +215,20 @@ class Manager {
       const added = children.filter(child => !existing.has(child.delegation!.dispatchKey));
       if (added.length) { this.tasks.push(...added); await this.persist(); await this.broadcast({ type: 'taskCreated' }); await this.publish(); }
       return structuredClone(children);
+    });
+    command('hydra.enrollDelegationRun', async (parentId: string, runId: string) => {
+      const parent = this.getTask(parentId);
+      if (parent.state === 'discarded') throw new Error('Restore the parent task before enrolling delegated children.');
+      const decisions = (await this.delegations.load(parent.id, runId)).decisions;
+      const dispatches = await this.delegationDispatches.load(parent.id, runId);
+      const expected = createDelegatedChildren(parent, decisions, dispatches);
+      const persisted = this.tasks.filter(task => task.delegation?.parentId === parent.id && task.delegation?.runId === runId);
+      const needsSave = persisted.some(task => !task.schedule);
+      const enrolled = enrollDelegatedChildren(parent, expected, persisted);
+      if (needsSave) {
+        await this.persist(); await this.publish();
+      }
+      return structuredClone(enrolled);
     });
     command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
       const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;
@@ -828,6 +842,7 @@ class Manager {
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
     if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
     if (message.type === 'configureSchedule') {
+      if (task.delegation) throw new Error('Delegated child dependencies are immutable. Enroll the recorded delegation run before launching it.');
       if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
       const candidate = structuredClone(task);
       configureSchedule(candidate, this.tasks, message.dependencies, message.startFromDependency);

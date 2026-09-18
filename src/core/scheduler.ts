@@ -1,7 +1,8 @@
 import type { Task, ReviewedCommit } from './model';
 import { BudgetHoldError } from './budgets';
 
-export type ScheduleState = 'queued' | 'starting' | 'running' | 'waiting-for-approval' | 'blocked' | 'interrupted' | 'finished' | 'cancelled';
+/** `enrolled` retains an approved dependency graph but has no launch request. */
+export type ScheduleState = 'enrolled' | 'queued' | 'starting' | 'running' | 'waiting-for-approval' | 'blocked' | 'interrupted' | 'finished' | 'cancelled';
 export type LaunchRequest = { type: 'launch' | 'terminal' | 'startManaged' } | { type: 'followUp'; prompt: string };
 export interface DependencyArtifact extends ReviewedCommit { taskId: string }
 export interface TaskSchedule {
@@ -37,7 +38,7 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
   const s = value as TaskSchedule;
   const oid = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{40,64}$/.test(v);
   const id = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{12}$/.test(v);
-  if (!s || typeof s !== 'object' || !['queued', 'starting', 'running', 'waiting-for-approval', 'blocked', 'interrupted', 'finished', 'cancelled'].includes(s.state) ||
+  if (!s || typeof s !== 'object' || !['enrolled', 'queued', 'starting', 'running', 'waiting-for-approval', 'blocked', 'interrupted', 'finished', 'cancelled'].includes(s.state) ||
     !Array.isArray(s.dependencies) || s.dependencies.length > 100 || !s.dependencies.every(id) || new Set(s.dependencies).size !== s.dependencies.length ||
     (s.startFromDependency !== undefined && !s.dependencies.includes(s.startFromDependency)) || !Array.isArray(s.artifacts) ||
     !s.artifacts.every(a => a && id(a.taskId) && s.dependencies.includes(a.taskId) && oid(a.commit) && oid(a.tree) && oid(a.baseCommit) && typeof a.reviewedAt === 'string' && Number.isFinite(Date.parse(a.reviewedAt))) ||
@@ -46,7 +47,8 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
     (s.budgetHold !== undefined && (typeof s.budgetHold !== 'boolean' || s.budgetHold && (s.state !== 'blocked' || !s.request || s.uncertain))) ||
     (s.budgetWarnings !== undefined && (!Array.isArray(s.budgetWarnings) || s.budgetWarnings.length > 4 || !s.budgetWarnings.every(item => typeof item === 'string' && item.length <= 2000))) ||
     (s.queuedAt !== undefined && (typeof s.queuedAt !== 'string' || !Number.isFinite(Date.parse(s.queuedAt)))) ||
-    (s.request !== undefined && (!s.request || !['launch', 'terminal', 'startManaged', 'followUp'].includes(s.request.type) || (s.request.type === 'followUp' && (typeof s.request.prompt !== 'string' || !s.request.prompt.trim() || s.request.prompt.length > 32000 || s.request.prompt.includes('\0')))))) throw new Error('Invalid task schedule. Original data has been retained.');
+    (s.request !== undefined && (!s.request || !['launch', 'terminal', 'startManaged', 'followUp'].includes(s.request.type) || (s.request.type === 'followUp' && (typeof s.request.prompt !== 'string' || !s.request.prompt.trim() || s.request.prompt.length > 32000 || s.request.prompt.includes('\0'))))) ||
+    (s.state === 'enrolled' && (s.request !== undefined || s.startFromDependency !== undefined || s.artifacts.length !== 0 || s.actualStartingCommit !== undefined || s.queuedAt !== undefined || s.uncertain || s.budgetHold || s.budgetWarnings !== undefined))) throw new Error('Invalid task schedule. Original data has been retained.');
 }
 
 export function configureSchedule(task: Task, tasks: Task[], dependencies: string[], startFromDependency?: string): void {
@@ -81,6 +83,7 @@ export class TaskScheduler {
   }) {}
   async enqueue(task: Task, request: LaunchRequest): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before queueing a writer.');
+    if (task.delegation && (!task.schedule || task.schedule.dependencies.length !== task.delegation.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== task.delegation!.dependencies[index]) || (!task.sessionId && (task.schedule.state !== 'enrolled' || task.schedule.request || task.schedule.uncertain)))) throw new Error('Delegated child must be explicitly enrolled with its immutable dependency graph before its first writer launch.');
     if (pendingSchedule(task)) throw new Error('This task already has queued work or an unreconciled writer.');
     task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false, budgetHold: undefined, budgetWarnings: undefined };
     try { task.schedule.budgetWarnings = this.hooks.budget?.(task); }

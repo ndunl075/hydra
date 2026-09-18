@@ -14,10 +14,11 @@ async function clean(task: Task): Promise<void> {
   if (entries.split('\0').some(entry => entry && (entry[0] === 'S' || entry[0] !== entry[0]?.toUpperCase()))) throw new Error('Dependency preparation requires full worktrees without hidden index entries.');
 }
 export async function prepareScheduledTask(task: Task, tasks: Task[], guard: (task: Task) => Promise<void>): Promise<{ commit: string; artifacts: DependencyArtifact[] }> {
+  if (task.state === 'discarded') throw new Error('Restore this discarded task before dependency preparation.');
   const artifacts: DependencyArtifact[] = [];
   for (const id of task.schedule?.dependencies || []) {
     const predecessor = tasks.find(item => item.id === id);
-    if (!predecessor || predecessor.repository !== task.repository || !predecessor.reviewedCommit) throw new Error('Prerequisite has no reviewed commit.');
+    if (!predecessor || predecessor.state === 'discarded' || predecessor.repository !== task.repository || !predecessor.reviewedCommit) throw new Error('Prerequisite has no available reviewed commit.');
     await guard(predecessor); await clean(predecessor);
     const receipt = predecessor.reviewedCommit;
     const pinned = task.schedule?.artifacts.find(a => a.taskId === id);

@@ -45,6 +45,7 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
 }
 
 export function configureSchedule(task: Task, tasks: Task[], dependencies: string[], startFromDependency?: string): void {
+  if (task.state === 'discarded' || dependencies.some(id => tasks.find(item => item.id === id)?.state === 'discarded')) throw new Error('Restore discarded tasks before configuring dependencies.');
   if (task.schedule && (activeStates.includes(task.schedule.state) || task.schedule.uncertain)) throw new Error('Stop and reconcile this task writer before changing dependencies.');
   if (task.schedule?.actualStartingCommit && startFromDependency !== task.schedule.startFromDependency) throw new Error('The initial checkout cannot change after a launch. Create a new dependent task.');
   const candidate: TaskSchedule = { state: task.schedule?.request ? 'queued' : 'finished', dependencies, startFromDependency, artifacts: dependencies.flatMap(id => {
@@ -71,6 +72,7 @@ export class TaskScheduler {
     launch(task: Task, request: LaunchRequest): Promise<void>;
   }) {}
   async enqueue(task: Task, request: LaunchRequest): Promise<void> {
+    if (task.state === 'discarded') throw new Error('Restore this discarded task before queueing a writer.');
     if (pendingSchedule(task)) throw new Error('This task already has queued work or an unreconciled writer.');
     task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false };
     await this.hooks.persist();
@@ -114,7 +116,7 @@ export class TaskScheduler {
       try { assertDependencyGraph(this.hooks.tasks(), task.id); }
       catch (error) { s.state = 'blocked'; s.reason = String(error); await this.hooks.persist(); continue; }
       const dependency = s.dependencies.map(id => this.hooks.tasks().find(item => item.id === id));
-      if (dependency.some(item => !item || item.state === 'error' || item.state === 'interrupted' || item.schedule?.state === 'cancelled' || item.schedule?.state === 'blocked' || item.schedule?.state === 'interrupted')) {
+      if (dependency.some(item => !item || item.state === 'discarded' || item.state === 'error' || item.state === 'interrupted' || item.schedule?.state === 'cancelled' || item.schedule?.state === 'blocked' || item.schedule?.state === 'interrupted')) {
         s.state = 'blocked'; s.reason = 'A prerequisite failed, was interrupted, cancelled, or is missing. Resolve dependencies explicitly before retrying.';
         await this.hooks.persist(); continue;
       }

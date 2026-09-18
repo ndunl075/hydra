@@ -25,6 +25,7 @@ async function clean(directory: string): Promise<void> {
   if(await git(directory,['--no-optional-locks','-c','core.fsmonitor=false','status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none'])) throw new Error(`Integration requires a clean saved checkout: ${directory}`);
 }
 async function inputs(task: Task, op?: IntegrationOperation): Promise<{target: string; common: string}> {
+  if(task.state === 'discarded')throw new Error('Restore this discarded task before integration.');
   if(task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before integration.');
   if(!task.reviewedCommit)throw new Error('Commit and record a reviewed task tree before integration.');
   const receipt=task.reviewedCommit;

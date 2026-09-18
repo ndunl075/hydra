@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { Task } from './model';
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
 import { parseModelSelection } from './modelSelection';
+import { validateDiscardReceipt } from './discard';
 export class LocalStore {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -22,11 +23,15 @@ export class LocalStore {
         !['title', 'prompt', 'repository', 'worktree', 'branch', 'baseCommit', 'integrationTarget', 'createdAt', 'updatedAt'].every(key => typeof (task as unknown as Record<string, unknown>)[key] === 'string') ||
         !path.isAbsolute(task.repository) || !path.isAbsolute(task.worktree) || !/^[a-f0-9]{40,64}$/.test(task.baseCommit) ||
         !['claude', 'codex'].includes(task.provider) || !['interactive-cli', 'official-extension', 'managed-cli'].includes(task.interface) ||
-        !['idle', 'external', 'running', 'interrupted', 'error'].includes(task.state) ||
+        !['idle', 'external', 'running', 'interrupted', 'error', 'discarded'].includes(task.state) ||
         (task.sessionId !== undefined && (typeof task.sessionId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(task.sessionId))) ||
         (task.providerVersion !== undefined && typeof task.providerVersion !== 'string') ||
         (task.sessionProvider !== undefined && !['claude', 'codex'].includes(task.sessionProvider))) throw new Error('Invalid task record. Original data has been retained.');
       ids.add(task.id);
+      if (task.state === 'discarded') {
+        validateDiscardReceipt(task.discard);
+        if (task.interface === 'official-extension' || task.schedule?.request || task.schedule?.uncertain || task.schedule && ['queued', 'blocked', 'starting', 'running', 'waiting-for-approval'].includes(task.schedule.state)) throw new Error('Discarded task retains an active or uncertain writer. Original data has been retained.');
+      } else if (task.discard !== undefined) throw new Error('Discard receipt requires a discarded task. Original data has been retained.');
       if (task.modelSelection !== undefined) {
         if (task.provider !== 'codex') throw new Error('Model overrides are supported only for managed Codex tasks.');
         parseModelSelection(task.modelSelection);

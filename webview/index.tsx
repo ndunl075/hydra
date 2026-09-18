@@ -7,6 +7,7 @@ import { BriefFields, PromptPreview, TaskContext, UsagePanel } from './TaskConte
 import { buildTaskPrompt, emptyBrief } from '../src/core/taskContext';
 import { ModelControls, TurnModelLabel } from './ModelControls';
 import { IntegrationPanel } from './IntegrationPanel';
+import type { DiscardReview } from '../src/core/discard';
 import { diffLabels, type ClientMessage, type Snapshot, type Provider, type Draft, type Handoff, type OfficialExtensionInfo, type ProviderDiagnostic, type Task, type SessionView, type TaskFile, type PreparedReview } from '../src/core/model';
 import './styles.css';
 
@@ -87,7 +88,7 @@ function Changes({ task, files, busy, prepared }: { task: Task; files: TaskFile[
       <div className="change-path"><span className="file-status">{file.status.trim()}</span><span title={file.path}>{file.path}</span><button className="text-button" title={`Open ${file.path} in the native editor`} onClick={() => send({ type: 'openFile', id: task.id, path: file.path })}>Open file</button></div>
       <div className="change-layers">{file.changes?.map(change => <button className="diff-button" key={change.layer} disabled={blocked} title={`${change.beforePath ? `${change.beforePath} → ` : ''}${change.path} · ${diffLabels[change.layer]}`} onClick={() => send({ type: 'openDiff', id: task.id, path: change.path, layer: change.layer })}>{diffLabels[change.layer]} <Icon name="arrow" /></button>)}</div>
     </div>) : <p className="quiet">No changes yet. Refresh to check this worktree.</p>}
-    <p className="review-note">{blocked ? 'Stop the task writer or acknowledge official-extension handback to review changes.' : 'Choose a layer to open a read-only native diff. Saved files exclude unsaved editor buffers. Snapshots stay fixed; reopen after edits. Binary and large files show metadata.'} Integration and discard are still pending.</p>
+    <p className="review-note">{blocked ? 'Stop the task writer or acknowledge official-extension handback to review changes.' : 'Choose a layer to open a read-only native diff. Saved files exclude unsaved editor buffers. Snapshots stay fixed; reopen after edits. Binary and large files show metadata.'}</p>
     <section className="commit-review" aria-label="Reviewed task commit">
       <div className="section-label">REVIEWED COMMIT</div>
       <p className="quiet">Stage all saved task changes first. Preparing captures the complete task tree, including earlier commits. It makes no model request.</p>
@@ -101,8 +102,32 @@ function Changes({ task, files, busy, prepared }: { task: Task; files: TaskFile[
           <p className="quiet">Records your review of this exact tree. If already committed, records the current commit. Changed files or unsaved buffers require another review. Git hooks still apply.</p>
         </form>
       </>}
-      {task.reviewedCommit && <p className="quiet" role="status">Recorded reviewed commit <code>{task.reviewedCommit.commit.slice(0, 8)}</code>. Later edits require a fresh review. Integration is pending.</p>}
+      {task.reviewedCommit && <p className="quiet" role="status">Recorded reviewed commit <code>{task.reviewedCommit.commit.slice(0, 8)}</code>. Later edits require a fresh review.</p>}
     </section>
+  </section>;
+}
+function DiscardControls({ task, review, busy }: { task: Task; review?: DiscardReview; busy: boolean }) {
+  if (task.state === 'discarded') return <section className="changes" aria-label="Discarded task">
+    <h3>Task discarded</h3>
+    <p>This task has left active work. Its checkout, branch, ignored files and local diagnostics are retained.</p>
+    <p className="quiet">Discarded {task.discard && new Date(task.discard.discardedAt).toLocaleString()} · head <code>{task.discard?.head.slice(0, 8)}</code>. The record describes the saved state at discard; retained files may have changed since.</p>
+    <p><code className="retained-checkout">{task.worktree}</code></p>
+    <div className="task-actions"><button className="secondary" disabled={busy} onClick={() => send({ type: 'copyDiscardLocation', id: task.id })}>Copy retained checkout path</button><button className="primary" disabled={busy} onClick={() => send({ type: 'restoreDiscarded', id: task.id })}>Restore task</button></div>
+    <p className="quiet">Restore returns an interrupted task for inspection. It makes no provider request and starts no process. Retained checkouts use disk space.</p>
+  </section>;
+  const blocked = busy || pendingSchedule(task) || !!task.schedule?.request || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension';
+  return <section className="changes discard-controls" aria-label="Discard task">
+    <div className="section-label">DISCARD TASK</div>
+    <p className="quiet">Review saved changes before removing this task from active work. Its complete checkout and branch remain available for recovery.</p>
+    <button className="secondary" disabled={blocked} onClick={() => send({ type: 'prepareDiscard', id: task.id })}>{review ? 'Prepare fresh discard review' : 'Review discard'}</button>
+    {review && <>
+      <p role="status">Task head <code>{review.head.slice(0, 8)}</code> · target <code>{review.targetCommit.slice(0, 8)}</code></p>
+      <details open><summary>{review.unmergedCommits.length} unmerged commits</summary>{review.unmergedCommits.length ? <ul>{review.unmergedCommits.map(item => <li key={item.commit}><code>{item.commit.slice(0, 8)}</code> {item.subject}</li>)}</ul> : <p className="quiet">No commits outside the target branch.</p>}</details>
+      <details open><summary>{review.changes.length} saved changed files</summary>{review.changes.length ? <ul>{review.changes.map(file => <li key={file.path}><code>{file.status}</code> <span>{file.path}</span></li>)}</ul> : <p className="quiet">No staged, unstaged or untracked changes.</p>}</details>
+      <p className="quiet">Ignored files and integration candidates are retained. Unsaved task buffers must be saved or reverted. A changed task or target requires a fresh review.</p>
+      <button className="stop-button" disabled={blocked} onClick={() => send({ type: 'confirmDiscard', id: task.id, token: review.token })}>Discard task…</button>
+      <p className="quiet">A confirmation identifies this task and checkout. Discard and restore make no model requests.</p>
+    </>}
   </section>;
 }
 function App() {
@@ -118,6 +143,7 @@ function App() {
       if (event.data?.type === 'snapshot') {
         const next = event.data.snapshot as Snapshot;
         setSnapshot(next);
+        if (next.tasks.find(task => task.id === next.selectedId)?.state !== 'discarded') setFilter(current => current === 'discarded' ? 'all' : current);
         setRepository(current => next.repositories.includes(current) ? current : next.repositories[0] || '');
         if (next.draft) setDraft(next.draft);
         if (next.tasks.length === 0 && !next.handoff) setCreating(true);
@@ -135,8 +161,8 @@ function App() {
     send({ type: 'draft', ...next });
   };
   const selected = snapshot.tasks.find(task => task.id === snapshot.selectedId);
-  const tasks = snapshot.tasks.filter(task => `${task.title} ${task.branch} ${task.provider}`.toLowerCase().includes(search.toLowerCase()) &&
-    (filter === 'all' || (filter === 'active' ? task.state === 'external' || task.state === 'running' : task.state === 'error' || task.state === 'interrupted' || !!snapshot.taskActivity?.[task.id]?.awaitingApproval || task.schedule?.state === 'blocked' || task.schedule?.state === 'interrupted')));
+  const tasks = snapshot.tasks.filter(task => (filter === 'discarded' ? task.state === 'discarded' : task.state !== 'discarded') && `${task.title} ${task.branch} ${task.provider}`.toLowerCase().includes(search.toLowerCase()) &&
+    (filter === 'all' || filter === 'discarded' || (filter === 'active' ? task.state === 'external' || task.state === 'running' : task.state === 'error' || task.state === 'interrupted' || !!snapshot.taskActivity?.[task.id]?.awaitingApproval || task.schedule?.state === 'blocked' || task.schedule?.state === 'interrupted')));
   const active = snapshot.tasks.filter(task => task.state === 'running' || task.state === 'external' && task.interface === 'interactive-cli').length;
   const provider = snapshot.providers.find(item => item.provider === selected?.provider);
   return <main className="app">
@@ -145,12 +171,12 @@ function App() {
       <div className="mode-switch" aria-label="Workspace mode"><button onClick={() => send({ type: 'editor' })}>Editor</button><button className="current" aria-current="page">Agents</button></div>
       <button className="icon-button" title="Hydra settings" aria-label="Hydra settings" onClick={() => send({ type: 'settings' })}>···</button>
     </header>
-    {!snapshot.handoff && snapshot.tasks.length > 0 && <AgentMap snapshot={snapshot} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />}
+    {!snapshot.handoff && snapshot.tasks.some(task => task.state !== 'discarded') && <AgentMap snapshot={{ ...snapshot, tasks: snapshot.tasks.filter(task => task.state !== 'discarded') }} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />}
     <div className="workspace">
       <aside className="task-rail" aria-label="Tasks">
         <div className="rail-header"><h1>Tasks <span>{snapshot.tasks.length}</span></h1><button className="icon-button" disabled={!!snapshot.handoff} aria-label="New task" title="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>
         <label className="search"><Icon name="search" /><input aria-label="Search tasks" placeholder="Search tasks…" value={search} onChange={event => setSearch(event.target.value)} /></label>
-        <div className="filters" aria-label="Filter tasks">{[['all', 'All'], ['active', 'Active'], ['attention', 'Attention']].map(([id, label]) => <button key={id} aria-pressed={filter === id} className={filter === id ? 'selected' : ''} onClick={() => setFilter(id || 'all')}>{label}</button>)}</div>
+        <div className="filters" aria-label="Filter tasks">{[['all', 'All'], ['active', 'Active'], ['attention', 'Attention'], ['discarded', 'Discarded']].map(([id, label]) => <button key={id} aria-pressed={filter === id} className={filter === id ? 'selected' : ''} onClick={() => setFilter(id || 'all')}>{label}</button>)}</div>
         <nav className="task-list" aria-label="Task selection">
           {snapshot.repositories.map(repo => <section key={repo} className="repo-group">
             <div className="repo-label"><Icon name="folder" />{basename(repo)}</div>
@@ -187,6 +213,7 @@ function App() {
           <div className="conversation-header"><div><h2>{selected.title}</h2><span>{providerName(selected.provider)} <span className="separator">/</span> {selected.interface === 'official-extension' ? 'Official extension' : selected.interface === 'managed-cli' ? 'Managed CLI' : 'Interactive CLI'}</span></div><button className="icon-button" title="New task" aria-label="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>
           <div className="task-context"><Icon name="branch" /><span title={selected.branch}>{selected.branch}</span><span className={`state ${selected.state}`}>{selected.interface === 'official-extension' ? 'External · status unavailable' : selected.state === 'external' ? 'Terminal active' : selected.state}</span></div>
           <div className="thread">
+            {selected.state === 'discarded' ? <DiscardControls task={selected} busy={snapshot.busy} /> : <>
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} send={send} />
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={snapshot.busy} send={send} />
             <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} />
@@ -202,8 +229,10 @@ function App() {
             <ScheduleControls key={`schedule-${selected.id}`} task={selected} tasks={snapshot.tasks} busy={snapshot.busy} send={send} />
             <Changes key={selected.id} task={selected} files={snapshot.files} busy={snapshot.busy} prepared={snapshot.commitReview} />
             <IntegrationPanel key={`integration-${selected.id}`} task={selected} operation={snapshot.integration} busy={snapshot.busy} send={send} />
+            <DiscardControls key={`discard-${selected.id}`} task={selected} review={snapshot.discardReview} busy={snapshot.busy} />
+            </>}
           </div>
-          <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={selected.worktree}>{selected.worktree}</code></div><div className="footer-actions"><div className="handoff-actions">{(['claude', 'codex'] as const).map(provider => <button key={provider} className="secondary" disabled={snapshot.busy || selected.state === 'external' || selected.state === 'running' || selected.interface === 'official-extension'} onClick={() => send({ type: 'handoff', id: selected.id, provider })}>Open in {providerName(provider)} <Icon name="arrow" /></button>)}</div>{selected.state === 'external' && selected.interface === 'interactive-cli' && <button className="stop-button" onClick={() => send({ type: 'stop', id: selected.id })}>Stop terminal</button>}</div></footer>
+          <footer className="task-footer"><div className="worktree-identity"><span className="section-label">WORKTREE</span><code title={selected.worktree}>{selected.worktree}</code></div>{selected.state !== 'discarded' && <div className="footer-actions"><div className="handoff-actions">{(['claude', 'codex'] as const).map(provider => <button key={provider} className="secondary" disabled={snapshot.busy || selected.state === 'external' || selected.state === 'running' || selected.interface === 'official-extension'} onClick={() => send({ type: 'handoff', id: selected.id, provider })}>Open in {providerName(provider)} <Icon name="arrow" /></button>)}</div>{selected.state === 'external' && selected.interface === 'interactive-cli' && <button className="stop-button" onClick={() => send({ type: 'stop', id: selected.id })}>Stop terminal</button>}</div>}</footer>
         </>}
       </section>
     </div>

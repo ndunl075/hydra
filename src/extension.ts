@@ -10,6 +10,7 @@ import { createWorktree, git, repositoryRoot, resolveTaskFile, isInside } from '
 import { captureReview, captureCommitReview, reviewFiles } from './core/review';
 import { prepareCommitReview, commitReviewed } from './core/reviewCommit';
 import { Integrations } from './core/integration';
+import { prepareDiscard, confirmDiscard, restoreDiscarded, type DiscardReview } from './core/discard';
 import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
@@ -52,7 +53,7 @@ class TaskTree implements vscode.TreeDataProvider<Task> {
     item.command = { command: 'hydra.openTask', title: 'Open Task', arguments: [task.id] };
     return item;
   }
-  getChildren(): Task[] { return this.tasks(); }
+  getChildren(): Task[] { return this.tasks().filter(task => task.state !== 'discarded'); }
 }
 
 class Manager {
@@ -87,6 +88,8 @@ class Manager {
   private schedulerReady = false;
   private readonly review: ReviewDocuments;
   private readonly commitReviews = new Map<string, PreparedReview>();
+  private readonly discardReviews = new Map<string, DiscardReview>();
+  private pendingDiscard?: Promise<void>;
   private pendingCommit?: Promise<ReviewedCommit>;
   private readonly integrations: Integrations;
   private readonly integrationOperations = new Map<string, IntegrationOperation>();
@@ -182,6 +185,9 @@ class Manager {
     command('hydra.approve', (id: string, approvalId: string, decision: string) => this.handle({ type: 'approve', id, approvalId, decision }));
     command('hydra.openDiff', (id: string, filePath: string, layer: string) => this.handle({ type: 'openDiff', id, path: filePath, layer }));
     command('hydra.prepareCommitReview', async (id: string) => { await this.handle({ type: 'prepareCommitReview', id }); return structuredClone(this.commitReviews.get(id)); });
+    command('hydra.prepareDiscard', async (id: string) => { await this.handle({ type: 'prepareDiscard', id }); return structuredClone(this.discardReviews.get(id)); });
+    command('hydra.confirmDiscard', (id: string, token: string) => this.handle({ type: 'confirmDiscard', id, token }));
+    command('hydra.restoreDiscarded', (id: string) => this.handle({ type: 'restoreDiscarded', id }));
     command('hydra.openCommitReview', (id: string, token: string, filePath: string) => this.handle({ type: 'openCommitReview', id, token, path: filePath }));
     command('hydra.commitReviewed', async (id: string, token: string, message: string) => { await this.handle({ type: 'commitReviewed', id, token, message }); return structuredClone(this.getTask(id).reviewedCommit); });
     command('hydra.prepareIntegration',async(id:string,checks:unknown)=>{await this.handle({type:'prepareIntegration',id,checks});return structuredClone(this.integrationOperations.get(id));});
@@ -225,17 +231,19 @@ class Manager {
         for (const task of this.tasks) {
           if (task.state === 'running') task.state = 'interrupted';
           if (task.state === 'external' && task.interface === 'interactive-cli') task.state = 'interrupted';
-          try { await this.verifyWorktree(task); }
-          catch (error) { task.state = 'error'; task.error = this.describe(error); }
+          if (task.state !== 'discarded') {
+            try { await this.verifyWorktree(task); }
+            catch (error) { task.state = 'error'; task.error = this.describe(error); }
+          }
           if (task.interface === 'managed-cli' || task.sessionId) {
             try { await this.managed.load(task); }
-            catch (error) { task.state = 'error'; task.error = this.describe(error); }
+            catch (error) { if (task.state !== 'discarded') task.state = 'error'; task.error = this.describe(error); }
           }
         }
         await this.store.save(this.tasks);
         for(const op of await this.integrations.recover(this.tasks))this.integrationOperations.set(op.taskId,op);
       }
-      this.selectedId = this.tasks[0]?.id;
+      this.selectedId = this.tasks.find(task => task.state !== 'discarded')?.id;
       this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
     } catch (error) { this.disabled = true; this.report(error); }
     try { await this.refreshProviders(); }
@@ -303,6 +311,9 @@ class Manager {
     if (branch.trim() !== task.branch) throw new Error('Task worktree branch changed. Restore its recorded branch before launching.');
   }
   private async persist(): Promise<void> {
+    // Session completions can save unrelated tasks while discard/restore commits
+    // an immutable record. Wait so an older snapshot cannot overwrite that record.
+    await this.pendingDiscard?.catch(() => {});
     for (const task of this.tasks) {
       const s = task.schedule;
       if (!s || !['running', 'waiting-for-approval'].includes(s.state)) continue;
@@ -318,6 +329,7 @@ class Manager {
   }
   private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
+    if (task.state === 'discarded') throw new Error('Restore this discarded task before review.');
     if (pendingSchedule(task)) throw new Error('Cancel queued work or reconcile the writer before reviewing or integrating this task.');
     if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
     const root = await realpath(task.worktree);
@@ -340,6 +352,20 @@ class Manager {
     }
     if(pendingSchedule(task)||this.closing||this.disabled||!vscode.workspace.isTrusted)throw new Error('Integration cancelled because the workspace closed or lost trust.');
   }
+  private async guardDiscard(task: Task, restoring = false): Promise<void> {
+    if (this.closing || this.disabled || this.handoff || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || pendingSchedule(task) || task.schedule?.request) throw new Error('Stop task writers, cancel queued work, and reconcile uncertain ownership before discard or restore.');
+    if (!restoring && task.state === 'discarded') throw new Error('This task is already discarded.');
+    if (this.integrationAbort?.taskId === task.id) throw new Error('Finish or cancel integration before discard.');
+    if (this.tasks.some(item => item.schedule?.state === 'starting' && item.schedule.dependencies.includes(task.id))) throw new Error('A dependent task is starting. Wait for startup before discard.');
+    await this.verifyWorktree(task);
+    const root = await realpath(task.worktree);
+    for (const document of vscode.workspace.textDocuments) {
+      if (!document.isDirty || document.uri.scheme !== 'file') continue;
+      const file = await realpath(document.uri.fsPath).catch(() => document.uri.fsPath);
+      if (isInside(root, file) || isInside(root, document.uri.fsPath)) throw new Error('Save or revert unsaved task editor buffers before discard or restore.');
+    }
+    if (this.closing || this.disabled || !vscode.workspace.isTrusted) throw new Error('Workspace closed or lost trust. Task preserved.');
+  }
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
@@ -349,7 +375,7 @@ class Manager {
     const task = this.tasks.find(item => item.id === this.selectedId);
     let files: Snapshot['files'] = [];
     let error = this.error;
-    if (task && vscode.workspace.isTrusted) {
+    if (task && task.state !== 'discarded' && vscode.workspace.isTrusted) {
       if (this.fileCache?.id === task.id && this.fileCache.expires > Date.now()) { files = this.fileCache.files; error ||= this.fileCache.error; }
       else {
         try { await this.verifyWorktree(task); files = await reviewFiles(task.worktree, task.baseCommit); }
@@ -364,6 +390,7 @@ class Manager {
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
+      discardReview: task ? this.discardReviews.get(task.id) : undefined,
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
@@ -464,8 +491,8 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -486,6 +513,36 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
+    if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
+    if (message.type === 'copyDiscardLocation') {
+      if (task.state !== 'discarded') throw new Error('This task has not been discarded.');
+      await vscode.env.clipboard.writeText(task.worktree); return;
+    }
+    if (message.type === 'prepareDiscard' || message.type === 'confirmDiscard' || message.type === 'restoreDiscarded') {
+      this.busy = true; await this.publish();
+      try {
+        const guard = () => this.guardDiscard(task, message.type === 'restoreDiscarded');
+        if (message.type === 'prepareDiscard') {
+          this.discardReviews.set(task.id, await prepareDiscard(task, this.tasks, guard)); return;
+        }
+        if (message.type === 'restoreDiscarded') {
+          this.pendingDiscard = restoreDiscarded(task, this.tasks, guard, records => this.store.save(records));
+          await this.pendingDiscard;
+        } else if (message.type === 'confirmDiscard') {
+          const review = this.discardReviews.get(task.id);
+          if (!review || review.token !== message.token) throw new Error('Discard review expired. Prepare a fresh review.');
+          this.discardReviews.delete(task.id);
+          await guard();
+          const answer = await vscode.window.showWarningMessage(`Discard “${task.title}”?`, { modal: true, detail: `${review.unmergedCommits.length} unmerged commits and ${review.changes.length} saved changed files.\nBranch: ${task.branch}\nCheckout: ${task.worktree}\n\nThe task leaves active work. Its complete checkout, ignored files, branch and diagnostics stay in place for recovery. Restore it from Discarded to work again. No provider request is sent.` }, 'Discard task');
+          if (answer !== 'Discard task') return;
+          this.pendingDiscard = confirmDiscard(task, this.tasks, review, guard, records => this.store.save(records));
+          await this.pendingDiscard;
+        }
+        this.commitReviews.delete(task.id); this.discardReviews.delete(task.id); this.fileCache = undefined;
+        if (task.state === 'discarded') this.selectedId = this.tasks.find(item => item.state !== 'discarded')?.id;
+      } finally { this.pendingDiscard = undefined; this.busy = false; await this.publish(); if (!this.closing) await this.scheduler.drain(); }
+      return;
+    }
     if (task.modelSelection && ['launch', 'terminal', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('This task has an explicit managed Codex model selection. Start it with Run managed task; terminal and official-extension settings cannot be verified by Hydra. Clear the selection before its first launch to use those interfaces.');
     if (message.type === 'saveModelSelection') {
       if (this.busy || !canEditBrief(task, this.managed.view(task.id))) throw new Error('Model settings are locked after launch. Create a new task to use another selection.');
@@ -756,6 +813,7 @@ class Manager {
     await this.accounts.shutdown();
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
+    await this.pendingDiscard?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.managed.shutdown();
     this.scheduler.reconcile();

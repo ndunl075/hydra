@@ -12,7 +12,7 @@ function taskStatus(task: Task, awaitingApproval: boolean) {
   if (awaitingApproval) return 'Approval needed';
   if (task.schedule?.uncertain) return 'Reconcile writer';
   if (task.schedule && ['queued', 'starting', 'blocked'].includes(task.schedule.state)) return task.schedule.state === 'queued' ? 'Queued' : task.schedule.state === 'starting' ? 'Starting' : 'Blocked';
-  return { running: 'Running', idle: 'Idle', interrupted: 'Interrupted', error: 'Error' }[task.state];
+  return { running: 'Running', idle: 'Idle', interrupted: 'Interrupted', error: 'Error', discarded: 'Discarded' }[task.state];
 }
 
 function BranchIcon({ repository = false }: { repository?: boolean }) {

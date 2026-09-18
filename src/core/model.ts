@@ -1,12 +1,13 @@
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
 import type { UsageSummary } from './usage';
+import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
-export type TaskState = 'idle' | 'external' | 'running' | 'interrupted' | 'error';
+export type TaskState = 'idle' | 'external' | 'running' | 'interrupted' | 'error' | 'discarded';
 export interface Task {
   id: string; title: string; prompt: string; repository: string; worktree: string;
   branch: string; baseCommit: string; integrationTarget: string; provider: Provider;
@@ -14,6 +15,7 @@ export interface Task {
   sessionId?: string; sessionProvider?: Provider; providerVersion?: string;
   error?: string;
   reviewedCommit?: ReviewedCommit;
+  discard?: DiscardReceipt;
   brief?: TaskBrief;
   contextLockedAt?: string;
   handoffSummary?: TaskHandoffSummary;
@@ -61,6 +63,7 @@ export interface Snapshot {
   usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary> };
   modelCatalogs?: Record<string, ModelCatalog>;
   integration?: IntegrationOperation;
+  discardReview?: DiscardReview;
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
@@ -79,6 +82,8 @@ export type ClientMessage =
   | { type: 'openFile'; id: string; path: string }
   | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
   | { type: 'prepareCommitReview'; id: string }
+  | { type: 'prepareDiscard' | 'restoreDiscarded' | 'copyDiscardLocation'; id: string }
+  | { type: 'confirmDiscard'; id: string; token: string }
   | { type: 'openCommitReview'; id: string; token: string; path: string }
   | { type: 'commitReviewed'; id: string; token: string; message: string }
   | { type: 'prepareIntegration'; id: string; checks: IntegrationCommand[] }
@@ -97,6 +102,16 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (['prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'copyDiscardLocation'].includes(type)) {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'confirmDiscard') {
+      const token = string('token');
+      if (!/^[a-f0-9]{24}$/.test(token)) throw new Error('Invalid discard review token.');
+      return { type, id, token };
+    }
+    return { type, id } as ClientMessage;
+  }
   if (type === 'checkModels' || type === 'saveModelSelection') {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');

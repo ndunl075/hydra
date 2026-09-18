@@ -39,10 +39,12 @@ export async function createHandoffWorkspace(directory: string, task: Task, prov
 }
 
 export function assertHandoffAllowed(task: Task, hasTerminal: boolean): void {
+  if (task.state === 'discarded') throw new Error('Restore this discarded task before handing off a writer.');
   if (hasTerminal) throw new Error('Stop this task terminal before handing off to an official extension.');
   if (task.interface === 'official-extension') throw new Error('This task is already externally owned. Stop that session and return ownership before another handoff.');
 }
 export function assertCliAllowed(task: Task): void {
+  if (task.state === 'discarded') throw new Error('Restore this discarded task before launching a writer.');
   if (task.interface === 'official-extension') throw new Error('This task belongs to an external extension session. Stop it in its window, then use “I stopped the external session” before launching a CLI.');
 }
 

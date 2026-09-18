@@ -53,7 +53,7 @@ export async function run(): Promise<void> {
   }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
-    assert.equal(tasks?.length, 5, 'All task records, including the reviewed commit and selected model, are recovered');
+    assert.equal(tasks?.length, 6, 'All task records, including reviewed commit, selected model and discard preview, are recovered');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
@@ -417,5 +417,18 @@ export async function run(): Promise<void> {
     }finally{await writeFile(targetFile,targetBytes);}
     assert.equal(await readFile(path.join(tasks[0]!.worktree,'requests.jsonl'),'utf8'),claudeRequestsBefore);assert.equal(await readFile(path.join(tasks[1]!.worktree,'codex-requests.jsonl'),'utf8'),codexRequestsBefore);
     console.log('PASS: native integration refuses dirty target, reviews immutable candidate diff, runs explicit checks and promotes through owning checkout with retained task and rollback reference, without provider requests.');
+    const discardTask = await vscode.commands.executeCommand<Task>('hydra.createTask', { repository, provider: 'codex', title: 'Discard preview', prompt: 'Local discard review only.' }); assert.ok(discardTask);
+    await writeFile(path.join(discardTask.worktree, 'discard ü.txt'), 'retained\n');
+    const discardDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(discardTask.worktree, 'discard ü.txt'))), discardEditor = await vscode.window.showTextDocument(discardDocument);
+    await discardEditor.edit(builder => builder.insert(new vscode.Position(0, 0), 'unsaved '));
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.prepareDiscard', discardTask.id), /unsaved task editor buffers/);
+    assert.equal(discardDocument.isDirty, true); await discardDocument.save();
+    const discardReview = await vscode.commands.executeCommand<{ token: string; changes: { path: string }[]; head: string }>('hydra.prepareDiscard', discardTask.id); assert.ok(discardReview);
+    assert.deepEqual(discardReview.changes.map(file => file.path), ['discard ü.txt']); assert.equal(discardReview.head, discardTask.baseCommit);
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.confirmDiscard', discardTask.id, '0'.repeat(24)), /review expired/);
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id)?.state, 'idle');
+    assert.equal(await readFile(path.join(discardTask.worktree, 'discard ü.txt'), 'utf8'), 'unsaved retained\n');
+    assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore); assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
+    console.log('PASS: native discard review preserves unsaved buffers, inventories the saved exact checkout, refuses expired tokens and makes zero provider requests. Modal confirmation and restore persistence are covered by separate real-Git tests.');
   }
 }

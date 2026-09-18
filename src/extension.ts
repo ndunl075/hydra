@@ -33,7 +33,7 @@ import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { ConversationDrafts } from './core/conversationDrafts';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
-import { usageSnapshot } from './core/usage';
+import { delegationRunUsage, usageSnapshot } from './core/usage';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
 import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
@@ -610,7 +610,7 @@ class Manager {
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
       discardReview: task ? this.discardReviews.get(task.id) : undefined,
-      usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
+      usage: { ...usageSnapshot(this.tasks, id => this.managed.view(id)), delegationRuns: Object.fromEntries(this.tasks.filter(task => !task.delegation).map(task => [task.id, delegationRunUsage(task.id, this.tasks, id => this.managed.view(id))])) },
       budgets: this.budgetSnapshot(),
       delegation: this.delegationPreferences(),
       delegationPlans: Object.fromEntries(this.delegationPlans),

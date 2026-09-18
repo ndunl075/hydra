@@ -10,6 +10,29 @@ import { SessionStore } from '../src/core/sessionStore';
 import { parseMessage, type Task, type Turn } from '../src/core/model';
 const threadId = '12345678-1234-7234-9234-123456789abc';
 const turnId = 'aaaaaaaa-aaaa-7aaa-9aaa-aaaaaaaaaaaa';
+import { terminateProcessTree } from '../src/core/process';
+
+test('Codex awaits the asynchronous final slot guard and Stop during that guard cannot submit a turn', async () => {
+  const f = await fixture(); let calls = 0, entered!: () => void, resume!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; }); const guard = new Promise<void>(resolve => { resume = resolve; });
+  try {
+    await f.manager.start(f.task, f.executable, 'must not submit', async () => { if (++calls === 2) { entered(); await guard; } });
+    await waiting; await f.manager.stop(f.task.id); resume(); await new Promise(resolve => setTimeout(resolve, 25));
+    const requests = (await readFile(path.join(f.root, 'codex-requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(requests.some(request => request.method === 'turn/start'), false); assert.equal(f.manager.count, 0);
+  } finally { resume(); await f.manager.shutdown(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('Codex cleanup failure is durable and prevents another managed invocation', async () => {
+  const f = await fixture(); const errors: unknown[] = [];
+  let entered!: () => void, resume!: () => void; const waiting = new Promise<void>(resolve => { entered = resolve; }); const guard = new Promise<void>(resolve => { resume = resolve; });
+  const manager = new ManagedCodex(f.store, async () => {}, () => {}, error => errors.push(error), async pid => { await terminateProcessTree(pid); throw Error('Simulated uncertain child cleanup after safely stopping the fixture tree'); });
+  try {
+    await manager.start(f.task, f.executable, 'must not submit', async () => { entered(); await guard; }); await waiting; await manager.stop(f.task.id); resume();
+    assert.equal(manager.view(f.task.id)?.writerUncertain, true); assert.equal((await f.store.load(f.task.id)).writerUncertain, true);
+    assert.equal(errors.length, 1); await assert.rejects(manager.start(f.task, f.executable, 'resume'), /reconcile/);
+  } finally { resume(); await manager.shutdown(); await f.manager.shutdown(); await rm(f.root, { recursive: true, force: true }); }
+});
 const turn = (): Turn => ({ id: '111111111111', prompt: 'prompt', text: '', status: 'running', createdAt: new Date().toISOString() });
 
 test('Codex framing/turn identity reject mismatched completion and retain authoritative messages and usage', () => {

@@ -12,7 +12,7 @@ export class ManagedClaude {
   private readonly views = new Map<string, SessionView>();
   private readonly active = new Map<string, { stop: () => Promise<void>; done: Promise<void>; approve: (id: string, decision: 'accept' | 'decline') => void }>();
   private readonly starting = new Set<string>();
-  constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void) {}
+  constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void, private readonly terminate = terminateProcessTree) {}
   get count(): number { return this.active.size; }
   has(id: string): boolean { return this.active.has(id); }
   view(id: string): SessionView | undefined { const view = this.views.get(id); return view ? { ...view, active: this.active.has(id) || this.starting.has(id) } : undefined; }
@@ -21,19 +21,20 @@ export class ManagedClaude {
     return view ? { ...view, totalTurns: view.turns.length, turns: view.turns.slice(-10).map(turn => ({ ...turn, text: turn.text.slice(0, 50000), textTruncated: turn.text.length > 50000 })) } : undefined;
   }
   async load(task: Task): Promise<void> { this.views.set(task.id, await this.store.load(task.id)); }
-  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}, environment: Record<string, string> = {}): Promise<void> {
+  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void | Promise<void> = () => {}, environment: Record<string, string> = {}): Promise<void> {
     if (this.starting.has(task.id) || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     this.starting.add(task.id);
     try { await this.startTurn(task, executable, prompt, beforeTurn, environment); }
     finally { this.starting.delete(task.id); }
   }
-  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void, environment: Record<string, string>): Promise<void> {
+  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void | Promise<void>, environment: Record<string, string>): Promise<void> {
     const expectedSchedule = task.schedule;
     if (task.provider !== 'claude' || task.providerVersion !== testedClaudeVersion) throw new Error('Managed Claude requires the tested CLI version 2.1.270. Check the configured provider first.');
     if (task.sessionId && task.sessionProvider && task.sessionProvider !== 'claude') throw new Error('This recorded session belongs to another provider. Create a separate Claude task.');
     if (task.interface === 'official-extension' || task.state === 'external' || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     if (!this.views.has(task.id)) await this.load(task);
     const view = this.views.get(task.id)!;
+    if (view.writerUncertain) throw new Error('Stop surviving managed process children and reconcile writer absence before resuming.');
     const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'claude', prompt, text: '', status: 'running', createdAt: new Date().toISOString() };
     const selection = task.modelSelection ? parseModelSelection(task.modelSelection) : undefined;
     const previousModel = selection ? [...view.turns].reverse().find(item => item.modelSettings?.requested?.model === selection.model && item.modelSettings?.effective)?.modelSettings?.effective?.model : undefined;
@@ -51,7 +52,7 @@ export class ManagedClaude {
         task.state = 'interrupted'; task.error = undefined;
         await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
       }
-      beforeTurn();
+      await beforeTurn();
     } catch (error) {
       turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`;
       task.state = 'error'; task.error = turn.error;
@@ -75,7 +76,7 @@ export class ManagedClaude {
       await done;
     };
     const kill = () => {
-      if (!cleanup && child.pid && child.exitCode === null && child.signalCode === null) cleanup = terminateProcessTree(child.pid).catch(error => { this.report(error); failure ||= `Owned process cleanup failed: ${String(error)}`; child.kill(); });
+      if (!cleanup && child.pid && child.exitCode === null && child.signalCode === null) cleanup = this.terminate(child.pid).catch(error => { view.writerUncertain = true; this.changed(); this.report(error); failure ||= `Owned process cleanup failed: ${String(error)}`; child.kill(); });
       return cleanup;
     };
     const rejectPending = (reason: string) => { for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(reason)); } pending.clear(); };
@@ -183,7 +184,7 @@ export class ManagedClaude {
       await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'effective-settings', data: effective });
       await this.store.save(task.id, view); await this.persistTask();
       if (stopped || closing || failure) return;
-      beforeTurn(); submitted = true;
+      await beforeTurn(); if (stopped || closing || failure) return; submitted = true;
       send({ type: 'user', session_id: task.sessionId || '', parent_tool_use_id: null, message: { role: 'user', content: prompt } });
     })().catch(error => { if (!stopped) fail(error); });
     this.changed();

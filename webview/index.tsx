@@ -1,5 +1,6 @@
 import { pendingSchedule } from '../src/core/scheduler';
 import { ScheduleControls } from './ScheduleControls';
+import { CapacityStatus } from './CapacityStatus';
 import { ResourceControls } from './ResourceControls';
 import { BudgetControls } from './BudgetControls';
 import React, { useEffect, useState } from 'react';
@@ -139,9 +140,9 @@ function App() {
   };
   const selected = snapshot.tasks.find(task => task.id === snapshot.selectedId);
   const tasks = snapshot.tasks.filter(task => (filter === 'discarded' ? task.state === 'discarded' : task.state !== 'discarded') && `${task.title} ${task.branch} ${task.provider}`.toLowerCase().includes(search.toLowerCase()) &&
-    (filter === 'all' || filter === 'discarded' || (filter === 'active' ? task.state === 'external' || task.state === 'running' || snapshot.resources?.[task.id]?.status === 'running' : task.state === 'error' || task.state === 'interrupted' || snapshot.resources?.[task.id]?.uncertain || !!snapshot.taskActivity?.[task.id]?.awaitingApproval || task.schedule?.state === 'blocked' || task.schedule?.state === 'interrupted')));
+    (filter === 'all' || filter === 'discarded' || (filter === 'active' ? task.state === 'external' || task.state === 'running' || snapshot.resources?.[task.id]?.status === 'running' : task.state === 'error' || task.state === 'interrupted' || snapshot.resources?.[task.id]?.uncertain || snapshot.capacity?.owned[task.id]?.uncertain || !!snapshot.taskActivity?.[task.id]?.awaitingApproval || task.schedule?.state === 'blocked' || task.schedule?.state === 'interrupted')));
   const active = snapshot.tasks.filter(task => task.state === 'running' || task.state === 'external' && task.interface === 'interactive-cli').length + Object.values(snapshot.resources || {}).filter(resource => resource.status === 'running' || resource.uncertain).length;
-  const taskBusy = snapshot.busy || !!selected && (snapshot.resources?.[selected.id]?.status === 'running' || !!snapshot.resources?.[selected.id]?.uncertain);
+  const taskBusy = snapshot.busy || !!selected && (snapshot.resources?.[selected.id]?.status === 'running' || !!snapshot.resources?.[selected.id]?.uncertain || !!snapshot.capacity?.owned[selected.id]?.uncertain || !!snapshot.session?.writerUncertain);
   const provider = snapshot.providers.find(item => item.provider === selected?.provider);
   return <main className="app">
     <header className="topbar">
@@ -166,6 +167,7 @@ function App() {
           </section>)}
           {tasks.length === 0 && <p className="rail-empty">{snapshot.handoff ? 'Manage task ownership in the original Hydra window.' : search || filter !== 'all' ? 'No matching tasks.' : 'Your tasks will appear here.'}</p>}
         </nav>
+        {snapshot.capacity && <p className="observability" role="status">{snapshot.capacity.reserved ?? 'Unknown'} / {snapshot.capacity.limit} profile slots reserved</p>}
         <div className="rail-bottom"><span><span className={`status-dot ${active ? 'external' : 'idle'}`} />{active} active writers</span><button className="icon-button" aria-label="Refresh task status" onClick={() => send({ type: 'refresh' })}><Icon name="refresh" /></button></div>
       </aside>
       <section className="conversation" aria-label={creating ? 'New task' : 'Selected task'}>
@@ -191,6 +193,7 @@ function App() {
           <div className="conversation-header"><div><h2>{selected.title}</h2><span>{providerName(selected.provider)} <span className="separator">/</span> {selected.interface === 'official-extension' ? 'Official extension' : selected.interface === 'managed-cli' ? 'Managed CLI' : 'Interactive CLI'}</span></div><button className="icon-button" title="New task" aria-label="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>
           <div className="task-context"><Icon name="branch" /><span title={selected.branch}>{selected.branch}</span><span className={`state ${selected.state}`}>{selected.interface === 'official-extension' ? 'External · status unavailable' : selected.state === 'external' ? 'Terminal active' : selected.state}</span></div>
           <div className="thread">
+            <CapacityStatus capacity={snapshot.capacity} task={selected} busy={snapshot.busy} writerUncertain={snapshot.session?.writerUncertain} send={send} />
             <ResourceControls key={`resources-${selected.id}-${JSON.stringify(snapshot.resources?.[selected.id]?.config || {})}`} task={selected} saved={snapshot.resources?.[selected.id]} busy={snapshot.busy} send={send} />
             {selected.state === 'discarded' ? <DiscardControls task={selected} busy={taskBusy} /> : <>
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} send={send} />

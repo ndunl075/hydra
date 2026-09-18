@@ -48,6 +48,7 @@ export class TaskResources {
     this.records = records; await this.save();
   }
   snapshot(): Record<string, ResourceView> { return Object.fromEntries(Object.entries(this.records).map(([id, { token: _token, revision: _revision, ...view }]) => [id, structuredClone(view)])); }
+  isActive(id: string): boolean { return this.active.has(id) || this.mutations.has(id); }
   has(id: string): boolean { return this.active.has(id) || this.mutations.has(id) || !!this.records[id]?.uncertain; }
   get count(): number { return this.active.size + Object.values(this.records).filter(record => record.uncertain).length; }
   environment(id: string): Record<string, string> { return this.records[id] ? resourceEnvironment(this.records[id].config) : {}; }

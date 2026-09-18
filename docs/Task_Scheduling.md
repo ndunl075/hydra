@@ -1,6 +1,6 @@
 # Persistent task scheduling
 
-Hydra queues terminal launches, initial managed turns, and explicit follow-ups in its local task store. A launch at available capacity proceeds immediately; excess launches wait. The existing per-window default remains two, configurable from one to eight. Official-extension sessions are externally owned and shown separately; Hydra does not limit those sessions or nested provider workers.
+Hydra queues terminal launches, initial managed turns, and explicit follow-ups in its local task store. A launch at available capacity proceeds immediately; excess launches wait. The per-window default remains two, configurable from one to eight. The 0.18.0 candidate also reserves shared profile slots before preparation and rechecks them before submission; both limits apply. See [Profile_Capacity.md](Profile_Capacity.md). Official-extension sessions are externally owned and shown separately; Hydra does not limit those sessions or nested provider workers.
 
 The scheduling record is separate from provider task state. It persists `queued`, `starting`, `running`, `waiting-for-approval`, `blocked`, `interrupted`, `finished`, and `cancelled`. `finished` describes a provider/process lifecycle, not acceptance of task results. Managed approvals remain in the conversation and the Attention filter.
 
@@ -25,6 +25,6 @@ One prerequisite may supply the initial checkout. This requires an unstarted dep
 
 `tests/scheduler.test.ts` exercises queueing past capacity, persisted reload, uncertain reservations, duplicate dispatch refusal, cancellation, dependency cycles/failure, persistence errors, and real-Git selected bases, reviewed receipts, dirty-state refusal and predecessor fast-forward. Existing managed provider tests supply bounded protocol fixtures; these are not authenticated provider acceptance.
 
-This feature does not increase the default concurrency, implement automatic task decomposition, prove provider authentication/acceptance, isolate ports or databases, impose token budgets, or provide cross-window global capacity. Safe integration and real-provider acceptance remain separate release prerequisites before expanded concurrency.
+Scheduling keeps the default concurrency and does not implement automatic task decomposition or prove authenticated provider acceptance. Separate resource, budget and shared-profile capacity modules add their own guarded foundations; their acceptance and limits are recorded separately. Safe integration and real-provider acceptance remain separate release prerequisites before expanded concurrency.
 
 PR #20 passed Linux and [Windows native acceptance](https://github.com/ndunl075/hydra/actions/runs/35287713387) at `b010f9c`, including queue/dequeue and starting cancellation. See the [combined acceptance record](Implementation_Status.md#acceptance-record) for later bundled revisions.

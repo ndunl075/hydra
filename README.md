@@ -6,6 +6,8 @@
 
 A Windows-first standalone IDE for switching between ordinary editing and an agent manager. Hydra's own editor is built from pinned Code - OSS source with Hydra branding and separate user data; the agent workflow is a built-in module. The Windows installer and first-run onboarding are still in development. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md), [standalone build guide](docs/Standalone_Build.md), and [desktop delivery requirements](docs/Desktop_Delivery.md).
 
+The 0.18.0 candidate adds a shared reservation limit for managed sessions, provider terminals and setup writers across participating windows in one local profile. Defaults remain two; uncertain writers retain their slots until explicit recovery. See [profile capacity](docs/Profile_Capacity.md) for the boundary and acceptance gates.
+
 ## Standalone editor build
 
 The target application is **Hydra.exe**. VS Code is a development test host, not a runtime dependency of the bundled IDE. Native Windows x64 builds require the pinned Node/toolchain prerequisites described in the [build guide](docs/Standalone_Build.md).
@@ -68,7 +70,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.17.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import and quota refresh are available in standalone Hydra. The installer, replayable onboarding and passive provider account setup have passed automated Windows acceptance; live sign-in, signing/distribution and the remaining delivery gates are tracked in [implementation status](docs/Implementation_Status.md).
+Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.18.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import and quota refresh are available in standalone Hydra. The installer, replayable onboarding and passive provider account setup have passed automated Windows acceptance; live sign-in, signing/distribution and the remaining delivery gates are tracked in [implementation status](docs/Implementation_Status.md).
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

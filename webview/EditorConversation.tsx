@@ -4,6 +4,7 @@ import { SessionThread } from './SessionThread';
 import { ModelControls } from './ModelControls';
 import { TaskContext } from './TaskContext';
 import { pendingSchedule } from '../src/core/scheduler';
+import { CapacityStatus } from './CapacityStatus';
 
 type Send = (message: ClientMessage) => void;
 const empty: Snapshot = { tasks: [], repositories: [], providers: [], files: [], busy: false, mode: 'editor' };
@@ -52,7 +53,7 @@ export function EditorConversation({ send }: { send: Send }) {
   const tasks = snapshot.tasks.filter(task => task.state !== 'discarded');
   const task = tasks.find(item => item.id === snapshot.selectedId);
   const resource = task && snapshot.resources?.[task.id];
-  const busy = snapshot.busy || resource?.status === 'running' || !!resource?.uncertain;
+  const busy = snapshot.busy || resource?.status === 'running' || !!resource?.uncertain || !!task && !!snapshot.capacity?.owned[task.id]?.uncertain || !!snapshot.session?.writerUncertain;
   const available = !!snapshot.providers.find(provider => provider.provider === task?.provider)?.available;
   return <main className="editor-conversation" aria-label="Editor agent conversation">
     <header className="chat-toolbar">
@@ -74,6 +75,7 @@ export function EditorConversation({ send }: { send: Send }) {
       {!available && <div className="chat-notice">Provider CLI not found. <button className="text-button" onClick={() => send({ type: 'settings' })}>Set up provider</button></div>}
       {(task.state === 'external' || task.interface === 'official-extension') && <div className="chat-notice">This task is open in an external provider session. <button className="text-button" onClick={() => send({ type: 'agents' })}>Manage session</button></div>}
       {pendingSchedule(task) && task.state !== 'running' && <div className="chat-notice" role="status">{task.schedule?.reason || `Task ${task.schedule?.state}.`}{['queued', 'blocked'].includes(task.schedule?.state || '') && <button className="text-button" disabled={busy} onClick={() => send({ type: 'cancelQueued', id: task.id })}>Cancel queued work</button>}</div>}
+      {snapshot.capacity && (snapshot.capacity.error || snapshot.capacity.owned[task.id]?.uncertain || snapshot.session?.writerUncertain) && <div className="chat-notice"><CapacityStatus capacity={snapshot.capacity} task={task} busy={snapshot.busy} writerUncertain={snapshot.session?.writerUncertain} send={send} /></div>}
       <SessionThread key={task.id} task={task} session={snapshot.session || { version: 1, turns: [] }} busy={busy} available={available} draft={snapshot.conversationDraft} send={send} compact />
     </>}
   </main>;

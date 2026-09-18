@@ -4,6 +4,7 @@ import type { UsageSummary } from './usage';
 import { parseBudgets, type SoftBudget, type BudgetSettings, type BudgetObservation } from './budgets';
 import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
+import type { CapacityView } from './profileCapacity';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 import type { ConversationDraft } from './conversationDrafts';
@@ -50,11 +51,12 @@ export interface Turn {
   modelSettings?: TurnModelSettings;
 }
 export interface Approval { id: string; kind: 'command' | 'file' | 'network'; detail: string }
-export interface SessionView { version: 1; turns: Turn[]; active?: boolean; totalTurns?: number; approvals?: Approval[] }
+export interface SessionView { version: 1; turns: Turn[]; writerUncertain?: boolean; active?: boolean; totalTurns?: number; approvals?: Approval[] }
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
 export interface Snapshot {
+  capacity?: CapacityView;
   resources?: Record<string, ResourceView>;
   tasks: Task[]; selectedId?: string; mode: 'editor' | 'agents'; repositories: string[];
   providers: ProviderInfo[]; files: TaskFile[]; busy: boolean; error?: string; draft?: Draft;
@@ -75,7 +77,7 @@ export type ClientMessage =
   | { type: 'saveResources'; id: string; config: ResourceConfig }
   | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
   | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' }
-  | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter'; id: string }
+  | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter' | 'reconcileCapacity'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
   | { type: 'retryBudgetHold'; id: string }
@@ -205,7 +207,7 @@ export function parseMessage(value: unknown): ClientMessage {
     if (draftVersion !== undefined && !/^[a-zA-Z0-9-]{1,100}$/.test(draftVersion)) throw new Error('Invalid draft version.');
     return { type, id, prompt, ...(draftVersion === undefined ? {} : { draftVersion }) };
   }
-  if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal', 'startManaged', 'showSessionDiagnostics', 'cancelQueued', 'reconcileWriter'].includes(type)) {
+  if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal', 'startManaged', 'showSessionDiagnostics', 'cancelQueued', 'reconcileWriter', 'reconcileCapacity'].includes(type)) {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return { type, id } as ClientMessage;

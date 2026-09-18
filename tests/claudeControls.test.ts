@@ -11,6 +11,34 @@ import type { Task } from '../src/core/model';
 
 const metadata = [{ value: 'opus[1m]', resolvedModel: 'claude-fixture-model', displayName: 'Opus', supportsEffort: true, supportedEffortLevels: ['high', 'max'] }];
 const selected = { model: 'opus[1m]', effort: 'max' };
+import { terminateProcessTree } from '../src/core/process';
+
+test('Claude awaits the asynchronous final slot guard and Stop during that guard cannot submit a prompt', async () => {
+  const f = await fixture(); let calls = 0, entered!: () => void, resume!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; }); const guard = new Promise<void>(resolve => { resume = resolve; });
+  try {
+    await f.manager.start(f.task, f.executable, 'must not submit', async () => { if (++calls === 2) { entered(); await guard; } });
+    await waiting; await assert.rejects(readFile(path.join(f.root, 'requests.jsonl')), { code: 'ENOENT' });
+    await f.manager.stop(f.task.id); resume(); await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(f.manager.count, 0); await assert.rejects(readFile(path.join(f.root, 'requests.jsonl')), { code: 'ENOENT' });
+  } finally { resume(); await f.close(); }
+});
+
+test('Claude cleanup failure is durable, blocks resume, and is cleared only by explicit managed reconciliation', async () => {
+  const f = await fixture({ delaySettings: true }); const errors: unknown[] = [];
+  const manager = new ManagedClaude(f.store, () => f.taskStore.save([f.task]), () => {}, error => errors.push(error), async pid => { await terminateProcessTree(pid); throw Error('Simulated uncertain child cleanup after safely stopping the fixture tree'); });
+  try {
+    await manager.start(f.task, f.executable, 'must not submit');
+    await waitFor(async () => { try { return (await readFile(path.join(f.root, 'claude-controls.jsonl'), 'utf8')).includes('get_settings'); } catch { return false; } });
+    await manager.stop(f.task.id); assert.equal(manager.view(f.task.id)?.writerUncertain, true);
+    assert.equal((await f.store.load(f.task.id)).writerUncertain, true); assert.equal(errors.length, 1);
+    await assert.rejects(manager.start(f.task, f.executable, 'resume'), /reconcile/);
+    const { ManagedSessions } = await import('../src/core/managedSessions');
+    const owners = new ManagedSessions(f.store, async () => {}, () => {}, error => errors.push(error)); await owners.load(f.task);
+    await owners.reconcile(f.task.id); assert.equal(owners.view(f.task.id)?.writerUncertain, undefined); assert.equal((await f.store.load(f.task.id)).writerUncertain, undefined);
+    await assert.rejects(readFile(path.join(f.root, 'requests.jsonl')), { code: 'ENOENT' });
+  } finally { await manager.shutdown(); await f.close(); }
+});
 test('Claude models require explicit support, canonical identity and actual effective effort', () => {
   const models = readClaudeModels(metadata);
   assert.equal(models[0]?.defaultEffort, '');

@@ -1,5 +1,6 @@
 import { validateSchedule } from './scheduler';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { replaceAtomic } from './atomicFile';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Task } from './model';
@@ -53,7 +54,7 @@ export class LocalStore {
       await mkdir(this.directory, { recursive: true });
       const temporary = path.join(this.directory, `tasks-${randomUUID()}.tmp`);
       await writeFile(temporary, data, { encoding: 'utf8', flag: 'wx' });
-      await rename(temporary, path.join(this.directory, 'tasks.json'));
+      await replaceAtomic(temporary, path.join(this.directory, 'tasks.json'));
     });
     this.queue = operation.catch(() => {});
     return operation;

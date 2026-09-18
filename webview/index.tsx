@@ -217,7 +217,7 @@ function App() {
             {selected.state === 'discarded' ? <DiscardControls task={selected} busy={snapshot.busy} /> : <>
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} send={send} />
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={snapshot.busy} send={send} />
-            <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} />
+            <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} send={send} />
             <BudgetControls key={`budgets-${selected.id}`} task={selected} settings={snapshot.budgets?.settings} observations={snapshot.budgets?.observations[selected.id]} busy={snapshot.busy} send={send} />
             {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} /> : <>
             <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{selected.prompt}</p></article>

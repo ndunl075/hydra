@@ -68,7 +68,7 @@ export interface Snapshot {
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
 }
 export type ClientMessage =
-  | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
+  | { type: 'ready' | 'editor' | 'refresh' | 'settings' | 'openQuota' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
@@ -175,7 +175,7 @@ export function parseMessage(value: unknown): ClientMessage {
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
     return { type, provider };
   }
-  if (['ready', 'editor', 'refresh', 'settings', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
+  if (['ready', 'editor', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
   if (type === 'handoff') {
     const id = string('id');
     const provider = string('provider');

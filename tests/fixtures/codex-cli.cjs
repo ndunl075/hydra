@@ -28,6 +28,7 @@ else {
       if (options.catalogError) { emit({ id: message.id, error: { message: 'Fixture catalog unavailable' } }); return; }
       reply(options.catalog || { data: [{ model: 'fixture-model', displayName: 'Fixture model', hidden: false, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }], defaultReasoningEffort: 'high' }], nextCursor: null });
     }
+    else if (message.method === 'account/rateLimits/read') reply({ ordinaryUsageAllowed: null, rateLimits: { limitId: 'codex', limitName: null, primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1789700000 }, secondary: null }, rateLimitsByLimitId: null, accountId: 'private-fixture-account', rateLimitResetCredits: { availableCount: 1, credits: [{ id: 'private-reset-token' }] } });
     else if (message.method === 'windowsSandbox/readiness') reply({ status: options.readiness || 'ready' });
     else if (message.method === 'thread/start' || message.method === 'thread/resume') {
       if (!initialized) throw new Error('Missing initialization handshake');

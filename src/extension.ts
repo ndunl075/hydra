@@ -17,6 +17,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
+import { ProviderQuota } from './extensionQuota';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -104,13 +105,15 @@ class Manager {
   private readonly settingsImport: SettingsImport;
   private readonly onboarding: Onboarding;
   private readonly accounts: ProviderAccounts;
+  private readonly quota: ProviderQuota;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
+    this.quota = new ProviderQuota(context, this.settingsImport.available);
     this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
-    context.subscriptions.push(this.settings, this.onboarding, this.accounts);
+    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
@@ -150,6 +153,10 @@ class Manager {
     command('hydra.openSettings', () => this.settings.show());
     command('hydra.openAccounts', () => this.accounts.show());
     command('hydra.getAccountSetupState', () => this.accounts.snapshot());
+    command('hydra.openQuotaStatus', () => this.quota.show());
+    command('hydra.getQuotaState', () => this.quota.snapshot());
+    command('hydra.refreshQuota', () => this.quota.refresh());
+    command('hydra.cancelQuota', () => this.quota.cancel());
     command('hydra.openOnboarding', () => this.onboarding.show());
     command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
@@ -480,6 +487,7 @@ class Manager {
     const expectedSchedule = scheduledLaunch && 'id' in message ? this.getTask(message.id).schedule : undefined;
     const assertLaunchCurrent = () => { if (scheduledLaunch && (!expectedSchedule || !('id' in message) || this.getTask(message.id).schedule !== expectedSchedule || expectedSchedule.state !== 'starting' || !expectedSchedule.request)) throw new Error('Queued launch cancelled before provider start.'); };
     if (message.type === 'ready') { await this.publish(); if (this.pendingNewTask) { this.pendingNewTask = false; await this.panel?.webview.postMessage({ type: 'newTask' }); } return; }
+    if (message.type === 'openQuota') { this.quota.show(); return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
@@ -854,6 +862,7 @@ class Manager {
   async shutdown(): Promise<void> {
     this.closing = true;
     await this.accounts.shutdown();
+    await this.quota.shutdown();
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     await this.pendingDiscard?.catch(() => {});

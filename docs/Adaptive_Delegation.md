@@ -58,6 +58,16 @@ Aggregate planning, children, retries, synthesis, review, and validation usage u
 
 Extend the graph with persisted parent-to-child assignments, dependencies, context requests, and result handoffs. Animate actual dispatch or delivered-result events with provenance; stop activity at approvals and respect pause/reduced motion. Show decision rationale, context manifests, active/queued/blocked states, and parent-run usage. Do not fabricate live message traffic or imply exact token flow from animations.
 
+## Verification evidence and focused agent workspace
+
+Planned additions from the [Ninebrains review decision](Agentic_Workflow_Architecture.md#ninebrains-review-decision-2026-09-18); not implemented by this documentation change.
+
+Phase 3 adds a per-attempt evidence panel recording the exact checked commit/tree, check identity, command and exit status, review findings, relevant screenshot artifacts, timestamps, and retry history. Preserve full local artifacts; summaries link to evidence rather than copying entire logs into context. Required gates remain blocking when their runner is missing, evidence is absent, execution is interrupted, the check fails, or the checked snapshot becomes stale. Optional/not-applicable checks are explicitly distinguished from passed checks. Keep the existing one-retry limit and combined integration acceptance; use model review and screenshots only where appropriate to the acceptance criteria.
+
+Phase 4 adds a focused agent workspace opened from the graph: worktree/branch identity, the correct terminal/session, diff, evidence, and available preview. Display queued, running, validating, blocked, and completed states from persisted host events, keeping execution completion distinct from accepted completion. Preserve the native Editor layout. Opening or switching views must not launch agents or previews, run checks, or submit model requests; stopped/unavailable resources stay explicit.
+
+Acceptance additions: Phase 3 fixtures cover missing runners, absent artifacts, interrupted checks, failed checks, stale receipts, retained retry evidence, and a passing child whose combined integration fails. Phase 4 checks correct worktree/session selection across multiple agents, restart recovery of evidence and status, unavailable previews, zero side effects from navigation, and event-backed arrows with reduced-motion support.
+
 ## Delivery and acceptance
 
 Ship each phase as a separate tested feature PR. Existing manually created tasks remain usable throughout.

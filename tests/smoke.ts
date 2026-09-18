@@ -8,6 +8,7 @@ import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
 import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/taskContext';
 import type { UsageSummary } from '../src/core/usage';
+import type { ModelCatalog } from '../src/core/modelSelection';
 import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -52,10 +53,14 @@ export async function run(): Promise<void> {
   }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
-    assert.equal(tasks?.length, 4, 'All task records, including the reviewed commit, are recovered');
+    assert.equal(tasks?.length, 5, 'All task records, including the reviewed commit and selected model, are recovered');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
+    const selectedModelTask = tasks.find(task => task.title === 'Selected model'); assert.ok(selectedModelTask);
+    assert.deepEqual(selectedModelTask.modelSelection, { model: 'fixture-model', effort: 'high' });
+    const modelHistory = await vscode.commands.executeCommand<SessionView>('hydra.getSession', selectedModelTask.id);
+    assert.equal(modelHistory?.turns.length, 2); assert.deepEqual(modelHistory.turns[1]?.modelSettings?.effective, selectedModelTask.modelSelection);
     const managedTask = tasks.find(task => task.interface === 'managed-cli' && task.provider === 'claude');
     assert.ok(managedTask?.sessionId, 'Managed session identity survives reload');
     const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', managedTask.id);
@@ -373,6 +378,23 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.commitReviewed', commitTask.id, fresh.token, 'Duplicate'), /Review expired/);
     assert.equal(editDocument.isDirty, true); assert.equal(await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8'), claudeRequestsBefore); assert.equal(await readFile(path.join(tasks[1]!.worktree, 'codex-requests.jsonl'), 'utf8'), codexRequestsBefore);
     console.log('PASS: native prepared review uses fixed Git objects, refuses dirty buffers and stale state, records the exact reviewed commit, and makes zero provider requests.');
+    const modelTask = await vscode.commands.executeCommand<Task>('hydra.createTask', { repository, provider: 'codex', title: 'Selected model', prompt: 'Fixture model controls only.' }); assert.ok(modelTask);
+    const catalog = await vscode.commands.executeCommand<ModelCatalog>('hydra.checkModels', modelTask.id); assert.equal(catalog?.status, 'ready');
+    assert.equal(catalog.models[0]?.model, 'fixture-model');
+    const metadataRequests = (await readFile(path.join(modelTask.worktree, 'codex-requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(metadataRequests.map(request => request.method), ['initialize', 'initialized', 'model/list']);
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveModelSelection', modelTask.id, { model: 'gpt-6-astra', effort: 'high' }), /does not currently advertise/);
+    const selection = { model: 'fixture-model', effort: 'high' };
+    await vscode.commands.executeCommand('hydra.saveModelSelection', modelTask.id, selection);
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.launchTask', modelTask.id), /explicit managed Codex/);
+    await vscode.commands.executeCommand('hydra.startManaged', modelTask.id);
+    await waitFor(async () => { const view = await vscode.commands.executeCommand<SessionView>('hydra.getSession', modelTask.id); return view?.turns[0]?.status === 'completed' && !view.active; });
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveModelSelection', modelTask.id, null), /locked after launch/);
+    await vscode.commands.executeCommand('hydra.followUp', modelTask.id, 'Resume with the saved fixture settings.');
+    await waitFor(async () => { const view = await vscode.commands.executeCommand<SessionView>('hydra.getSession', modelTask.id); return view?.turns[1]?.status === 'completed' && !view.active; });
+    const modelView = await vscode.commands.executeCommand<SessionView>('hydra.getSession', modelTask.id);
+    assert.deepEqual(modelView?.turns[1]?.modelSettings, { requested: selection, effective: selection });
+    console.log('PASS: native model discovery submits no prompt, unsupported Astra is refused, explicit settings lock, and acknowledged model/effort survive resume.');
     const targetFile=path.join(repository,'keep.txt'),targetBytes=await readFile(targetFile),targetBefore=(await git(repository,['rev-parse','HEAD'])).trim();
     const checks=[{executable:'git',args:['diff','--check',commitTask.baseCommit,'HEAD']}];
     await assert.rejects(async()=>await vscode.commands.executeCommand('hydra.prepareIntegration',commitTask.id,checks),/clean saved/);

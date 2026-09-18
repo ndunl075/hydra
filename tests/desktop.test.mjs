@@ -118,6 +118,8 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     assert.equal(staged.contributes.configurationDefaults['workbench.colorTheme'], 'Hydra Dark');
     assert.equal(staged.contributes.configurationDefaults['workbench.preferredDarkColorTheme'], 'Hydra Dark');
     assert.equal(staged.contributes.configurationDefaults['window.autoDetectColorScheme'], false);
+    assert.equal(staged.contributes.configurationDefaults['workbench.secondarySideBar.defaultVisibility'], 'visible');
+    assert.equal(original.contributes.configurationDefaults?.['workbench.secondarySideBar.defaultVisibility'], undefined);
     assert.equal(original.contributes.configurationDefaults?.['workbench.colorTheme'], undefined);
     assert.deepEqual(await fs.readFile(path.join(fixture, 'dist', 'extension.cjs')), await fs.readFile(path.join(root, 'dist', 'extension.cjs')));
     assert.deepEqual(await fs.readFile(path.join(fixture, 'hydra-logo.png')), await fs.readFile(path.join(root, 'hydra-logo.png')));

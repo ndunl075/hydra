@@ -6,6 +6,7 @@ import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
+import type { ConversationDraft } from './conversationDrafts';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -60,6 +61,7 @@ export interface Snapshot {
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];
   diagnostics?: ProviderDiagnostic[];
   session?: SessionView;
+  conversationDraft?: ConversationDraft;
   /** Local activity only; no other task's transcript or approval details. */
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
@@ -72,12 +74,13 @@ export interface Snapshot {
 export type ClientMessage =
   | { type: 'saveResources'; id: string; config: ResourceConfig }
   | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
-  | { type: 'ready' | 'editor' | 'refresh' | 'settings' | 'openQuota' }
+  | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
   | { type: 'retryBudgetHold'; id: string }
-  | { type: 'followUp'; id: string; prompt: string }
+  | { type: 'followUp'; id: string; prompt: string; draftVersion?: string }
+  | { type: 'conversationDraft'; id: string; prompt: string; version: string }
   | { type: 'saveBrief'; id: string; brief: TaskBrief }
   | { type: 'saveHandoffSummary'; id: string; handoffSummary: TaskHandoffSummary }
   | { type: 'showTaskHandoff'; id: string }
@@ -183,17 +186,24 @@ export function parseMessage(value: unknown): ClientMessage {
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
     return { type, provider };
   }
-  if (['ready', 'editor', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
+  if (['ready', 'editor', 'agents', 'newTask', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
   if (type === 'handoff') {
     const id = string('id');
     const provider = string('provider');
     if (!/^[a-f0-9]{12}$/.test(id) || (provider !== 'claude' && provider !== 'codex')) throw new Error('Invalid handoff.');
     return { type, id, provider };
   }
+  if (type === 'conversationDraft') {
+    const id = string('id'), prompt = string('prompt', 32000), version = string('version', 100);
+    if (!/^[a-f0-9]{12}$/.test(id) || !/^[a-zA-Z0-9-]{1,100}$/.test(version)) throw new Error('Invalid conversation draft.');
+    return { type, id, prompt, version };
+  }
   if (type === 'followUp') {
     const id = string('id'), prompt = string('prompt', 32000);
     if (!/^[a-f0-9]{12}$/.test(id) || !prompt.trim()) throw new Error('Invalid follow-up.');
-    return { type, id, prompt };
+    const draftVersion = message.draftVersion === undefined ? undefined : string('draftVersion', 100);
+    if (draftVersion !== undefined && !/^[a-zA-Z0-9-]{1,100}$/.test(draftVersion)) throw new Error('Invalid draft version.');
+    return { type, id, prompt, ...(draftVersion === undefined ? {} : { draftVersion }) };
   }
   if (['select', 'launch', 'terminal', 'copyPrompt', 'openWorktree', 'stop', 'releaseExternal', 'startManaged', 'showSessionDiagnostics', 'cancelQueued', 'reconcileWriter'].includes(type)) {
     const id = string('id');

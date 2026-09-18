@@ -12,7 +12,7 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.113.0"
   },
   "categories": [
     "Other"
@@ -103,6 +103,11 @@
       {
         "command": "hydra.createTask",
         "title": "Hydra: Create Task"
+      },
+      {
+        "command": "hydra.openConversation",
+        "title": "Hydra: Open Agent Conversation",
+        "icon": "$(comment-discussion)"
       }
     ],
     "keybindings": [
@@ -119,6 +124,13 @@
           "title": "Hydra",
           "icon": "hydra-logo.png"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "hydra-chat",
+          "title": "Hydra",
+          "icon": "hydra-logo.png"
+        }
       ]
     },
     "views": {
@@ -126,6 +138,15 @@
         {
           "id": "hydra.tasks",
           "name": "Tasks"
+        }
+      ],
+      "hydra-chat": [
+        {
+          "id": "hydra.conversation",
+          "name": "Agent",
+          "type": "webview",
+          "when": "hydra.mode != agents",
+          "visibility": "visible"
         }
       ]
     },

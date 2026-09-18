@@ -157,6 +157,12 @@ The interface does not make model tokens cheaper. It can reduce avoidable reques
 | Explicit model choice | Use the provider default initially. Expose model and effort settings only when supported. Never silently downgrade a difficult task to reduce consumption. |
 | Small handoffs | Use a user-reviewed summary of intent, decisions, changed files, and unresolved issues. Include pointers to the worktree and full local transcript for recovery. |
 
+### Adaptive delegation on prompt submission
+
+Planned feature: in **Auto**, the main agent assesses whether a prompt warrants independent subagents or should stay solo. Provide a persistent **Solo** override. Auto becomes the default only after provider, recovery, and efficiency acceptance; development starts opt-in. Give children only focused goals, necessary user/repository constraints, relevant source references, agreed interfaces, and completion checks. Start fresh child sessions without automatically copying the parent conversation; allow authorized retrieval of missing context.
+
+Use isolated worktrees for writing children, one delegation level, a default two-child total per parent run, and the existing shared capacity including the active parent. Children return compact evidence-linked results. The parent reviews actual changes and validates the integrated result. Persist real assignments and handoffs for the agent map, and account for planning, retries, children, and integration without double-counting provider usage. Parallel speed is not proof of token savings. Full behavior, provider limits, budgets, phases, and release gates are specified in [Adaptive delegation](Adaptive_Delegation.md).
+
 ### Keep optimization outside the hidden agent loop
 
 Store full local output when available and collapse verbose output visually. Collapsing the UI does not reduce model context. A supported provider hook may filter repetitive logs before they reach the model, but it must preserve failures and access to complete evidence. Do not strip agent tool results or force frequent compaction behind the user’s back. Provider-native context management is the baseline. [5]

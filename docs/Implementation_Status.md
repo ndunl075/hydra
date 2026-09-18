@@ -17,6 +17,10 @@ Features ship in separate branches and PRs. Type checking, builds, appropriate t
 | M5 reliability and efficiency | Partially implemented | Durable queue/session recovery, writer ownership, integration journals, reported usage and soft launch/turn budgets provide foundations. Cross-window global capacity, resource setup, quota information and measured efficiency remain incomplete. Worktrees do not isolate ports, databases, services or all filesystem access |
 | M6 desktop delivery and onboarding | Standalone, onboarding, account setup and installer merged; automated acceptance passed; milestone incomplete | Branded standalone acceptance passed in PR #11. Active-profile import preserves conflicts, backups and undo. Replayable onboarding, passive provider-owned account setup and the final combined Windows installer passed Linux/native checks. Disposable install/reinstall/uninstall checks verify shortcut choices and preserved user data. Live sign-in, signing/distribution, distinct-version upgrades, automatic updates and manual wizard/accessibility acceptance remain outstanding. See [Desktop_Delivery.md](Desktop_Delivery.md); a core .vsix is not the IDE release |
 
+## Planned adaptive delegation
+
+Nico's requested automatic solo-or-subagent decision is now explicitly scoped in [Adaptive delegation](Adaptive_Delegation.md) and roadmap priority 6. It is **planned, not implemented**. The scope includes focused child context with on-demand retrieval, one-level isolated worktrees, shared capacity/budgets, durable parent/child recovery, evidence-based integration, real graph handoffs, and Auto-versus-Solo quality/efficiency gates. Existing manual briefs and queue support do not establish this capability.
+
 ## Acceptance record
 
 Combined runtime revision `1410251`, merged into main as `9b26fa1` after separate feature PRs, recorded on 17 September 2026. Each merge preserved its tested tree and feature ancestry.

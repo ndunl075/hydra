@@ -62,8 +62,18 @@ Provide explicit, trusted dependency setup and resource assignments for task por
 
 Acceptance: authenticated scratch tasks perform edits and tests with verified ownership and approvals; interrupted tasks resume without invented completion; parallel fixtures use distinct resources and cannot stop one another's processes. Real-provider tests must use an agreed bounded task budget.
 
+### 6. Adaptive delegation and focused subagent context
+
+Status: explicitly planned at Nico's request; not implemented. See [Adaptive delegation](Adaptive_Delegation.md) for the execution contract, phased delivery, and acceptance gates.
+
+In Auto mode, the main agent assesses whether a prompt is best completed alone or split into independently useful subtasks. Delegate only when expected benefit outweighs duplicated discovery, setup, coordination, and integration work. Give children focused briefs with necessary constraints, relevant source references, agreed interfaces, and acceptance criteria, never an automatic copy of the whole conversation. Allow authorized retrieval of missing context. Each writing child uses an isolated worktree and returns concise, evidence-linked results for parent review and combined acceptance.
+
+The intended released default is Auto with a Solo override, gated by provider acceptance and measured quality/efficiency. Start opt-in with one delegation level, a default two-child total per parent run, and the existing shared concurrency limit counting the running parent. Persist decisions, dispatches, budgets, context manifests, results, and actual graph handoffs. No recursive spawning, hidden model downgrade, repeated model polling, or claimed token savings without measurement.
+
+Acceptance: simple edits remain solo; independent work can fan out within capacity; missing context is retrieved without bulk history copying; stops/restarts do not duplicate agents; child tests cannot bypass combined integration checks; usage includes coordination/retries with unknown coverage labeled. Auto must demonstrate worthwhile splits against Solo under predeclared quality and budget criteria before becoming the default.
+
 ## Efficiency and quality evidence
 
 Compare Hydra with ordinary CLI/extension use on matching tasks, base commits, providers, models, effort settings, and acceptance tests. Repeat runs and record reported usage, completion quality, regressions, manual rework, and elapsed time. Optimize only when the comparison shows less avoidable work without a material quality drop. Correctness checks remain part of the budget.
 
-The first release coordinates user-created tasks and explicit dependencies. Automatic task decomposition or autonomous agent swarms require a separate scope and acceptance plan. Parallel isolated agents are a core product goal; inexpensive, high-quality outcomes still require measurement.
+The current release coordinates user-created tasks and explicit dependencies. Automatic task decomposition is now explicitly scoped in [Adaptive delegation](Adaptive_Delegation.md), with separate implementation and release gates; unrestricted autonomous swarms remain out of scope. Parallel isolated agents are a core product goal; inexpensive, high-quality outcomes still require measurement.

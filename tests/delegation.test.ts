@@ -212,6 +212,15 @@ test('materialized worktrees become idempotent idle children with focused manife
     assert.equal(childTask!.state, 'idle'); assert.equal(childTask!.schedule, undefined); assert.equal(childTask!.delegation?.dispatchKey, dispatch[0]!.dispatchKey); assert.match(childTask!.prompt, /Implement parser/);
   } finally { await clean(directory); }
 });
+test('child dependency keys become durable Hydra task identities before scheduling', async () => {
+  const directory = await fixture();
+  try {
+    const first = child('first'), second = child('second', ['tests/second.ts']); second.dependencies = ['first'];
+    const prepared = prepareDelegation(proposal([first, second]), policy()), dispatch = await dispatchStore(directory).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] });
+    const parent: Task = { id: parentId, title: 'Parent', prompt: 'Parent', repository: path.resolve('fixture'), worktree: path.resolve('parent'), branch: 'agent/parent-123456789abc', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const tasks = createDelegatedChildren(parent, [prepared], dispatch); assert.deepEqual(tasks[1]!.delegation?.dependencies, [tasks[0]!.id]); assert.equal(tasks[1]!.schedule, undefined);
+  } finally { await clean(directory); }
+});
 test('separate processes cannot bypass the run counter with simultaneous writes', async () => {
   const directory = await fixture();
   try {

@@ -15,6 +15,7 @@ import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
+import { ProviderAccounts } from './extensionAccounts';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
 import { ManagedSessions } from './core/managedSessions';
@@ -94,12 +95,14 @@ class Manager {
   private readonly settings: AppearanceSettings;
   private readonly settingsImport: SettingsImport;
   private readonly onboarding: Onboarding;
+  private readonly accounts: ProviderAccounts;
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
+    this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
-    context.subscriptions.push(this.settings, this.onboarding);
+    context.subscriptions.push(this.settings, this.onboarding, this.accounts);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
@@ -135,6 +138,8 @@ class Manager {
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
+    command('hydra.openAccounts', () => this.accounts.show());
+    command('hydra.getAccountSetupState', () => this.accounts.snapshot());
     command('hydra.openOnboarding', () => this.onboarding.show());
     command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
@@ -748,6 +753,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    await this.accounts.shutdown();
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();

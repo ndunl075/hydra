@@ -6,7 +6,7 @@ Welcome, preferences, appearance, provider guidance, and project selection share
 
 The preferences step uses the same SettingsImport instance as Settings: source detection/picker, active-profile preview, category selection, conflict preservation, exclusions, backup, dirty-file refusal, and undo/recovery. An interrupted import shows the recovery action. Reopening starts with a fresh preview rather than replaying an old write. Appearance changes only on an explicit Dark/Light choice; continuing preserves the current or imported theme.
 
-Provider guidance links to the official Claude Code and Codex instructions. This milestone does **not** implement integrated account connection or report verified connection status. Hydra sends no model requests, reads no credential files, and starts no login process when onboarding opens. A later account milestone must add the pinned public status and cancellation contracts before presenting connected states. The existing generated Codex protocol subset does not yet include those account contracts; that is implementation work, not a claim that upstream lacks authentication support.
+Provider setup opens the shared account panel from onboarding or Settings. It offers explicit sign-in, public status refresh, cancellation, and retry through pinned provider-owned auth contracts. See [Provider Account Setup](Provider_Account_Setup.md) for exact ownership and acceptance limits. Opening onboarding or the account panel sends no model requests, reads no credential files, and starts no provider process.
 
 Opening a project uses the native folder picker and saves completion before switching windows. Cancelling the picker keeps setup open. No task is created automatically.
 

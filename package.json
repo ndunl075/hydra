@@ -45,6 +45,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "hydra.openAccounts",
+        "title": "Hydra: Provider Accounts"
+      },
+      {
         "command": "hydra.openOnboarding",
         "title": "Hydra: Open Onboarding"
       },

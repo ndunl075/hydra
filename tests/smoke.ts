@@ -142,6 +142,16 @@ export async function run(): Promise<void> {
     }
   } finally { terminal.dispose(); }
   if (process.env.HYDRA_TEST_DESKTOP) {
+    const accountsBefore = await vscode.commands.executeCommand<Record<string,{status:string}>>('hydra.getAccountSetupState');
+    assert.equal(accountsBefore?.claude?.status,'unchecked'); assert.equal(accountsBefore?.codex?.status,'unchecked');
+    await vscode.commands.executeCommand('hydra.openAccounts');
+    await vscode.commands.executeCommand('hydra.openAccounts');
+    const accountTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra · Accounts');
+    await waitFor(() => accountTabs().length === 1);
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.getAccountSetupState'),accountsBefore,'Opening account setup is passive and never probes or starts sign-in');
+    await vscode.window.tabGroups.close(accountTabs());
+    assert.equal(document.isClosed,false,'Account setup preserves dirty editor documents');
+    console.log('PASS: native provider account panel reuses one tab and opening it leaves provider state unchecked.');
     const setupTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Welcome to Hydra');
     assert.equal(setupTabs().length, 0, 'A built-in extension must not auto-open onboarding in an extension test host');
     const startup = await vscode.commands.executeCommand<{ development: boolean }>('hydra.desktop.startupContext');

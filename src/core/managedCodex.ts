@@ -22,12 +22,12 @@ export class ManagedCodex {
   has(id: string): boolean { return this.active.has(id); }
   view(id: string): SessionView | undefined { const view = this.views.get(id); return view ? { ...view, active: this.has(id) || this.starting.has(id) } : undefined; }
   async load(task: Task): Promise<void> { const view = await this.store.load(task.id); delete view.approvals; this.views.set(task.id, view); }
-  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}): Promise<void> {
+  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}, environment: Record<string, string> = {}): Promise<void> {
     if (this.starting.has(task.id) || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     this.starting.add(task.id);
-    try { await this.startTurn(task, executable, prompt, beforeTurn); } finally { this.starting.delete(task.id); }
+    try { await this.startTurn(task, executable, prompt, beforeTurn, environment); } finally { this.starting.delete(task.id); }
   }
-  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void): Promise<void> {
+  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void, environment: Record<string, string>): Promise<void> {
     const expectedSchedule = task.schedule;
     if (task.provider !== 'codex' || task.providerVersion !== testedCodexVersion) throw new Error('Managed Codex requires CLI 0.154.0.');
     if (task.sessionId && task.sessionProvider !== 'codex') throw new Error('This recorded session belongs to another provider. Create a separate Codex task.');
@@ -50,7 +50,7 @@ export class ManagedCodex {
       }
     } catch (error) { turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`; task.state = 'error'; task.error = turn.error; throw error; }
     const launch = processLaunch(executable, ['app-server', '--listen', 'stdio://']);
-    const child = spawn(launch.executable, launch.args, { cwd: task.worktree, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
     const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
     const approvals = new Map<string, { rpcId: RpcId; approval: Approval }>();
     const reviewItems = new Map<string, Record<string, any>>();

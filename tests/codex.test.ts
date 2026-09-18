@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { BudgetHoldError } from '../src/core/budgets';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { CodexMessages, CodexTurn, testedCodexVersion, validateCodexThread } from '../src/core/codexProtocol';
@@ -53,6 +54,18 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 7000;
   while (!await predicate()) { if (Date.now() > deadline) throw new Error('Timed out waiting for Codex test process.'); await new Promise(resolve => setTimeout(resolve, 25)); }
 }
+test('Codex budget gate after thread acknowledgement sends no turn/start and retains native identity', async () => {
+  const { root, executable, task, manager } = await fixture();
+  let checks = 0;
+  try {
+    await manager.start(task, executable, 'must never submit', () => { if (++checks === 2) throw new BudgetHoldError(['Reached after thread setup']); });
+    await manager.finished(task.id);
+    const requests = (await readFile(path.join(root, 'codex-requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(requests.some(item => item.method === 'thread/start')); assert.ok(!requests.some(item => item.method === 'turn/start'));
+    assert.equal(checks, 2); assert.equal(task.sessionId, threadId); assert.equal(manager.count, 0);
+    assert.equal(manager.view(task.id)?.turns.at(-1)?.status, 'error');
+  } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
 test('Codex managed requests handshake, persist explicit thread resume, and never fabricate successful completion', async () => {
   const { root, executable, task, manager, store, errors } = await fixture();
   try {

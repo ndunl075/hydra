@@ -1,5 +1,6 @@
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
 import type { UsageSummary } from './usage';
+import { parseBudgets, type SoftBudget, type BudgetSettings, type BudgetObservation } from './budgets';
 import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
 import type { TaskSchedule } from './scheduler';
@@ -64,11 +65,14 @@ export interface Snapshot {
   modelCatalogs?: Record<string, ModelCatalog>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;
+  budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
+  | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
+  | { type: 'retryBudgetHold'; id: string }
   | { type: 'followUp'; id: string; prompt: string }
   | { type: 'saveBrief'; id: string; brief: TaskBrief }
   | { type: 'saveHandoffSummary'; id: string; handoffSummary: TaskHandoffSummary }
@@ -102,6 +106,14 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'saveBudgets' || type === 'retryBudgetHold') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'retryBudgetHold') return { type, id };
+    const scope = string('scope');
+    if (scope !== 'task' && scope !== 'project') throw new Error('Invalid budget scope.');
+    return { type, id, scope, budgets: parseBudgets(message.budgets) };
+  }
   if (['prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'copyDiscardLocation'].includes(type)) {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');

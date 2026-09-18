@@ -22,12 +22,12 @@ export class ManagedCodex {
   has(id: string): boolean { return this.active.has(id); }
   view(id: string): SessionView | undefined { const view = this.views.get(id); return view ? { ...view, active: this.has(id) || this.starting.has(id) } : undefined; }
   async load(task: Task): Promise<void> { const view = await this.store.load(task.id); delete view.approvals; this.views.set(task.id, view); }
-  async start(task: Task, executable: string, prompt: string): Promise<void> {
+  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}): Promise<void> {
     if (this.starting.has(task.id) || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     this.starting.add(task.id);
-    try { await this.startTurn(task, executable, prompt); } finally { this.starting.delete(task.id); }
+    try { await this.startTurn(task, executable, prompt, beforeTurn); } finally { this.starting.delete(task.id); }
   }
-  private async startTurn(task: Task, executable: string, prompt: string): Promise<void> {
+  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void): Promise<void> {
     const expectedSchedule = task.schedule;
     if (task.provider !== 'codex' || task.providerVersion !== testedCodexVersion) throw new Error('Managed Codex requires CLI 0.154.0.');
     if (task.sessionId && task.sessionProvider !== 'codex') throw new Error('This recorded session belongs to another provider. Create a separate Codex task.');
@@ -181,6 +181,7 @@ export class ManagedCodex {
       }
       if (selection) requireAdvertisedSelection(await readModelCatalog(request), selection);
       if (stopped) { await kill(); return; }
+      beforeTurn();
       const options = { cwd: task.worktree, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(selection ? { model: selection.model, config: { model_reasoning_effort: selection.effort } } : {}) } satisfies ThreadStartParams;
       const response = task.sessionId ? await request('thread/resume', { ...options, threadId: providerId(task.sessionId) } satisfies ThreadResumeParams) : await request('thread/start', options);
       const threadId = validateCodexThread(response, task.worktree, task.sessionId);
@@ -191,6 +192,7 @@ export class ManagedCodex {
         if (selection) verifyEffectiveModel(response, selection);
       }
       if (stopped) { await kill(); return; }
+      beforeTurn();
       protocol = new CodexTurn(threadId, turn);
       const started = record(await request('turn/start', {
         threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], cwd: task.worktree, approvalPolicy: 'on-request',

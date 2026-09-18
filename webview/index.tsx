@@ -1,5 +1,6 @@
 import { pendingSchedule } from '../src/core/scheduler';
 import { ScheduleControls } from './ScheduleControls';
+import { BudgetControls } from './BudgetControls';
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
@@ -217,6 +218,7 @@ function App() {
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} send={send} />
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={snapshot.busy} send={send} />
             <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} />
+            <BudgetControls key={`budgets-${selected.id}`} task={selected} settings={snapshot.budgets?.settings} observations={snapshot.budgets?.observations[selected.id]} busy={snapshot.busy} send={send} />
             {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={snapshot.busy} /> : <>
             <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{selected.prompt}</p></article>
             <article className="system-message"><div className="message-author"><span className="avatar hydra-avatar">h</span><strong>Hydra</strong><span className="local-tag">LOCAL</span></div><p>{selected.interface === 'official-extension' ? `This task is handed off to ${providerName(selected.provider)} in its own workspace window. Stop the provider session there before returning ownership.` : `Task checkout is ready. Open ${providerName(selected.provider)} in the terminal, then paste your prompt to begin.`}</p><div className="task-actions">{selected.interface === 'official-extension' ? <button className="secondary" disabled={snapshot.busy} onClick={() => send({ type: 'releaseExternal', id: selected.id })}>I stopped the external session</button> : <button className="primary" disabled={snapshot.busy || !provider?.available} onClick={() => send({ type: 'launch', id: selected.id })}><Icon name="terminal" />{selected.state === 'external' ? 'Show terminal' : 'Open provider terminal'}</button>}<button className="secondary" onClick={() => send({ type: 'copyPrompt', id: selected.id })}>Copy prompt</button></div>

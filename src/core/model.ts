@@ -73,7 +73,7 @@ export interface Snapshot {
   /** Local activity only; no other task's transcript or approval details. */
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
-  usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary> };
+  usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary>; delegationRuns?: Record<string, UsageSummary> };
   modelCatalogs?: Record<string, ModelCatalog>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;

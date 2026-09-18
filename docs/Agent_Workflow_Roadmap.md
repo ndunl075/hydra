@@ -6,13 +6,13 @@ Nico's goal is a Hydra IDE where multiple agents work in parallel in isolated Gi
 
 Hydra creates a branch and worktree for each task, records its base commit, and prevents overlapping writers to that task. Managed sessions use supported provider session/thread resume. Native review captures immutable diffs; prepared reviews bind staged task trees to exact commit receipts, with stale-state and unsaved-buffer refusal. Local UI and Git operations require no model call. Raw provider events and reported per-turn usage are retained.
 
-The configurable managed-task limit defaults to two and is capped at eight per window. Terminal and managed-session launches now share a persistent queue, with reviewed prerequisite receipts and explicit reconciliation of uncertain writers after restart; see [task scheduling](Task_Scheduling.md). Reviewed integration has merged; explicit briefs/local handoffs, aggregate reported usage and verified Codex model/effort controls are implemented on the feature stack. Their final combined native gates remain pending. Official-extension sessions are externally owned and are not counted by this limit. A worktree isolates checked-out files, not ports, databases, dependency services, or every filesystem access available to an agent. Confirmed discard, authenticated provider acceptance, budgets, resource setup and measured efficiency remain incomplete. See [implementation status](Implementation_Status.md).
+The configurable managed-task limit defaults to two and is capped at eight per window. Terminal and managed-session launches now share a persistent queue, with reviewed prerequisite receipts and explicit reconciliation of uncertain writers after restart; see [task scheduling](Task_Scheduling.md). Reviewed integration, explicit briefs/local handoffs, aggregate reported usage and verified Codex model/effort controls have merged after Linux and native checks. The final combined installer runtime also passed Windows acceptance. Official-extension sessions are externally owned and are not counted by this limit. A worktree isolates checked-out files, not ports, databases, dependency services, or every filesystem access available to an agent. Confirmed discard, authenticated provider acceptance, budgets, resource setup and measured efficiency remain incomplete. See [implementation status](Implementation_Status.md).
 
 ## Delivery priorities
 
 Each implementation ships in a separate feature PR with its own acceptance checks. These priorities complement the [desktop delivery track](Desktop_Delivery.md); onboarding, account connection, and a tested installer remain required.
 
-Onboarding has merged. Account setup and installer implementation are present, with their final gates still pending. The acceptance criteria below retain the full intended scope even where only part has been implemented.
+Onboarding, account setup and the installer have merged after automated checks. Live sign-in and the broader delivery gates remain outstanding. The acceptance criteria below retain the full intended scope even where only part has been implemented.
 
 ### 1. Safe integration and quality gates
 
@@ -24,7 +24,7 @@ Acceptance: two independently edited tasks can be reviewed and integrated in ord
 
 ### 2. Persistent scheduling and dependencies
 
-Status: implemented in PR #20 with default capacity unchanged, selected bases, pinned reviewed predecessors, cancellation during startup and explicit restart reconciliation. Exact-revision native acceptance remains pending; global capacity and environment resources are outside this milestone.
+Status: merged in PR #20 after native acceptance, with default capacity unchanged, selected bases, pinned reviewed predecessors, cancellation during startup and explicit restart reconciliation. Global capacity and environment resources are outside this milestone.
 
 Queue excess work instead of refusing it. Persist queued, starting, running, waiting-for-approval, blocked, interrupted, and finished states. Define cancellation, restart reconciliation, and capacity accounting for each launch interface. Keep approval requests visible in Attention. Show external sessions separately rather than implying that Hydra controls their concurrency.
 
@@ -34,7 +34,7 @@ Acceptance: queue more tasks than the limit, restart Hydra, and launch each elig
 
 ### 3. Focused task briefs and useful handoffs
 
-Status: explicit briefs, durable pre-enqueue locks, exact saved/draft previews, local user-curated handoffs and evidence references are implemented in PR #21. Queued dependencies retain reviewed Git receipts; handoff narratives are not automatically inserted into prompts. Native acceptance remains pending. See [Task_Context_And_Usage.md](Task_Context_And_Usage.md).
+Status: explicit briefs, durable pre-enqueue locks, exact saved/draft previews, local user-curated handoffs and evidence references merged in PR #21 after native acceptance. Queued dependencies retain reviewed Git receipts; handoff narratives are not automatically inserted into prompts. See [Task_Context_And_Usage.md](Task_Context_And_Usage.md).
 
 Provide editable goals, constraints, relevant paths, acceptance criteria, and test commands. Keep context inclusion explicit; do not automatically attach the entire repository, all open files, or every agent transcript. Resume related work through the provider's native session mechanism.
 
@@ -44,7 +44,7 @@ Acceptance: the user can inspect the exact task brief and handoff, unrelated tas
 
 ### 4. Model, effort, usage, and launch budgets
 
-Status: task/project reported-usage accounting is implemented in PR #21; managed Codex catalog selection, pre-turn effective acknowledgement and resumed-setting validation are implemented in PR #23. Exact-revision native gates remain pending. Astra High is available only when the runtime advertises the exact model/effort; actual account access is unverified. Claude effective-effort controls, soft budgets and quota information remain unfinished. See [Model_Controls.md](Model_Controls.md).
+Status: task/project reported-usage accounting merged in PR #21; managed Codex catalog selection, pre-turn effective acknowledgement and resumed-setting validation merged in PR #23. Both passed native acceptance. Astra High is available only when the runtime advertises the exact model/effort; actual account access is unverified. Claude effective-effort controls, soft budgets and quota information remain unfinished. See [Model_Controls.md](Model_Controls.md).
 
 Expose per-task model and reasoning effort only through supported provider controls, and show the effective selection. Nico's preferred Astra High preset should be available when the official provider/runtime exposes that model and effort. Offer explicit choices for routine work; never silently downgrade a difficult task or substitute API-key billing for subscription authentication.
 
@@ -54,7 +54,7 @@ Acceptance: effective settings survive resume; unsupported choices produce guida
 
 ### 5. Real-provider workflows and repeatable setup
 
-Status: PR #24 adds passive account setup with explicit provider-owned login/status/cancellation and no model turn on login; its native gate is pending. Live sign-in and realistic authenticated edit/test/approval/interruption/resume acceptance remain outstanding, along with trusted dependency setup and port/database/service allocation.
+Status: PR #24 merged passive account setup with explicit provider-owned login/status/cancellation and no model turn on login after native acceptance. Live sign-in and realistic authenticated edit/test/approval/interruption/resume acceptance remain outstanding, along with trusted dependency setup and port/database/service allocation.
 
 Validate realistic edit, test, approval, interruption, and resume flows for Claude Code and Codex. Complete missing permission handling before advertising those workflows as supported. Login and local setup must never submit a model turn.
 

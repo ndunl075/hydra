@@ -89,6 +89,11 @@ textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
 .secondary { border: 1px solid var(--input-border); background: var(--rail); }
 .secondary:hover:not(:disabled) { background: var(--hover); }
 .form-note, .review-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 0; }
+.delegation-control { margin: 0; padding: 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); }
+.delegation-control legend { padding: 0 5px; color: var(--muted); font-size: 10px; letter-spacing: .8px; text-transform: uppercase; }
+.delegation-control [role="group"] { display: flex; gap: 8px; }
+.delegation-control button[aria-pressed="true"] { border-color: var(--green); color: var(--green); background: var(--selected); }
+.delegation-control p { margin: 10px 0 0; }
 .inline-notice { color: var(--warning); line-height: 1.6; border-top: 1px solid var(--border); padding-top: 18px; margin-top: 20px; }
 .task-context { display: flex; align-items: center; gap: 8px; padding: 11px 25px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .task-context > span:first-of-type { font-family: var(--vscode-editor-font-family, Consolas, monospace); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }

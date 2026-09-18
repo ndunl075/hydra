@@ -1,6 +1,6 @@
 # Adaptive delegation and focused subagent context
 
-Status: planned, not implemented. Nico requested this feature on 17 September 2026. It extends the existing scheduler, task briefs, worktrees, integration receipts, and usage accounting; those foundations do not yet provide automatic decomposition or demonstrate savings.
+Status: preparation controls implemented; automatic decomposition is not implemented. Nico requested this feature on 17 September 2026. Hydra now persists a conservative Solo/Auto planning preference and exposes it in the composer, Settings, and host snapshot. It does not create child tasks, send a planner turn, or demonstrate savings.
 
 ## Product behavior
 

@@ -19,6 +19,8 @@ Features ship in separate branches and PRs. Type checking, builds, appropriate t
 
 ## Acceptance record
 
+Distinct-version installer upgrade acceptance is prepared locally with pinned prior-run/artifact/file provenance, selected/unselected shortcut cases, current runtime hash checks and user-data preservation. PowerShell syntax and local runner refusal passed. Its disposable Windows CI execution remains pending; see [Windows_Installer.md](Windows_Installer.md). This is separate from the already accepted same-version lifecycle checks below.
+
 Combined runtime revision `1410251`, merged into main as `9b26fa1` after separate feature PRs, recorded on 17 September 2026. Each merge preserved its tested tree and feature ancestry.
 
 | Feature PR | Tested head | Native run | Recorded gate state |

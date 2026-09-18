@@ -76,6 +76,8 @@ export class TaskScheduler {
     prepare(task: Task): Promise<{ commit: string; artifacts: DependencyArtifact[] }>;
     launch(task: Task, request: LaunchRequest): Promise<void>;
     budget?(task: Task): string[];
+    reserve?(task: Task, request: LaunchRequest): Promise<boolean>;
+    release?(task: Task): Promise<void>;
   }) {}
   async enqueue(task: Task, request: LaunchRequest): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before queueing a writer.');
@@ -128,6 +130,7 @@ export class TaskScheduler {
     this.draining = (async () => { do { this.requested = false; await this.run(); } while (this.requested); })().finally(() => { this.draining = undefined; });
     return this.draining;
   }
+  async idle(): Promise<void> { await this.draining; }
   private async run(): Promise<void> {
     const tasks = [...this.hooks.tasks()].sort((a, b) => (a.schedule?.queuedAt || '').localeCompare(b.schedule?.queuedAt || ''));
     for (const task of tasks) {
@@ -147,9 +150,15 @@ export class TaskScheduler {
       }
       if (dependency.some(item => item!.state === 'running' || item!.state === 'external' || pendingSchedule(item!) || !item!.reviewedCommit)) continue;
       const cancelled = () => task.schedule !== s || s.state === 'cancelled' || !s.request;
-      s.state = 'starting'; s.reason = undefined;
-      await this.hooks.persist();
+      let startingSaveFailed = false;
       try {
+        if (this.hooks.reserve && !await this.hooks.reserve(task, s.request)) {
+          if (!cancelled() && s.reason !== 'Waiting for a shared profile slot.') { s.reason = 'Waiting for a shared profile slot.'; await this.hooks.persist(); }
+          continue;
+        }
+        if (cancelled() || !this.hooks.enabled()) continue;
+        s.state = 'starting'; s.reason = undefined;
+        try { await this.hooks.persist(); } catch (error) { startingSaveFailed = true; throw error; }
         const prepared = await this.hooks.prepare(task);
         // Preparation can fast-forward the checkout. Retain reconciled base metadata even if Stop arrived meanwhile.
         if (cancelled()) { await this.hooks.persist(); continue; }
@@ -171,6 +180,7 @@ export class TaskScheduler {
         await this.hooks.persist();
       } catch (error) {
         if (cancelled()) continue;
+        if (startingSaveFailed) { s.state = 'blocked'; s.reason = error instanceof Error ? error.message : String(error); throw error; }
         if (error instanceof BudgetHoldError && task.state !== 'running' && task.state !== 'external') {
           this.hold(task, error); await this.hooks.persist(); continue;
         }
@@ -178,7 +188,7 @@ export class TaskScheduler {
         s.state = task.state === 'running' || task.state === 'external' ? 'running' : 'blocked';
         s.reason = error instanceof Error ? error.message : String(error);
         await this.hooks.persist();
-      }
+      } finally { await this.hooks.release?.(task); }
     }
   }
 }

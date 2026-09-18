@@ -39,7 +39,7 @@ export class SessionStore {
     const data = JSON.parse(raw) as SessionView;
     const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
     const ids = new Set<string>();
-    if (data.version !== 1 || !Array.isArray(data.turns) || data.turns.some(turn => {
+    if (data.writerUncertain !== undefined && typeof data.writerUncertain !== 'boolean' || data.version !== 1 || !Array.isArray(data.turns) || data.turns.some(turn => {
       if (!turn || typeof turn.id !== 'string' || !/^[a-f0-9]{12}$/.test(turn.id) || ids.has(turn.id) || typeof turn.prompt !== 'string' || typeof turn.text !== 'string' || typeof turn.createdAt !== 'string' || !['running', 'completed', 'error', 'interrupted'].includes(turn.status) ||
         (turn.provider !== undefined && !['claude', 'codex'].includes(turn.provider)) ||
         (turn.usageSource !== undefined && (turn.usageSource !== 'claude-result' && turn.usageSource !== 'codex-last-request' || !turn.usage || (turn.usageSource === 'claude-result' ? turn.provider !== 'claude' : turn.provider !== 'codex'))) ||

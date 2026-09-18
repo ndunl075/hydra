@@ -23,6 +23,44 @@ function harness(tasks: Task[], persist = async () => {}, limit = 2) {
   return { scheduler, live, launches, writes };
 }
 
+test('full profile capacity retains FIFO requests without prepare, launch, or persist/drain spin', async () => {
+  const item = task(90); let full = true, preparations = 0, launches = 0, saves = 0, releases = 0;
+  let scheduler: TaskScheduler;
+  scheduler = new TaskScheduler({ tasks: () => [item], capacity: () => 2, liveCount: () => 0, enabled: () => true,
+    persist: async () => { saves++; if (saves > 12) throw Error('Drain spin'); queueMicrotask(() => { void scheduler.drain(); }); },
+    reserve: async () => !full, release: async () => { releases++; },
+    prepare: async () => { preparations++; return { commit: item.baseCommit, artifacts: [] }; },
+    launch: async () => { launches++; item.state = 'running'; }
+  });
+  await scheduler.enqueue(item, { type: 'startManaged' }); await scheduler.idle();
+  assert.equal(item.schedule?.state, 'queued'); assert.equal(item.schedule?.reason, 'Waiting for a shared profile slot.');
+  assert.equal(preparations, 0); assert.equal(launches, 0); assert.equal(saves, 2);
+  full = false; await scheduler.drain(); await scheduler.idle();
+  assert.equal(launches, 1); assert.equal(preparations, 1); assert.equal(item.schedule?.state, 'running'); assert.ok(releases >= 2);
+});
+
+test('cancellation during asynchronous slot reservation never prepares or launches and releases protection', async () => {
+  const item = task(91); let reserved!: () => void, entering!: () => void, releases = 0;
+  const entered = new Promise<void>(resolve => { entering = resolve; });
+  const acquired = new Promise<void>(resolve => { reserved = resolve; });
+  const scheduler = new TaskScheduler({ tasks: () => [item], capacity: () => 2, liveCount: () => 0, enabled: () => true, persist: async () => {},
+    reserve: async () => { entering(); await acquired; return true; }, release: async () => { releases++; },
+    prepare: async () => { throw Error('Cancelled reservation prepared checkout'); }, launch: async () => { throw Error('Cancelled reservation launched'); }
+  });
+  const enqueue = scheduler.enqueue(item, { type: 'startManaged' }); await entered;
+  await scheduler.cancel(item); reserved(); await enqueue; await scheduler.idle();
+  assert.equal(item.schedule?.state, 'cancelled'); assert.equal(releases, 1);
+});
+
+test('failed starting persistence releases reservation protection before reporting failure', async () => {
+  const item = task(92); let saves = 0, releases = 0;
+  const scheduler = new TaskScheduler({ tasks: () => [item], capacity: () => 2, liveCount: () => 0, enabled: () => true,
+    persist: async () => { if (++saves === 2) throw Error('Starting save failed'); }, reserve: async () => true, release: async () => { releases++; },
+    prepare: async () => { throw Error('Prepared after failed save'); }, launch: async () => { throw Error('Launched after failed save'); }
+  });
+  await assert.rejects(scheduler.enqueue(item, { type: 'startManaged' }), /Starting save failed/); assert.equal(releases, 1); assert.equal(item.schedule?.state, 'blocked'); assert.match(item.schedule?.reason || '', /Starting save failed/);
+});
+
 test('FIFO excess queue persists across reload, reserves uncertain capacity, and never duplicates launches', async () => {
   const directory = path.resolve('.test-build/scheduler-store'); await mkdir(directory, { recursive: true });
   const root = await mkdtemp(path.join(directory, 'queue-'));

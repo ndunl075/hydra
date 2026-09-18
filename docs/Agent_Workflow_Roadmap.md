@@ -24,7 +24,7 @@ Acceptance: two independently edited tasks can be reviewed and integrated in ord
 
 ### 2. Persistent scheduling and dependencies
 
-Status: merged in PR #20 after native acceptance, with default capacity unchanged, selected bases, pinned reviewed predecessors, cancellation during startup and explicit restart reconciliation. Global capacity and environment resources are outside this milestone.
+Status: merged in PR #20 after native acceptance, with default capacity unchanged, selected bases, pinned reviewed predecessors, cancellation during startup and explicit restart reconciliation. Shared profile capacity is implemented as a separate 0.18.0 candidate, with unchanged defaults and explicit uncertain-writer recovery; see [Profile_Capacity.md](Profile_Capacity.md). Full revision CI and real workflows remain separate gates. Environment resources are tracked in priority 5.
 
 Queue excess work instead of refusing it. Persist queued, starting, running, waiting-for-approval, blocked, interrupted, and finished states. Define cancellation, restart reconciliation, and capacity accounting for each launch interface. Keep approval requests visible in Attention. Show external sessions separately rather than implying that Hydra controls their concurrency.
 

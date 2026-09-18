@@ -1,6 +1,6 @@
 # Adaptive delegation and focused subagent context
 
-Status: preparation controls implemented; automatic decomposition is not implemented. Nico requested this feature on 17 September 2026. Hydra now persists a conservative Solo/Auto planning preference and exposes it in the composer, Settings, and host snapshot. It does not create child tasks, send a planner turn, or demonstrate savings.
+Status: Phase 1 host preparation implemented; automatic decomposition is not implemented. Nico requested this feature on 17 September 2026. Hydra persists a conservative Solo/Auto planning preference, validates and stores host-bound plan decisions, and exposes preferences in the composer, Settings, and host snapshot. It does not create child tasks, send a planner turn, or demonstrate savings.
 
 ## Product behavior
 

@@ -1,6 +1,8 @@
-# Verified per-task Codex model controls
+# Verified per-task model controls
 
 This milestone adds explicit model and reasoning-effort selection for managed Codex tasks. It preserves official provider defaults when no selection is saved. It does not introduce a project-wide override, account entitlement claims, automatic retries, or additional model calls.
+
+Hydra 0.17.0 also provides a candidate Claude CLI control adapter with authoritative pre-prompt settings checks and scoped approvals; see [Claude controls](Claude_Controls.md). Its authenticated and full revision acceptance remain separate gates. The Codex contract below is unchanged.
 
 ## Behavior
 
@@ -20,7 +22,7 @@ The checked-in generated types come from the installed official `@openai/codex@0
 
 The [official App Server contract](https://learn.chatgpt.com/docs/app-server) documents model discovery, supported reasoning efforts, thread overrides, and rerouting. The [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) documents `model_reasoning_effort`. Local generation and fixture evidence establish protocol compatibility; they do not establish authenticated model acceptance.
 
-Claude 2.1.270 advertises `--model` and `--effort` in its local help, but a requested flag alone cannot prove the effective effort. The [official Claude model configuration guidance](https://code.claude.com/docs/en/model-config) documents organization effort caps applied silently in JSON and stream-JSON output. Hydra therefore presents concrete official-client guidance for Claude instead of claiming verified effort controls. Effective Claude effort acknowledgement needs a separately verified provider contract.
+Claude 2.1.270 flags alone cannot prove effective effort. The candidate adapter now checks the authoritative `get_settings.applied` response before a prompt and refuses organization/environment downgrades. Its pinned public declaration and read-only installed-CLI evidence are recorded in [Claude controls](Claude_Controls.md); real resumed-settings and tool acceptance remain pending.
 
 ## Integration and validation
 
@@ -28,7 +30,7 @@ Claude 2.1.270 advertises `--model` and `--effort` in its local help, but a requ
 
 `npm run check`, `npm run build`, and 52 initial local fixture tests passed on Windows. New process fixtures cover metadata-only requests, cancellation, pagination, malformed/duplicate metadata, unavailable models, provider clamps, absent acknowledgement, exact first/resumed turn parameters, persistent evidence, untouched defaults, and visible rerouting with no corrective turn. Native smoke assertions add saved model selection, unsupported Astra rejection, managed-only enforcement, follow-up, and reload recovery. Local native execution stopped before host startup because installed VS Code's `vscode-updating` mutex remained held after 31 seconds; PR #23 subsequently passed Linux and [Windows native acceptance](https://github.com/ndunl075/hydra/actions/runs/35288175795) at `ca0cc6d`. No authenticated provider turns or credential reads were performed for this feature. See the [combined acceptance record](Implementation_Status.md#acceptance-record) for the final installer revision.
 
-Remaining work includes verified Claude controls, authenticated provider acceptance, account-wide quota information, and measured efficiency benchmarks. Local budgets and account setup are separate milestones.
+Remaining work includes full revision acceptance of the Claude candidate, authenticated provider acceptance, live quota acceptance, and measured efficiency benchmarks. Local budgets and account setup are separate milestones.
 
 The actual built ModelControls UI passed browser verification against fixture metadata: the exact advertised Astra High selection was saved, unavailable Astra was disabled, and launched task settings were locked. Dark and light rendering passed with the native webview CSP and no browser errors. This verifies UI behavior with fixture choices; it does not establish that a live account advertises Astra.
 

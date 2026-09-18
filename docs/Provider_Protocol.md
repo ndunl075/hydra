@@ -2,7 +2,7 @@
 
 ## Claude CLI 2.1.270
 
-Hydra uses the unmodified official executable and preserves its login/environment. Each managed turn sends text through stdin to `-p --output-format stream-json --verbose --include-partial-messages --permission-mode default --permission-prompts none`. A follow-up adds `--resume <recorded-session-id>`; model and credential overrides are absent. Default/manual rules and provider hooks still apply, and unresolved requests are denied. Interactive approval UI and streaming-input control messages are not implemented.
+Hydra uses the unmodified official executable and preserves its login/environment. The 0.17.0 candidate adds `--input-format stream-json` and `--permission-prompts host` to print-mode streaming, reads effective settings before a user frame, and routes bounded command/file approval requests. A follow-up adds `--resume <recorded-session-id>`; only an explicitly saved advertised model/effort adds flags, with effective canonical identity checked before the prompt. See [Claude controls](Claude_Controls.md) for the pinned contract, supported approvals and remaining acceptance gates. Credential/settings-file overrides are absent; provider rules/hooks still apply.
 
 The parser validates `system/init` against version, working directory, permission mode, and UUID session identity. Main-conversation `stream_event` text deltas update the view. A `result` carries final text, session identity, denials, and optional usage/cost. A successful result plus zero exit is required to finish a turn. Unknown events and subagent events remain in raw diagnostics; they are not mixed into the main response. Invalid JSON, duplicate results, incompatible initialization, and lines over 1 MiB fail explicitly. Process-tree termination is a stop operation, not graceful interruption.
 
@@ -16,7 +16,9 @@ The parser validates `system/init` against version, working directory, permissio
 | Errors/denials | Fixtures cover malformed streams, missing results, failed exits, identity mismatches, and denial metadata | No custom permission host or real interactive approval validation |
 | Ownership/concurrency | Native host tests block overlapping terminal/handoff writers and count managed processes with terminals | Manual external writers remain outside Hydra's control; starts are refused rather than queued |
 
-Sources: [public CLI programmatic usage](https://code.claude.com/docs/en/headless), [CLI reference](https://code.claude.com/docs/en/cli-reference), and [CLI authentication](https://code.claude.com/docs/en/authentication). A custom approval bridge and additional provider versions require separate verification. Hydra neither reads private provider history nor intermediates credentials.
+The table records earlier text-input adapter acceptance. It does not certify the new streaming-input control route or real approvals; their local contract and fixture evidence are recorded separately in [Claude controls](Claude_Controls.md).
+
+Sources: [public CLI programmatic usage](https://code.claude.com/docs/en/headless), [CLI reference](https://code.claude.com/docs/en/cli-reference), and [CLI authentication](https://code.claude.com/docs/en/authentication). Additional provider versions require separate verification. Hydra neither reads private provider history nor intermediates credentials.
 
 ## Codex App Server 0.154.0
 

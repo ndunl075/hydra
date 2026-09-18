@@ -29,6 +29,8 @@ import { usageSnapshot } from './core/usage';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
 import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
+import { discoverClaudeModels } from './core/claudeModels';
+import { requireClaudeSelection } from './core/claudeControls';
 import { requireAdvertisedSelection, type ModelCatalog } from './core/modelSelection';
 import { testedClaudeVersion } from './core/claudeProtocol';
 import { testedCodexVersion } from './core/codexProtocol';
@@ -659,20 +661,19 @@ class Manager {
       } finally { this.pendingDiscard = undefined; this.busy = false; await this.publish(); if (!this.closing) await this.scheduler.drain(); }
       return;
     }
-    if (task.modelSelection && ['launch', 'terminal', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('This task has an explicit managed Codex model selection. Start it with Run managed task; terminal and official-extension settings cannot be verified by Hydra. Clear the selection before its first launch to use those interfaces.');
+    if (task.modelSelection && ['launch', 'terminal', 'handoff', 'openWorktree'].includes(message.type)) throw new Error(`This task has an explicit managed ${task.provider === 'codex' ? 'Codex' : 'Claude'} model selection. Start it with Run managed task; terminal and official-extension settings cannot be verified by Hydra. Clear the selection before its first launch to use those interfaces.`);
     if (message.type === 'saveModelSelection') {
       if (this.busy || !canEditBrief(task, this.managed.view(task.id))) throw new Error('Model settings are locked after launch. Create a new task to use another selection.');
-      if (task.provider !== 'codex') throw new Error('Verified model and effort controls are currently available only for managed Codex. Claude can silently cap effort in structured output; use its official client.');
       if (message.selection) {
         const catalog = this.modelCatalogs.get(task.id);
-        if (catalog?.status !== 'ready') throw new Error('Load available Codex models before saving a selection.');
-        requireAdvertisedSelection(catalog.models, message.selection);
+        if (catalog?.status !== 'ready') throw new Error('Load available provider models before saving a selection.');
+        if (task.provider === 'claude') requireClaudeSelection(catalog.models, message.selection);
+        else requireAdvertisedSelection(catalog.models, message.selection);
       }
       task.modelSelection = message.selection || undefined; task.updatedAt = new Date().toISOString();
       await this.persist(); await this.publish(); return;
     }
     if (message.type === 'checkModels') {
-      if (task.provider !== 'codex') throw new Error('Verified model discovery is available only for Codex.');
       if (this.busy || this.modelCatalogs.get(task.id)?.status === 'checking') throw new Error('Another task or model check is in progress.');
       const controller = new AbortController(), generation = this.diagnosticGeneration;
       this.diagnosticChecks.add(controller);
@@ -680,10 +681,11 @@ class Manager {
       await this.publish();
       try {
         await this.verifyWorktree(task);
-        const info = await findProvider('codex', vscode.workspace.getConfiguration('hydra').get<string>('codexPath'));
+        const info = await findProvider(task.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${task.provider}Path`));
         const diagnostic = await checkProvider(info, task.worktree, controller.signal);
-        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedCodexVersion) throw new Error('Model discovery requires the configured official Codex 0.154.0 executable.');
-        const models = await discoverCodexModels(info.executable, task.worktree, controller.signal);
+        const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
+        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Model discovery requires the configured official ${task.provider} ${testedVersion} executable.`);
+        const models = await (task.provider === 'claude' ? discoverClaudeModels : discoverCodexModels)(info.executable, task.worktree, controller.signal);
         if (generation === this.diagnosticGeneration && !this.closing) this.modelCatalogs.set(task.id, { status: 'ready', models, checkedAt: new Date().toISOString() });
       } catch (error) {
         if (generation === this.diagnosticGeneration && !this.closing) this.modelCatalogs.set(task.id, { status: 'error', models: [], checkedAt: new Date().toISOString(), error: this.describe(error) });

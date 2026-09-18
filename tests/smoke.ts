@@ -62,7 +62,7 @@ export async function run(): Promise<void> {
   }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
-    assert.equal(tasks?.length, 7, 'All task records, including reviewed commit, selected model, discard preview and resources, are recovered');
+    assert.equal(tasks?.length, 8, 'All task records, including selected provider models, discard preview and resources, are recovered');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
@@ -82,6 +82,10 @@ export async function run(): Promise<void> {
     assert.deepEqual(selectedModelTask.modelSelection, { model: 'fixture-model', effort: 'high' });
     const modelHistory = await vscode.commands.executeCommand<SessionView>('hydra.getSession', selectedModelTask.id);
     assert.equal(modelHistory?.turns.length, 2); assert.deepEqual(modelHistory.turns[1]?.modelSettings?.effective, selectedModelTask.modelSelection);
+    const selectedClaudeTask = tasks.find(task => task.title === 'Selected Claude model'); assert.ok(selectedClaudeTask);
+    assert.deepEqual(selectedClaudeTask.modelSelection, { model: 'opus[1m]', effort: 'max' });
+    const claudeHistory = await vscode.commands.executeCommand<SessionView>('hydra.getSession', selectedClaudeTask.id);
+    assert.equal(claudeHistory?.turns.length, 2); assert.deepEqual(claudeHistory?.turns[1]?.modelSettings?.effective, { model: 'claude-fixture-model', effort: 'max' });
     const managedTask = tasks.find(task => task.interface === 'managed-cli' && task.provider === 'claude');
     assert.ok(managedTask?.sessionId, 'Managed session identity survives reload');
     const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', managedTask.id);
@@ -469,6 +473,26 @@ export async function run(): Promise<void> {
     const modelView = await vscode.commands.executeCommand<SessionView>('hydra.getSession', modelTask.id);
     assert.deepEqual(modelView?.turns[1]?.modelSettings, { requested: selection, effective: selection });
     console.log('PASS: native model discovery submits no prompt, unsupported Astra is refused, explicit settings lock, and acknowledged model/effort survive resume.');
+    const claudeModelTask = await vscode.commands.executeCommand<Task>('hydra.createTask', { repository, provider: 'claude', title: 'Selected Claude model', prompt: 'Fixture Claude controls only.' }); assert.ok(claudeModelTask);
+    const claudeCatalog = await vscode.commands.executeCommand<ModelCatalog>('hydra.checkModels', claudeModelTask.id); assert.equal(claudeCatalog?.status, 'ready');
+    await assert.rejects(readFile(path.join(claudeModelTask.worktree, 'requests.jsonl')), { code: 'ENOENT' });
+    const claudeSelection = { model: 'opus[1m]', effort: 'max' };
+    await vscode.commands.executeCommand('hydra.saveModelSelection', claudeModelTask.id, claudeSelection);
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.launchTask', claudeModelTask.id), /explicit managed Claude/);
+    await vscode.commands.executeCommand('hydra.startManaged', claudeModelTask.id);
+    await waitFor(async () => { const view = await vscode.commands.executeCommand<SessionView>('hydra.getSession', claudeModelTask.id); return view?.turns[0]?.status === 'completed' && !view.active; });
+    await vscode.commands.executeCommand('hydra.followUp', claudeModelTask.id, 'approve:Bash');
+    await waitFor(async () => !!(await vscode.commands.executeCommand<SessionView>('hydra.getSession', claudeModelTask.id))?.approvals?.length);
+    await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === claudeModelTask.id)?.schedule?.state === 'waiting-for-approval');
+    const claudeApproval = (await vscode.commands.executeCommand<SessionView>('hydra.getSession', claudeModelTask.id))!.approvals![0]!;
+    await vscode.commands.executeCommand('hydra.approve', claudeModelTask.id, claudeApproval.id, 'accept');
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.approve', claudeModelTask.id, claudeApproval.id, 'accept'), /no longer pending|No active/);
+    await waitFor(async () => { const view = await vscode.commands.executeCommand<SessionView>('hydra.getSession', claudeModelTask.id); return view?.turns[1]?.status === 'completed' && !view.active; });
+    const nativeClaude = await vscode.commands.executeCommand<SessionView>('hydra.getSession', claudeModelTask.id);
+    assert.deepEqual(nativeClaude?.turns[1]?.modelSettings, { requested: claudeSelection, effective: { model: 'claude-fixture-model', effort: 'max' } });
+    const claudeDecision = JSON.parse((await readFile(path.join(claudeModelTask.worktree, 'claude-decisions.jsonl'), 'utf8')).trim()).response.response;
+    assert.equal(claudeDecision.behavior, 'allow'); assert.equal(claudeDecision.updatedPermissions, undefined);
+    console.log('PASS: native Claude metadata sends no prompt, canonical model/effort survives explicit resume and a scoped approval, stale consent is refused, and no persistent rule is written.');
     const targetFile=path.join(repository,'keep.txt'),targetBytes=await readFile(targetFile),targetBefore=(await git(repository,['rev-parse','HEAD'])).trim();
     const checks=[{executable:'git',args:['diff','--check',commitTask.baseCommit,'HEAD']}];
     await assert.rejects(async()=>await vscode.commands.executeCommand('hydra.prepareIntegration',commitTask.id,checks),/clean saved/);

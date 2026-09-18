@@ -4,11 +4,13 @@ import { StringDecoder } from 'node:string_decoder';
 import { claudeArguments, ClaudeProtocol, testedClaudeVersion } from './claudeProtocol';
 import { processLaunch, terminateProcessTree } from './process';
 import { SessionStore } from './sessionStore';
-import type { SessionView, Task, Turn } from './model';
+import { ClaudeMessages, claudeRecord, readClaudeEffective, readClaudeModels } from './claudeControls';
+import { parseModelSelection } from './modelSelection';
+import type { Approval, SessionView, Task, Turn } from './model';
 
 export class ManagedClaude {
   private readonly views = new Map<string, SessionView>();
-  private readonly active = new Map<string, { stop: () => Promise<void>; done: Promise<void> }>();
+  private readonly active = new Map<string, { stop: () => Promise<void>; done: Promise<void>; approve: (id: string, decision: 'accept' | 'decline') => void }>();
   private readonly starting = new Set<string>();
   constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void) {}
   get count(): number { return this.active.size; }
@@ -33,7 +35,10 @@ export class ManagedClaude {
     if (!this.views.has(task.id)) await this.load(task);
     const view = this.views.get(task.id)!;
     const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'claude', prompt, text: '', status: 'running', createdAt: new Date().toISOString() };
-    const args = claudeArguments(task.sessionId);
+    const selection = task.modelSelection ? parseModelSelection(task.modelSelection) : undefined;
+    const previousModel = selection ? [...view.turns].reverse().find(item => item.modelSettings?.requested?.model === selection.model && item.modelSettings?.effective)?.modelSettings?.effective?.model : undefined;
+    turn.modelSettings = selection ? { requested: selection } : undefined;
+    const args = claudeArguments(task.sessionId, selection);
     view.turns.push(turn);
     task.interface = 'managed-cli'; task.state = 'running'; task.error = undefined; task.updatedAt = new Date().toISOString();
     let sequence = 0;
@@ -53,41 +58,95 @@ export class ManagedClaude {
       throw error;
     }
     const launch = processLaunch(executable, args);
-    const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment, DISABLE_AUTOUPDATER: '1' }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
     const protocol = new ClaudeProtocol(turn, task.worktree, task.sessionId);
-    const stdout = new StringDecoder('utf8'), stderr = new StringDecoder('utf8');
-    let failure: string | undefined, stopped = false, bytes = 0;
-    let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    const stderr = new StringDecoder('utf8');
+    const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+    const approvals = new Map<string, { requestId: string; input: Record<string, unknown>; toolUseId: string; approval: Approval }>();
+    const seenRequests = new Set<string>();
+    let failure: string | undefined, stopped = false, bytes = 0, nextId = 0, submitted = false, closing = false;
+    let cleanup: Promise<void> | undefined;
+    let saveTimer: ReturnType<typeof setTimeout> | undefined, closeTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveDone!: () => void;
     const done = new Promise<void>(resolve => { resolveDone = resolve; });
     const stop = async () => {
-      stopped = true;
-      if (child.pid && child.exitCode === null && child.signalCode === null) await terminateProcessTree(child.pid);
+      stopped = true; approvals.clear(); view.approvals = []; rejectPending('Claude process stopped.'); this.changed();
+      await kill();
       await done;
     };
-    this.active.set(task.id, { stop, done });
+    const kill = () => {
+      if (!cleanup && child.pid && child.exitCode === null && child.signalCode === null) cleanup = terminateProcessTree(child.pid).catch(error => { this.report(error); failure ||= `Owned process cleanup failed: ${String(error)}`; child.kill(); });
+      return cleanup;
+    };
+    const rejectPending = (reason: string) => { for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(reason)); } pending.clear(); };
     const fail = (error: unknown) => {
       if (failure) return;
       failure = error instanceof Error ? error.message : String(error);
-      if (child.pid && child.exitCode === null && child.signalCode === null) void terminateProcessTree(child.pid).catch(this.report);
+      rejectPending(failure); approvals.clear(); view.approvals = []; void kill();
     };
-    const log = (type: string, data: string) => { if (data) void this.store.log(task.id, turn.id, { sequence: ++sequence, type, data }).catch(fail); };
+    const log = (type: string, data: unknown) => { if (data) void this.store.log(task.id, turn.id, { sequence: ++sequence, type, data }).catch(fail); };
+    const send = (message: unknown) => { if (stopped || closing || failure || child.exitCode !== null || child.signalCode !== null) throw new Error('Claude connection closed.'); log('stdin', message); child.stdin.write(JSON.stringify(message) + '\n'); };
+    const request = (subtype: 'initialize' | 'get_settings' | 'get_binary_version'): Promise<unknown> => new Promise((resolve, reject) => {
+      const request_id = `hydra-control-${++nextId}`;
+      const timer = setTimeout(() => { pending.delete(request_id); reject(new Error(`Claude ${subtype} timed out. No turn submitted.`)); }, 15000);
+      pending.set(request_id, { resolve, reject, timer });
+      try { send({ type: 'control_request', request_id, request: { subtype } }); } catch (error) { clearTimeout(timer); pending.delete(request_id); reject(error); }
+    });
     const update = () => {
       if (saveTimer) return;
       saveTimer = setTimeout(() => { saveTimer = undefined; void this.store.save(task.id, view).catch(fail); this.changed(); }, 250);
     };
+    const approve = (id: string, decision: 'accept' | 'decline') => {
+      const entry = approvals.get(id);
+      if (!entry || !submitted || !protocol.initialized || protocol.resultReceived || stopped || closing || failure) throw new Error('This Claude approval is no longer pending.');
+      send({ type: 'control_response', response: { subtype: 'success', request_id: entry.requestId, response: decision === 'accept' ? { behavior: 'allow', updatedInput: entry.input, toolUseID: entry.toolUseId } : { behavior: 'deny', message: 'This request was declined in Hydra.', toolUseID: entry.toolUseId } } });
+      approvals.delete(id); view.approvals = [...approvals.values()].map(entry => entry.approval); update(); this.changed();
+    };
+    this.active.set(task.id, { stop, done, approve });
+    const messages = new ClaudeMessages(message => {
+      if (message.type === 'control_response') {
+        const response = claudeRecord(message.response), entry = pending.get(response.request_id);
+        if (!entry) throw new Error('Unmatched Claude control response.');
+        clearTimeout(entry.timer); pending.delete(response.request_id);
+        // Effective/raw settings and account data never enter the diagnostic log.
+        log('control-response', { requestId: response.request_id, subtype: response.subtype });
+        if (response.subtype === 'success') entry.resolve(response.response);
+        else entry.reject(new Error('Claude rejected initialization or settings inspection. No turn submitted; use the official client.'));
+        return;
+      }
+      if (message.type === 'control_cancel_request') {
+        if (typeof message.request_id !== 'string') throw new Error('Invalid Claude cancellation.');
+        for (const [id, entry] of approvals) if (entry.requestId === message.request_id) approvals.delete(id);
+        view.approvals = [...approvals.values()].map(entry => entry.approval); update(); this.changed(); return;
+      }
+      if (message.type === 'control_request') {
+        const request = claudeRecord(message.request), requestId = message.request_id;
+        if (!submitted || !protocol.initialized || protocol.resultReceived || stopped || closing || typeof requestId !== 'string' || !requestId || requestId.length > 200 || seenRequests.has(requestId) || seenRequests.size >= 1000) throw new Error('Invalid or duplicate Claude approval request.');
+        seenRequests.add(requestId);
+        if (request.subtype !== 'can_use_tool' || request.requires_user_interaction === true || request.agent_id || request.decision_reason_type === 'asyncAgent' || !['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit'].includes(request.tool_name) || typeof request.tool_use_id !== 'string' || !request.tool_use_id || request.tool_use_id.length > 200) throw new Error('Unsupported Claude interaction. No permission granted; use the official interactive client.');
+        const input = claudeRecord(request.input), detail = JSON.stringify({ tool: request.tool_name, input, blockedPath: request.blocked_path, reason: request.decision_reason, reasonType: request.decision_reason_type, defaultToNo: request.default_to_no }, null, 2);
+        if (detail.length > 50000 || approvals.size >= 20) throw new Error('Claude approval exceeded display limits. No permission granted; use the official client.');
+        const id = randomBytes(6).toString('hex'), approval: Approval = { id, kind: ['Bash', 'PowerShell'].includes(request.tool_name) ? 'command' : 'file', detail };
+        approvals.set(id, { requestId, input, toolUseId: request.tool_use_id, approval });
+        view.approvals = [...approvals.values()].map(entry => entry.approval); log('approval-request', { requestId, approval }); update(); this.changed(); return;
+      }
+      if (!submitted) throw new Error('Claude emitted a non-control event before settings were verified. No turn submitted.');
+      log('stdout', JSON.stringify(message) + '\n');
+      protocol.push(Buffer.from(JSON.stringify(message) + '\n'));
+      if (protocol.sessionId && task.sessionId !== protocol.sessionId) { task.sessionId = protocol.sessionId; task.sessionProvider = 'claude'; void this.persistTask().catch(fail); }
+      if (message.type === 'system' && message.subtype === 'init' && selection && message.model !== turn.modelSettings?.effective?.model) throw new Error('Claude initialization changed the acknowledged model. Turn stopped; inspect provider settings.');
+      if (protocol.resultReceived && !closing) {
+        if (approvals.size) throw new Error('Claude completed while approval was still pending.');
+        closing = true; child.stdin.end(); closeTimer = setTimeout(() => { void kill(); }, 3000);
+      }
+      update();
+    });
     child.stdout.on('data', (data: Buffer) => {
-      log('stdout', stdout.write(data)); bytes += data.length;
+      bytes += data.length;
       if (bytes > 32 * 1024 * 1024) { fail(new Error('Managed output exceeded 32 MiB. Available evidence is retained; process stopped.')); return; }
       if (failure) return;
       try {
-        protocol.push(data);
-        if (protocol.sessionId && task.sessionId !== protocol.sessionId) {
-          task.sessionId = protocol.sessionId;
-          task.sessionProvider = 'claude';
-          void this.persistTask().catch(fail);
-        }
-        update();
+        messages.push(data);
       } catch (error) { fail(error); }
     });
     child.stderr.on('data', (data: Buffer) => { log('stderr', stderr.write(data)); bytes += data.length; if (bytes > 32 * 1024 * 1024) fail(new Error('Managed output exceeded 32 MiB. Available evidence is retained; process stopped.')); });
@@ -95,9 +154,10 @@ export class ManagedClaude {
     child.on('error', fail);
     child.on('close', code => {
       void (async () => {
-        clearTimeout(saveTimer);
-        log('stdout', stdout.end()); log('stderr', stderr.end());
-        if (!failure) try { protocol.end(); } catch (error) { failure = String(error); }
+        clearTimeout(saveTimer); clearTimeout(closeTimer); rejectPending('Claude connection closed.');
+        await cleanup; approvals.clear(); view.approvals = [];
+        log('stderr', stderr.end());
+        if (!failure) try { messages.end(); protocol.end(); } catch (error) { failure = String(error); }
         if (protocol.sessionId) { task.sessionId = protocol.sessionId; task.sessionProvider = 'claude'; }
         turn.status = stopped ? 'interrupted' : failure || code !== 0 || !protocol.resultReceived || turn.error ? 'error' : 'completed';
         if (turn.status !== 'completed') turn.error = failure || turn.error || (stopped ? 'Provider process stopped. The turn was not completed.' : `Provider exited ${code} without a valid successful result.`);
@@ -112,9 +172,23 @@ export class ManagedClaude {
         finally { this.active.delete(task.id); this.changed(); resolveDone(); }
       })().catch(error => { this.report(error); this.active.delete(task.id); resolveDone(); });
     });
-    child.stdin.end(prompt);
+    void (async () => {
+      const init = claudeRecord(await request('initialize'));
+      const version = claudeRecord(await request('get_binary_version'));
+      if (version.version !== testedClaudeVersion || !['default', 'manual'].includes(init.current_permission_mode)) throw new Error('Claude pre-turn initialization did not match the tested version or safe permission mode. No turn submitted.');
+      const models = readClaudeModels(init.models);
+      const effective = readClaudeEffective(await request('get_settings'), models, selection);
+      if (previousModel && effective.model !== previousModel) throw new Error('Claude changed the canonical identity of this saved model alias. No turn submitted; create a new task to accept the new model.');
+      turn.modelSettings = { ...turn.modelSettings, effective };
+      await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'effective-settings', data: effective });
+      await this.store.save(task.id, view); await this.persistTask();
+      if (stopped || closing || failure) return;
+      beforeTurn(); submitted = true;
+      send({ type: 'user', session_id: task.sessionId || '', parent_tool_use_id: null, message: { role: 'user', content: prompt } });
+    })().catch(error => { if (!stopped) fail(error); });
     this.changed();
   }
+  approve(taskId: string, id: string, decision: 'accept' | 'decline'): void { const active = this.active.get(taskId); if (!active) throw new Error('No active Claude session.'); active.approve(id, decision); }
   async stop(id: string): Promise<void> { await this.active.get(id)?.stop(); }
   async finished(id: string): Promise<void> { await this.active.get(id)?.done; }
   async shutdown(): Promise<void> { await Promise.all([...this.active.keys()].map(id => this.stop(id))); }

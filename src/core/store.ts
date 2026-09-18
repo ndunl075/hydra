@@ -34,7 +34,6 @@ export class LocalStore {
         if (task.interface === 'official-extension' || task.schedule?.request || task.schedule?.uncertain || task.schedule && ['queued', 'blocked', 'starting', 'running', 'waiting-for-approval'].includes(task.schedule.state)) throw new Error('Discarded task retains an active or uncertain writer. Original data has been retained.');
       } else if (task.discard !== undefined) throw new Error('Discard receipt requires a discarded task. Original data has been retained.');
       if (task.modelSelection !== undefined) {
-        if (task.provider !== 'codex') throw new Error('Model overrides are supported only for managed Codex tasks.');
         parseModelSelection(task.modelSelection);
       }
       if (task.brief !== undefined && buildTaskPrompt(parseBrief(task.brief)) !== task.prompt) throw new Error('Task brief and saved prompt disagree. Original data has been retained.');

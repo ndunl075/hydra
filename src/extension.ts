@@ -19,6 +19,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { hostDelegationPolicy } from './core/delegationHost';
+import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
@@ -120,6 +121,7 @@ class Manager {
   private readonly accounts: ProviderAccounts;
   private readonly quota: ProviderQuota;
   private readonly delegations: DelegationStore;
+  private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
@@ -197,7 +199,9 @@ class Manager {
       const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;
       if (typeof parentId !== 'string') throw new Error('Delegation proposal requires a Hydra parent task.');
       const bound = hostDelegationPolicy(proposal, policy, this.getTask(parentId), this.delegationPreferences());
-      return structuredClone(await this.delegations.recordDecision(bound.proposal, bound.policy));
+      const result = await this.delegations.recordDecision(bound.proposal, bound.policy);
+      await this.refreshDelegationPlans(parentId); await this.publish();
+      return structuredClone(result);
     });
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
     command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
@@ -291,6 +295,7 @@ class Manager {
     }));
     try {
       this.tasks = await this.store.load();
+      await this.refreshDelegationPlans();
       this.budgets = await this.budgetStore.load();
       await this.resources.load();
       this.scheduler.reconcile();
@@ -390,6 +395,14 @@ class Manager {
   private delegationPreferences(): DelegationPreferences {
     const config = vscode.workspace.getConfiguration('hydra');
     return parseDelegationPreferences({ mode: config.get('delegationMode', 'solo'), maxChildren: config.get('maxDelegatedChildren', 2) });
+  }
+  private async refreshDelegationPlans(parentId?: string): Promise<void> {
+    const parents = parentId ? [this.getTask(parentId)] : this.tasks.filter(task => task.state !== 'discarded');
+    for (const parent of parents) {
+      const runs = await this.delegations.list(parent.id);
+      const views = runs.flatMap(run => run.decisions.map(decision => ({ runId: run.runId, id: decision.proposal.id, rationale: decision.proposal.rationale, mode: decision.mode, children: decision.proposal.children.map(child => ({ key: child.key, goal: child.goal, provider: child.provider, writeScope: child.writeScope, dependencies: child.dependencies })) })));
+      if (views.length) this.delegationPlans.set(parent.id, views); else this.delegationPlans.delete(parent.id);
+    }
   }
   private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
     await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
@@ -507,6 +520,7 @@ class Manager {
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       budgets: this.budgetSnapshot(),
       delegation: this.delegationPreferences(),
+      delegationPlans: Object.fromEntries(this.delegationPlans),
       resources: this.resources.snapshot(),
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),

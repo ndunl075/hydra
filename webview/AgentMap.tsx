@@ -122,6 +122,7 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
         <span><span className="agent-map-line-key" aria-hidden="true" />Repository → worktree → assigned agent</span>
         <span>Motion = observed managed task running. Lines show context, not messages or dependencies.</span>
       </p>
+      {Object.entries(snapshot.delegationPlans || {}).length > 0 && <div className="agent-map-plans" aria-label="Recorded delegation plans">{Object.entries(snapshot.delegationPlans || {}).flatMap(([parentId, plans]) => plans.map(plan => <article key={`${parentId}-${plan.runId}-${plan.id}`}><header><strong>Recorded plan</strong><span>{plan.mode === 'auto' ? 'Auto preference' : 'Solo preference'} · not dispatched</span></header><p>{plan.rationale}</p><ul>{plan.children.map(child => <li key={child.key}><code>{child.key}</code><span>{child.goal}</span><small>{child.provider} · {child.writeScope.join(', ')}{child.dependencies.length ? ` · waits for ${child.dependencies.join(', ')}` : ''}</small></li>)}</ul></article>))}</div>}
     </div>}
   </section>;
 }

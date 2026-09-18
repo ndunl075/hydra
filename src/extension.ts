@@ -1,3 +1,4 @@
+import { ProfileCapacity } from './core/profileCapacity';
 import { TaskResources } from './core/resources';
 import { TaskScheduler, configureSchedule, pendingSchedule } from './core/scheduler';
 import { prepareScheduledTask } from './core/schedulerGit';
@@ -96,6 +97,8 @@ class Manager {
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
   private readonly resources: TaskResources;
+  private readonly capacity: ProfileCapacity;
+  private readonly capacityStarting = new Set<string>();
   private pendingResource?: { id: string; controller: AbortController; done: Promise<void> };
   private readonly scheduler: TaskScheduler;
   private schedulerReady = false;
@@ -124,6 +127,7 @@ class Manager {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
+    this.capacity = new ProfileCapacity(path.join(context.globalStorageUri.fsPath, 'capacity-reservations'), key, () => { void this.publish(); if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error)); });
     this.resources = new TaskResources(path.join(this.storageDirectory, 'resources'), path.join(context.globalStorageUri.fsPath, 'resource-reservations'), key, () => { void this.publish(); if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error)); }, error => this.report(error));
     this.store = new LocalStore(this.storageDirectory);
     this.budgetStore = new BudgetStore(this.storageDirectory);
@@ -140,6 +144,11 @@ class Manager {
       enabled: () => this.schedulerReady && !this.busy && !this.closing && !this.disabled && !this.handoff && vscode.workspace.isTrusted,
       persist: () => this.persist(),
       budget: task => this.checkBudget(task),
+      reserve: async (task, request) => {
+        this.capacityStarting.add(task.id);
+        return this.capacity.tryAcquire(task.id, request.type === 'launch' || request.type === 'terminal' ? 'terminal' : 'managed', this.profileLimit());
+      },
+      release: async task => { this.capacityStarting.delete(task.id); await this.settleCapacity(); },
       prepare: task => prepareScheduledTask(task, this.tasks, async item => {
         await this.verifyWorktree(item);
         if (this.terminals.has(item.id) || this.managed.has(item.id) || this.resources.has(item.id) || item.state === 'external' || item.state === 'running') throw new Error('Stop the task writer before dependency preparation.');
@@ -184,6 +193,8 @@ class Manager {
     command('hydra.launchTask', (id: string) => this.handle({ type: 'launch', id }));
     command('hydra.configureSchedule', (id: string, dependencies: string[], startFromDependency?: string) => this.handle({ type: 'configureSchedule', id, dependencies, startFromDependency }));
     command('hydra.cancelQueued', (id: string) => this.handle({ type: 'cancelQueued', id }));
+    command('hydra.getCapacity', () => structuredClone(this.capacity.view(this.profileLimit())));
+    command('hydra.reconcileCapacity', (id: string) => this.handle({ type: 'reconcileCapacity', id }));
     command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
     command('hydra.listTasks', () => structuredClone(this.tasks));
@@ -272,6 +283,8 @@ class Manager {
           await lock.acquire(path.join(this.context.globalStorageUri.fsPath, 'ownership'), repository);
           this.locks.push(lock);
         }
+        await this.capacity.refresh();
+        this.capacity.startWatching(error => { this.output.appendLine(this.describe(error)); void this.publish(); });
         for (const task of this.tasks) {
           if (task.state === 'running') task.state = 'interrupted';
           if (task.state === 'external' && task.interface === 'interactive-cli') task.state = 'interrupted';
@@ -330,7 +343,7 @@ class Manager {
     const config = vscode.workspace.getConfiguration('hydra');
     this.providers = await Promise.all(['claude', 'codex'].map(provider => findProvider(provider as 'claude' | 'codex', config.get<string>(`${provider}Path`))));
   }
-  private async refresh(): Promise<void> { this.error = undefined; this.fileCache = undefined; await this.refreshProviders(); await this.publish(); await this.scheduler.drain(); }
+  private async refresh(): Promise<void> { this.error = undefined; this.fileCache = undefined; if (!this.disabled && vscode.workspace.isTrusted) await this.capacity.refresh(); await this.refreshProviders(); await this.publish(); await this.scheduler.drain(); }
   private describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
   private report(error: unknown): void {
     this.error = this.describe(error);
@@ -354,12 +367,39 @@ class Manager {
     if (await realpath(taskCommon.trim()) !== await realpath(mainCommon.trim())) throw new Error('Task worktree belongs to a different repository.');
     if (branch.trim() !== task.branch) throw new Error('Task worktree branch changed. Restore its recorded branch before launching.');
   }
+  private profileLimit(): number { return Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentProfileTasks', 2))); }
+  private async settleCapacity(shutdown = false): Promise<void> {
+    if (this.disabled || !vscode.workspace.isTrusted || this.closing && !shutdown) return;
+    const owned = this.capacity.view(this.profileLimit()).owned;
+    for (const [id, owner] of Object.entries(owned)) {
+      const task = this.tasks.find(item => item.id === id);
+      if (!task || this.resources.snapshot()[id]?.uncertain || this.managed.view(id)?.writerUncertain || task.schedule?.uncertain) { this.capacity.hold(id); continue; }
+      if (owner.uncertain || this.busy || this.capacityStarting.has(id) || this.pendingResource?.id === id || this.managed.has(id) || this.terminals.has(id) || this.resources.has(id) || task.schedule?.state === 'starting') continue;
+      await this.capacity.release(id);
+    }
+  }
+  private async reconcileCapacity(task: Task): Promise<void> {
+    const available = () => { if (this.busy || this.closing || this.disabled || this.handoff || !vscode.workspace.isTrusted || this.capacityStarting.has(task.id) || this.pendingResource?.id === task.id || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.isActive(task.id)) throw new Error('Stop the owned writer and wait for task preparation before reconciling capacity.'); };
+    available();
+    const answer = await vscode.window.showWarningMessage('Confirm you stopped all surviving provider or setup processes for this task, including their children. Hydra cannot prove writer absence after restart or failed cleanup.', { modal: true }, 'All task writers stopped');
+    if (answer !== 'All task writers stopped') return;
+    available(); this.busy = true;
+    try {
+      if (this.resources.snapshot()[task.id]?.uncertain) await this.resources.reconcile(task.id);
+      await this.managed.reconcile(task.id);
+      if (task.schedule?.uncertain) await this.scheduler.reconcileStopped(task);
+      else if (task.schedule?.request) await this.scheduler.cancel(task);
+      if (task.state === 'running' || task.state === 'external' && task.interface === 'interactive-cli') task.state = 'interrupted';
+      await this.persist(); await this.capacity.release(task.id, true);
+    } finally { this.busy = false; await this.publish(); if (!this.closing) void this.scheduler.drain().catch(error => this.report(error)); }
+  }
   private async persist(): Promise<void> {
     // Session completions can save unrelated tasks while discard/restore commits
     // an immutable record. Wait so an older snapshot cannot overwrite that record.
     await this.pendingDiscard?.catch(() => {});
     for (const task of this.tasks) {
       const s = task.schedule;
+      if (this.managed.view(task.id)?.writerUncertain && s) { s.uncertain = true; s.reason = 'Owned process cleanup could not prove writer absence. Stop surviving children and reconcile explicitly.'; this.capacity.hold(task.id); }
       if (!s || !['running', 'waiting-for-approval'].includes(s.state)) continue;
       if (this.managed.has(task.id)) s.state = this.managed.view(task.id)?.approvals?.length ? 'waiting-for-approval' : 'running';
       else if (!this.terminals.has(task.id)) {
@@ -368,14 +408,14 @@ class Manager {
         if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;
       }
     }
-    await this.store.save(this.tasks); await this.publish();
+    await this.store.save(this.tasks); await this.settleCapacity(); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
   }
-  private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'running' || task.state === 'external'; }
+  private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before review.');
     if (pendingSchedule(task)) throw new Error('Cancel queued work or reconcile the writer before reviewing or integrating this task.');
-    if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
+    if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
     const root = await realpath(task.worktree);
     for (const document of vscode.workspace.textDocuments) {
       if (!document.isDirty || document.uri.scheme !== 'file') continue;
@@ -397,7 +437,7 @@ class Manager {
     if(pendingSchedule(task)||this.closing||this.disabled||!vscode.workspace.isTrusted)throw new Error('Integration cancelled because the workspace closed or lost trust.');
   }
   private async guardDiscard(task: Task, restoring = false): Promise<void> {
-    if (this.closing || this.disabled || this.handoff || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || pendingSchedule(task) || task.schedule?.request) throw new Error('Stop task writers, cancel queued work, and reconcile uncertain ownership before discard or restore.');
+    if (this.closing || this.disabled || this.handoff || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || pendingSchedule(task) || task.schedule?.request) throw new Error('Stop task writers, cancel queued work, and reconcile uncertain ownership before discard or restore.');
     if (!restoring && task.state === 'discarded') throw new Error('This task is already discarded.');
     if (this.integrationAbort?.taskId === task.id) throw new Error('Finish or cancel integration before discard.');
     if (this.tasks.some(item => item.schedule?.state === 'starting' && item.schedule.dependencies.includes(task.id))) throw new Error('A dependent task is starting. Wait for startup before discard.');
@@ -439,6 +479,7 @@ class Manager {
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       budgets: this.budgetSnapshot(),
       resources: this.resources.snapshot(),
+      capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
@@ -559,7 +600,7 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
     if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
@@ -581,14 +622,16 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
-    if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
+    if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
+    if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }
+    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
     if (message.type === 'stopSetup') { const pending = this.pendingResource?.id === task.id ? this.pendingResource : undefined; pending?.controller.abort(); await pending?.done; await this.resources.stop(task.id); return; }
     if (message.type === 'showSetupLog') { const log = this.resources.snapshot()[task.id]?.log; if (!log) throw new Error('No setup diagnostics yet.'); await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true }); return; }
     if (['saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) {
       if (this.busy || this.handoff || pendingSchedule(task) || task.schedule?.request || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || this.integrationAbort?.taskId === task.id || this.tasks.some(item => item.schedule?.state === 'starting' && item.schedule.dependencies.includes(task.id))) throw new Error('Stop writers and cancel queued work before resource setup.');
       if (message.type === 'reconcileSetup') {
         const answer = await vscode.window.showWarningMessage('Confirm you stopped any surviving setup process and its children. Hydra cannot prove writer absence after restart.', { modal: true }, 'Setup stopped');
-        if (answer === 'Setup stopped') await this.resources.reconcile(task.id); return;
+        if (answer === 'Setup stopped') { await this.resources.reconcile(task.id); await this.capacity.release(task.id, true); } return;
       }
       if (this.resources.has(task.id)) throw new Error('Stop setup and reconcile uncertain ownership first.');
       if ((message.type === 'saveResources' || message.type === 'releaseResources') && task.state !== 'discarded' && !canEditBrief(task, this.managed.view(task.id))) throw new Error('Resources are locked after launch. Discard the task before releasing its reservations.');
@@ -608,11 +651,12 @@ class Manager {
           };
           const max = Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2)));
           if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached.');
+          if (!await this.capacity.tryAcquire(task.id, 'setup', this.profileLimit())) throw new Error('The shared profile task capacity is reached.');
           const prepared = await prepareScheduledTask(task, this.tasks, guard);
           if (task.schedule) { task.schedule.actualStartingCommit = prepared.commit; task.schedule.artifacts = prepared.artifacts; }
-          await this.persist(); await this.resources.start(task.id, task.worktree, () => guard());
+          await this.persist(); await this.resources.start(task.id, task.worktree, async () => { await guard(); await this.capacity.check(task.id, this.profileLimit()); if (setupController.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted) throw new Error('Setup startup cancelled.'); });
         }
-      } finally { this.pendingResource = undefined; completeResource(); this.busy = false; await this.publish(); if (!this.closing && this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+      } finally { this.pendingResource = undefined; completeResource(); this.busy = false; await this.settleCapacity(); await this.publish(); if (!this.closing && this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
     if (this.resources.has(task.id) && ['configureSchedule', 'saveBrief', 'saveModelSelection', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('Stop setup and reconcile its writer first.');
@@ -719,7 +763,7 @@ class Manager {
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
     if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
     if (message.type === 'configureSchedule') {
-      if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
+      if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
       const candidate = structuredClone(task);
       configureSchedule(candidate, this.tasks, message.dependencies, message.startFromDependency);
       this.busy = true;
@@ -731,7 +775,7 @@ class Manager {
     if (message.type === 'reconcileWriter') {
       if (this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id)) throw new Error('Stop the owned writer first.');
       const answer = await vscode.window.showWarningMessage('Confirm you have stopped any surviving provider process for this task. Hydra cannot prove writer absence after a restart.', { modal: true }, 'Writer stopped');
-      if (answer === 'Writer stopped') await this.scheduler.reconcileStopped(task);
+      if (answer === 'Writer stopped') { await this.managed.reconcile(task.id); await this.scheduler.reconcileStopped(task); await this.capacity.release(task.id, true); }
       return;
     }
     if (!scheduledLaunch && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) {
@@ -876,7 +920,8 @@ class Manager {
         this.checkBudget(task, true);
         await this.resources.check(task.id);
         task.providerVersion = diagnostic.version;
-        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt, () => {
+        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt, async () => {
+          await this.capacity.check(task.id, this.profileLimit()); await this.resources.check(task.id);
           if (controller.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because workspace or provider configuration changed.');
           if (scheduledLaunch && (task.schedule !== expectedSchedule || !expectedSchedule?.request || !['starting', 'running', 'waiting-for-approval'].includes(expectedSchedule.state))) throw new Error('Queued managed turn cancelled before provider submission.');
           this.checkBudget(task, true); this.resources.assertReady(task.id);
@@ -933,7 +978,7 @@ class Manager {
       if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached.');
       assertLaunchCurrent();
       this.checkBudget(task, true);
-      await this.resources.check(task.id);
+      await this.resources.check(task.id); await this.capacity.check(task.id, this.profileLimit());
       if (this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted) throw new Error('Terminal startup cancelled because workspace availability changed.');
       if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached.');
       assertLaunchCurrent(); this.checkBudget(task, true); this.resources.assertReady(task.id);
@@ -957,6 +1002,7 @@ class Manager {
     await this.pendingDiscard?.catch(() => {});
     await this.pendingBudgetSave?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
+    await this.scheduler.idle();
     await this.resources.shutdown();
     await this.managed.shutdown();
     this.scheduler.reconcile();
@@ -966,8 +1012,8 @@ class Manager {
       task.state = 'interrupted';
       task.updatedAt = new Date().toISOString();
     }
-    try { if (!this.disabled) await this.store.save(this.tasks); }
-    finally { for (const lock of this.locks) await lock.release(); }
+    try { await this.settleCapacity(true).catch(error => this.report(error)); if (!this.disabled) await this.store.save(this.tasks); }
+    finally { await this.capacity.shutdown(); for (const lock of this.locks) await lock.release(); }
   }
   private getIntegration(task:Task,id:string):IntegrationOperation{
     const op=this.integrationOperations.get(task.id);

@@ -12,6 +12,7 @@ import type { BudgetSettings, BudgetObservation } from '../src/core/budgets';
 import type { QuotaState } from '../src/core/quota';
 import type { ResourceView } from '../src/core/resourceModel';
 import type { ModelCatalog } from '../src/core/modelSelection';
+import type { CapacityView } from '../src/core/profileCapacity';
 import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -62,7 +63,13 @@ export async function run(): Promise<void> {
   }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
-    assert.equal(tasks?.length, 8, 'All task records, including selected provider models, discard preview and resources, are recovered');
+    assert.equal(tasks?.length, 9, 'All task records, including selected provider models, discard preview, resources and capacity recovery, are recovered');
+    const recoveredCapacityTask = tasks.find(task => task.title === 'Capacity recovery'); assert.ok(recoveredCapacityTask);
+    const recoveredCapacity = await vscode.commands.executeCommand<CapacityView>('hydra.getCapacity');
+    assert.equal(recoveredCapacity?.reserved, 1); assert.equal(recoveredCapacity?.owned[recoveredCapacityTask.id]?.uncertain, true);
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.startManaged', recoveredCapacityTask.id), /uncertain profile reservation/);
+    await assert.rejects(readFile(path.join(recoveredCapacityTask.worktree, 'requests.jsonl')), { code: 'ENOENT' });
+    console.log('PASS: native restart retains the uncertain terminal reservation and refuses a provider request until explicit absence reconciliation.');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
@@ -301,14 +308,20 @@ export async function run(): Promise<void> {
     assert.equal(await readFile(handoffDocument.uri.fsPath, 'utf8'), savedHandoff);
     await vscode.window.showTextDocument(handoffDocument);
     await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+    await vscode.workspace.getConfiguration('hydra').update('maxConcurrentTasks', 4, vscode.ConfigurationTarget.Workspace);
     for (const task of tasks.slice(0, 2)) await vscode.commands.executeCommand('hydra.launchTask', task.id);
     await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveBrief', tasks[0]!.id, brief), /locked after launch/);
     for (const task of tasks.slice(0, 2)) {
       await waitFor(() => correctCwd(task));
     }
     assert.equal(vscode.window.terminals.filter(item => item.name.startsWith('Hydra · ')).length, 2);
+    const terminalCapacity = await vscode.commands.executeCommand<CapacityView>('hydra.getCapacity');
+    assert.equal(terminalCapacity?.reserved, 2, 'Native terminals consume durable profile slots');
+    assert.equal(terminalCapacity?.limit, 2); assert.equal(Object.keys(terminalCapacity.owned).length, 2);
     await vscode.commands.executeCommand('hydra.launchTask', tasks[2]!.id);
     assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.schedule?.state, 'queued');
+    assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id)?.schedule?.reason, 'Waiting for a shared profile slot.', 'Profile slots enforce the limit independently of the four-slot window limit');
+    await vscode.workspace.getConfiguration('hydra').update('maxConcurrentTasks', 2, vscode.ConfigurationTarget.Workspace);
     const queuedBriefTask = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[2]!.id);
     assert.ok(queuedBriefTask?.contextLockedAt, 'Queued launch records its brief lock before dispatch');
     await assert.rejects(async () => vscode.commands.executeCommand('hydra.saveBrief', tasks[2]!.id, { ...brief, goal: 'Changed queued goal' }), /locked after launch/);
@@ -330,6 +343,7 @@ export async function run(): Promise<void> {
     for (const task of tasks.slice(1)) await vscode.commands.executeCommand('hydra.stopTask', task.id);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.filter(task => tasks.slice(1).some(item => item.id === task.id)).every(task => !['queued', 'starting', 'running'].includes(task.schedule?.state || '')) || false);
     await waitFor(async () => (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.every(task => task.state === 'interrupted') || false);
+    await waitFor(async () => (await vscode.commands.executeCommand<CapacityView>('hydra.getCapacity'))?.reserved === 0);
     await vscode.commands.executeCommand('hydra.startManaged', tasks[0]!.id);
     await waitFor(async () => { const session = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id); return session?.turns[0]?.status === 'completed' && !session.active; });
     const completed = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id);
@@ -578,5 +592,10 @@ export async function run(): Promise<void> {
     const environment = JSON.parse(await readFile(path.join(resourceTask.worktree, 'codex-resource-environment.json'), 'utf8')); assert.equal(environment.database, setup.database); assert.equal(environment.service, setup.service);
     await assert.rejects(async () => await vscode.commands.executeCommand('hydra.saveResources', resourceTask.id, setup), /locked/);
     console.log('PASS: native saved setup blocks provider requests until passing, uses the exact checkout and resource environment, passes assignments to managed Codex and locks configuration after launch.');
+    await waitFor(async () => (await vscode.commands.executeCommand<CapacityView>('hydra.getCapacity'))?.reserved === 0);
+    const capacityRecoveryTask = await vscode.commands.executeCommand<Task>('hydra.createTask', { title: 'Capacity recovery', prompt: 'Fixture terminal only; no provider model request', repository, provider: 'claude' }); assert.ok(capacityRecoveryTask);
+    await vscode.commands.executeCommand('hydra.launchTask', capacityRecoveryTask.id); await waitFor(() => correctCwd(capacityRecoveryTask));
+    assert.equal((await vscode.commands.executeCommand<CapacityView>('hydra.getCapacity'))?.reserved, 1);
+    console.log('PASS: native managed/setup completions release verified profile slots; one owned terminal reservation is deliberately retained for restart acceptance.');
   }
 }

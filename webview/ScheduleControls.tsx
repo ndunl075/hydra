@@ -9,7 +9,7 @@ export function ScheduleControls({ task, tasks, busy, send }: { task: Task; task
   const locked = busy || task.state === 'discarded' || task.state === 'running' || task.state === 'external' || !!schedule?.uncertain || schedule?.state === 'starting';
   return <section className="provider-check schedule-controls" aria-label="Task scheduling">
     <div className="section-label">SCHEDULING <span>{task.interface === 'official-extension' ? 'External session' : schedule?.state || 'Not queued'}</span></div>
-    <p className="quiet">Terminal and managed launches share this window's configured capacity (default two). Official-extension sessions run externally. Provider completion does not establish acceptance.</p>
+    <p className="quiet">Launches reserve slots within both window and profile limits (default two). Official-extension sessions run externally. Provider completion does not establish acceptance.</p>
     {schedule?.reason && <p role="status">{schedule.reason}</p>}
     {schedule?.budgetWarnings?.map(warning => <p role="status" key={warning}>{warning} New work is allowed by this warning setting.</p>)}
     {schedule?.budgetHold && <button className="secondary" disabled={locked} onClick={() => send({ type: 'retryBudgetHold', id: task.id })}>Retry held launch</button>}

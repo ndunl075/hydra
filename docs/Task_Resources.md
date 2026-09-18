@@ -1,5 +1,7 @@
 # Task resources and explicit setup
 
+Shared managed/terminal/setup reservations are a separate 0.18.0 candidate; see [Profile_Capacity.md](Profile_Capacity.md).
+
 Open **Resources and setup** in a task before its first provider launch. Save an optional port (1024–65535), database identifier, service identifier, and up to ten commands as JSON records with `executable` and literal `args`. Choose a 1–600 second timeout per command. An empty command array assigns resources without running setup.
 
 Hydra reserves each assignment across windows using the same local Hydra profile. Reservations survive restart and remain until explicitly released. A conflicting Hydra task cannot acquire the same port or identifier. New port assignments also check whether `127.0.0.1` can bind that port at assignment time. Hydra closes that test socket immediately: another application can occupy it later. Different profiles and machines do not share this reservation store.
@@ -34,4 +36,4 @@ After a restart during setup, Hydra marks its writer uncertain and holds capacit
 
 **Release reservations** frees Hydra's logical claims only. It does not drop a database, stop a service, remove files or destroy a container. After launch, discard the stopped task before releasing; its checkout remains recoverable. Restore it, then **Reacquire saved resources** and rerun setup as needed. Configured resource tasks currently use Hydra managed sessions or provider terminals; official-extension handoff is blocked because Hydra cannot verify that client's environment.
 
-This feature is a foundation for explicit resource separation. It does not establish full environment isolation, automatic service provisioning, cross-window global provider capacity, real-provider acceptance or measured efficiency savings.
+This feature is a foundation for explicit resource separation. It does not establish full environment isolation, automatic service provisioning, real-provider acceptance or measured efficiency savings.

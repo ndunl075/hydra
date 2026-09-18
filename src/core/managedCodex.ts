@@ -17,23 +17,24 @@ export class ManagedCodex {
   private readonly views = new Map<string, SessionView>();
   private readonly active = new Map<string, { stop: () => Promise<void>; done: Promise<void>; approve: (id: string, decision: 'accept' | 'decline') => void }>();
   private readonly starting = new Set<string>();
-  constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void) {}
+  constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void, private readonly terminate = terminateProcessTree) {}
   get count(): number { return this.active.size; }
   has(id: string): boolean { return this.active.has(id); }
   view(id: string): SessionView | undefined { const view = this.views.get(id); return view ? { ...view, active: this.has(id) || this.starting.has(id) } : undefined; }
   async load(task: Task): Promise<void> { const view = await this.store.load(task.id); delete view.approvals; this.views.set(task.id, view); }
-  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void = () => {}, environment: Record<string, string> = {}): Promise<void> {
+  async start(task: Task, executable: string, prompt: string, beforeTurn: () => void | Promise<void> = () => {}, environment: Record<string, string> = {}): Promise<void> {
     if (this.starting.has(task.id) || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     this.starting.add(task.id);
     try { await this.startTurn(task, executable, prompt, beforeTurn, environment); } finally { this.starting.delete(task.id); }
   }
-  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void, environment: Record<string, string>): Promise<void> {
+  private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void | Promise<void>, environment: Record<string, string>): Promise<void> {
     const expectedSchedule = task.schedule;
     if (task.provider !== 'codex' || task.providerVersion !== testedCodexVersion) throw new Error('Managed Codex requires CLI 0.154.0.');
     if (task.sessionId && task.sessionProvider !== 'codex') throw new Error('This recorded session belongs to another provider. Create a separate Codex task.');
     if (task.interface === 'official-extension' || task.state === 'external') throw new Error('Stop the existing task writer first.');
     if (!this.views.has(task.id)) await this.load(task);
     const view = this.views.get(task.id)!;
+    if (view.writerUncertain) throw new Error('Stop surviving managed process children and reconcile writer absence before resuming.');
     const selection = task.modelSelection ? { ...task.modelSelection } : undefined;
     const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'codex', prompt, text: '', status: 'running', createdAt: new Date().toISOString(), ...(selection ? { modelSettings: { requested: selection } } : {}) };
     view.turns.push(turn); view.approvals = [];
@@ -60,7 +61,8 @@ export class ManagedCodex {
     let resolveDone!: () => void;
     const done = new Promise<void>(resolve => { resolveDone = resolve; });
     const alive = () => child.pid && child.exitCode === null && child.signalCode === null;
-    const kill = async () => { if (alive()) await terminateProcessTree(child.pid!); };
+    let cleanup: Promise<void> | undefined;
+    const kill = () => cleanup ||= (async () => { if (alive()) try { await this.terminate(child.pid!); } catch (error) { view.writerUncertain = true; this.changed(); this.report(error); failure ||= 'Owned process cleanup failed. Stop surviving children and reconcile explicitly.'; child.kill(); } })();
     const fail = (error: unknown) => {
       if (failure) return;
       failure = error instanceof Error ? error.message : String(error);
@@ -152,7 +154,7 @@ export class ManagedCodex {
     child.stdin.on('error', fail); child.on('error', fail);
     child.on('close', code => {
       void (async () => {
-        clearTimeout(saveTimer); clearTimeout(closeTimer);
+        clearTimeout(saveTimer); clearTimeout(closeTimer); await cleanup;
         for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Codex process exited.')); } pending.clear();
         log('stdout', stdout.end()); log('stderr', stderr.end());
         if (!failure) try { messages.end(); } catch (error) { failure = String(error); }
@@ -181,7 +183,7 @@ export class ManagedCodex {
       }
       if (selection) requireAdvertisedSelection(await readModelCatalog(request), selection);
       if (stopped) { await kill(); return; }
-      beforeTurn();
+      await beforeTurn(); if (stopped || closing || failure) return;
       const options = { cwd: task.worktree, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(selection ? { model: selection.model, config: { model_reasoning_effort: selection.effort } } : {}) } satisfies ThreadStartParams;
       const response = task.sessionId ? await request('thread/resume', { ...options, threadId: providerId(task.sessionId) } satisfies ThreadResumeParams) : await request('thread/start', options);
       const threadId = validateCodexThread(response, task.worktree, task.sessionId);
@@ -192,7 +194,7 @@ export class ManagedCodex {
         if (selection) verifyEffectiveModel(response, selection);
       }
       if (stopped) { await kill(); return; }
-      beforeTurn();
+      await beforeTurn(); if (stopped || closing || failure) return;
       protocol = new CodexTurn(threadId, turn);
       const started = record(await request('turn/start', {
         threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], cwd: task.worktree, approvalPolicy: 'on-request',

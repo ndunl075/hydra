@@ -40,6 +40,10 @@ export class LocalStore {
       if (task.handoffSummary !== undefined) parseHandoffSummary(task.handoffSummary);
       if (task.contextLockedAt !== undefined && (typeof task.contextLockedAt !== 'string' || !Number.isFinite(Date.parse(task.contextLockedAt)))) throw new Error('Invalid task context lock.');
       if (task.schedule !== undefined) validateSchedule(task.schedule);
+      if (task.delegation !== undefined) {
+        const link = task.delegation;
+        if (!link || typeof link !== 'object' || !/^[a-f0-9]{12}$/.test(link.parentId) || !/^[a-f0-9]{12}$/.test(link.runId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(link.childKey) || !/^[a-f0-9]{24}$/.test(link.dispatchKey) || link.parentId === task.id) throw new Error('Invalid delegated child task link. Original data has been retained.');
+      }
       if (task.reviewedCommit !== undefined) {
         const record = task.reviewedCommit;
         if (!record || typeof record !== 'object' || ![record.commit, record.tree, record.baseCommit].every(value => typeof value === 'string' && /^[a-f0-9]{40,64}$/.test(value)) || record.baseCommit !== task.baseCommit || typeof record.reviewedAt !== 'string' || !Number.isFinite(Date.parse(record.reviewedAt))) throw new Error('Invalid reviewed commit. Original data has been retained.');

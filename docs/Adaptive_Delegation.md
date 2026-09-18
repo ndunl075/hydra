@@ -1,6 +1,6 @@
 # Adaptive delegation and focused subagent context
 
-Status: Phase 1 host preparation and the first Phase 2 materialization slice are implemented; automatic decomposition is not implemented. Nico requested this feature on 17 September 2026. Hydra persists a conservative Solo/Auto planning preference, validates and stores host-bound plan decisions, and exposes preferences in the composer, Settings, and host snapshot. An explicit host command can reserve and create child worktrees from recorded decisions with durable dispatch keys; it creates neither Hydra child tasks nor provider sessions. It does not send a planner turn or demonstrate savings.
+Status: Phase 1 host preparation and two Phase 2 slices are implemented; automatic decomposition is not implemented. Nico requested this feature on 17 September 2026. Hydra persists a conservative Solo/Auto planning preference, validates and stores host-bound plan decisions, and exposes preferences in the composer, Settings, and host snapshot. An explicit host command reserves and creates child worktrees from recorded decisions with durable dispatch keys, then persists matching idle Hydra child tasks with a parent/dispatch link. It does not queue or launch children, send a planner turn, or demonstrate savings.
 
 ## Product behavior
 

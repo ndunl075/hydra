@@ -26,6 +26,7 @@ export interface Task {
   handoffSummary?: TaskHandoffSummary;
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
+  delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string };
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
 export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }

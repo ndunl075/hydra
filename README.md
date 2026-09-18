@@ -24,6 +24,7 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
 ## Available features
 
 - In standalone Hydra, open **Hydra: Provider Usage Limits** or the task usage panel's **Provider usage limits** button. Opening is passive; explicitly refresh account windows through tested Codex 0.154.0 without submitting a model turn. Missing fields remain unavailable, observations are timestamped, and stale data is labelled. Claude limits remain unavailable with official `/usage` guidance. See [provider usage limits](docs/Provider_Quotas.md).
+- Before first launch, use **Resources and setup** to reserve task-specific ports and database/service names, save explicit setup commands, and run them in the task checkout. Saved setup must pass before provider work launches; reservations survive restart. See [task resources](docs/Task_Resources.md) for provisioning and isolation limits.
 - Open **Hydra: Toggle Editor / Agents** from the Command Palette or press **Ctrl+Alt+A**.
 - A persistent status-bar control switches modes.
 - The README's Hydra logo is used for the extension, sidebar, and agent-manager tab icons.
@@ -66,7 +67,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.15.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import and quota refresh are available in standalone Hydra. The installer, replayable onboarding and passive provider account setup have passed automated Windows acceptance; live sign-in, signing/distribution and the remaining delivery gates are tracked in [implementation status](docs/Implementation_Status.md).
+Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.16.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import and quota refresh are available in standalone Hydra. The installer, replayable onboarding and passive provider account setup have passed automated Windows acceptance; live sign-in, signing/distribution and the remaining delivery gates are tracked in [implementation status](docs/Implementation_Status.md).
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 

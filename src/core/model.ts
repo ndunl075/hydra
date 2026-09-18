@@ -1,4 +1,5 @@
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
+import { parseResources, type ResourceConfig, type ResourceView } from './resourceModel';
 import type { UsageSummary } from './usage';
 import { parseBudgets, type SoftBudget, type BudgetSettings, type BudgetObservation } from './budgets';
 import type { DiscardReceipt, DiscardReview } from './discard';
@@ -53,6 +54,7 @@ export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
 export interface Snapshot {
+  resources?: Record<string, ResourceView>;
   tasks: Task[]; selectedId?: string; mode: 'editor' | 'agents'; repositories: string[];
   providers: ProviderInfo[]; files: TaskFile[]; busy: boolean; error?: string; draft?: Draft;
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];
@@ -68,6 +70,8 @@ export interface Snapshot {
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
 }
 export type ClientMessage =
+  | { type: 'saveResources'; id: string; config: ResourceConfig }
+  | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
   | { type: 'ready' | 'editor' | 'refresh' | 'settings' | 'openQuota' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
@@ -106,6 +110,10 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (['saveResources', 'runSetup', 'stopSetup', 'reconcileSetup', 'releaseResources', 'reacquireResources', 'showSetupLog'].includes(type)) {
+    const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    return type === 'saveResources' ? { type, id, config: parseResources(message.config) } : { type, id } as ClientMessage;
+  }
   if (type === 'saveBudgets' || type === 'retryBudgetHold') {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');

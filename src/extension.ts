@@ -1,3 +1,4 @@
+import { TaskResources } from './core/resources';
 import { TaskScheduler, configureSchedule, pendingSchedule } from './core/scheduler';
 import { prepareScheduledTask } from './core/schedulerGit';
 import * as vscode from 'vscode';
@@ -90,6 +91,8 @@ class Manager {
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
+  private readonly resources: TaskResources;
+  private pendingResource?: { id: string; controller: AbortController; done: Promise<void> };
   private readonly scheduler: TaskScheduler;
   private schedulerReady = false;
   private readonly review: ReviewDocuments;
@@ -117,6 +120,7 @@ class Manager {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
+    this.resources = new TaskResources(path.join(this.storageDirectory, 'resources'), path.join(context.globalStorageUri.fsPath, 'resource-reservations'), key, () => { void this.publish(); if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error)); }, error => this.report(error));
     this.store = new LocalStore(this.storageDirectory);
     this.budgetStore = new BudgetStore(this.storageDirectory);
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
@@ -128,13 +132,13 @@ class Manager {
     this.scheduler = new TaskScheduler({
       tasks: () => this.tasks,
       capacity: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2))),
-      liveCount: () => this.terminals.size + this.managed.count,
+      liveCount: () => this.terminals.size + this.managed.count + this.resources.count,
       enabled: () => this.schedulerReady && !this.busy && !this.closing && !this.disabled && !this.handoff && vscode.workspace.isTrusted,
       persist: () => this.persist(),
       budget: task => this.checkBudget(task),
       prepare: task => prepareScheduledTask(task, this.tasks, async item => {
         await this.verifyWorktree(item);
-        if (this.terminals.has(item.id) || this.managed.has(item.id) || item.state === 'external' || item.state === 'running') throw new Error('Stop the task writer before dependency preparation.');
+        if (this.terminals.has(item.id) || this.managed.has(item.id) || this.resources.has(item.id) || item.state === 'external' || item.state === 'running') throw new Error('Stop the task writer before dependency preparation.');
         const root = await realpath(item.worktree);
         if (vscode.workspace.textDocuments.some(document => document.isDirty && document.uri.scheme === 'file' && isInside(root, document.uri.fsPath))) throw new Error('Save or revert unsaved task buffers before dependency preparation.');
       }),
@@ -180,6 +184,9 @@ class Manager {
     command('hydra.saveHandoffSummary', (id: string, handoffSummary: unknown) => this.handle({ type: 'saveHandoffSummary', id, handoffSummary }));
     command('hydra.showTaskHandoff', (id: string) => this.handle({ type: 'showTaskHandoff', id }));
     command('hydra.getUsage', () => structuredClone(usageSnapshot(this.tasks, id => this.managed.view(id))));
+    command('hydra.getResources', () => this.resources.snapshot());
+    command('hydra.saveResources', (id: string, config: unknown) => this.handle({ type: 'saveResources', id, config }));
+    for (const type of ['runSetup', 'stopSetup', 'reconcileSetup', 'releaseResources', 'reacquireResources', 'showSetupLog']) command(`hydra.${type}`, (id: string) => this.handle({ type, id }));
     command('hydra.getBudgets', () => structuredClone(this.budgetSnapshot()));
     command('hydra.saveBudgets', (id: string, scope: string, budgets: unknown) => this.handle({ type: 'saveBudgets', id, scope, budgets }));
     command('hydra.retryBudgetHold', (id: string) => this.handle({ type: 'retryBudgetHold', id }));
@@ -237,6 +244,7 @@ class Manager {
     try {
       this.tasks = await this.store.load();
       this.budgets = await this.budgetStore.load();
+      await this.resources.load();
       this.scheduler.reconcile();
       await this.refreshRepositories();
       if (vscode.workspace.isTrusted) {
@@ -345,11 +353,11 @@ class Manager {
     await this.store.save(this.tasks); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
   }
-  private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external'; }
+  private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before review.');
     if (pendingSchedule(task)) throw new Error('Cancel queued work or reconcile the writer before reviewing or integrating this task.');
-    if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
+    if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before preparing a commit review.');
     const root = await realpath(task.worktree);
     for (const document of vscode.workspace.textDocuments) {
       if (!document.isDirty || document.uri.scheme !== 'file') continue;
@@ -371,7 +379,7 @@ class Manager {
     if(pendingSchedule(task)||this.closing||this.disabled||!vscode.workspace.isTrusted)throw new Error('Integration cancelled because the workspace closed or lost trust.');
   }
   private async guardDiscard(task: Task, restoring = false): Promise<void> {
-    if (this.closing || this.disabled || this.handoff || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || pendingSchedule(task) || task.schedule?.request) throw new Error('Stop task writers, cancel queued work, and reconcile uncertain ownership before discard or restore.');
+    if (this.closing || this.disabled || this.handoff || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || pendingSchedule(task) || task.schedule?.request) throw new Error('Stop task writers, cancel queued work, and reconcile uncertain ownership before discard or restore.');
     if (!restoring && task.state === 'discarded') throw new Error('This task is already discarded.');
     if (this.integrationAbort?.taskId === task.id) throw new Error('Finish or cancel integration before discard.');
     if (this.tasks.some(item => item.schedule?.state === 'starting' && item.schedule.dependencies.includes(task.id))) throw new Error('A dependent task is starting. Wait for startup before discard.');
@@ -387,7 +395,7 @@ class Manager {
   private async publish(): Promise<void> {
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
-    const active = this.terminals.size + this.managed.count;
+    const active = this.terminals.size + this.managed.count + this.resources.count;
     this.status.text = `$(layout) ${this.mode === 'agents' ? 'Agents' : 'Editor'}${active ? ` · ${active} active` : ''}${this.error ? ' $(warning)' : ''}`;
     this.status.tooltip = 'Hydra: Switch Editor / Agents (Ctrl+Alt+A)';
     const task = this.tasks.find(item => item.id === this.selectedId);
@@ -411,6 +419,7 @@ class Manager {
       discardReview: task ? this.discardReviews.get(task.id) : undefined,
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       budgets: this.budgetSnapshot(),
+      resources: this.resources.snapshot(),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
@@ -525,8 +534,8 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'saveBudgets', 'retryBudgetHold'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -547,7 +556,42 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
-    if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
+    if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
+    if (message.type === 'stopSetup') { const pending = this.pendingResource?.id === task.id ? this.pendingResource : undefined; pending?.controller.abort(); await pending?.done; await this.resources.stop(task.id); return; }
+    if (message.type === 'showSetupLog') { const log = this.resources.snapshot()[task.id]?.log; if (!log) throw new Error('No setup diagnostics yet.'); await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true }); return; }
+    if (['saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) {
+      if (this.busy || this.handoff || pendingSchedule(task) || task.schedule?.request || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || this.integrationAbort?.taskId === task.id || this.tasks.some(item => item.schedule?.state === 'starting' && item.schedule.dependencies.includes(task.id))) throw new Error('Stop writers and cancel queued work before resource setup.');
+      if (message.type === 'reconcileSetup') {
+        const answer = await vscode.window.showWarningMessage('Confirm you stopped any surviving setup process and its children. Hydra cannot prove writer absence after restart.', { modal: true }, 'Setup stopped');
+        if (answer === 'Setup stopped') await this.resources.reconcile(task.id); return;
+      }
+      if (this.resources.has(task.id)) throw new Error('Stop setup and reconcile uncertain ownership first.');
+      if ((message.type === 'saveResources' || message.type === 'releaseResources') && task.state !== 'discarded' && !canEditBrief(task, this.managed.view(task.id))) throw new Error('Resources are locked after launch. Discard the task before releasing its reservations.');
+      this.busy = true;
+      const setupController = new AbortController(); let completeResource!: () => void;
+      this.pendingResource = { id: task.id, controller: setupController, done: new Promise<void>(resolve => { completeResource = resolve; }) };
+      try {
+        if (message.type === 'saveResources') await this.resources.configure(task.id, message.config);
+        else if (message.type === 'releaseResources') await this.resources.release(task.id);
+        else if (message.type === 'reacquireResources') await this.resources.reacquire(task.id);
+        else if (message.type === 'runSetup') {
+          const guard = async (item: Task = task) => {
+            if (setupController.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted || this.handoff || pendingSchedule(item) || this.terminals.has(item.id) || this.managed.has(item.id) || item.state === 'external' || item.state === 'running' || item.state === 'discarded' || item.id !== task.id && this.resources.has(item.id)) throw new Error('Setup requires exclusive access to a trusted task checkout.');
+            await this.verifyWorktree(item);
+            const root = await realpath(item.worktree);
+            if (vscode.workspace.textDocuments.some(document => document.isDirty && document.uri.scheme === 'file' && isInside(root, document.uri.fsPath))) throw new Error('Save or revert task buffers before setup.');
+          };
+          const max = Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2)));
+          if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached.');
+          const prepared = await prepareScheduledTask(task, this.tasks, guard);
+          if (task.schedule) { task.schedule.actualStartingCommit = prepared.commit; task.schedule.artifacts = prepared.artifacts; }
+          await this.persist(); await this.resources.start(task.id, task.worktree, () => guard());
+        }
+      } finally { this.pendingResource = undefined; completeResource(); this.busy = false; await this.publish(); if (!this.closing && this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+      return;
+    }
+    if (this.resources.has(task.id) && ['configureSchedule', 'saveBrief', 'saveModelSelection', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('Stop setup and reconcile its writer first.');
+    if (['handoff', 'openWorktree'].includes(message.type) && this.resources.snapshot()[task.id]) throw new Error('Configured task resources are supported in Hydra managed sessions and provider terminals. Use those interfaces for this task.');
     if (message.type === 'saveBudgets') {
       this.busy = true;
       const candidate = structuredClone(this.budgets);
@@ -650,13 +694,17 @@ class Manager {
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
     if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
     if (message.type === 'configureSchedule') {
-      if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
-      configureSchedule(task, this.tasks, message.dependencies, message.startFromDependency);
-      await this.persist(); return;
+      if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
+      const candidate = structuredClone(task);
+      configureSchedule(candidate, this.tasks, message.dependencies, message.startFromDependency);
+      this.busy = true;
+      try { await this.resources.invalidate(task.id); task.schedule = candidate.schedule; await this.persist(); }
+      finally { this.busy = false; await this.publish(); if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error)); }
+      return;
     }
     if (message.type === 'cancelQueued') { if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop the owned writer first.'); await this.scheduler.cancel(task); return; }
     if (message.type === 'reconcileWriter') {
-      if (this.terminals.has(task.id) || this.managed.has(task.id)) throw new Error('Stop the owned writer first.');
+      if (this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id)) throw new Error('Stop the owned writer first.');
       const answer = await vscode.window.showWarningMessage('Confirm you have stopped any surviving provider process for this task. Hydra cannot prove writer absence after a restart.', { modal: true }, 'Writer stopped');
       if (answer === 'Writer stopped') await this.scheduler.reconcileStopped(task);
       return;
@@ -669,6 +717,7 @@ class Manager {
       if (this.terminals.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this task writer before queueing another launch.');
       if (message.type === 'startManaged' && task.sessionId) throw new Error('Send a follow-up to resume this session.');
       if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task before sending a follow-up.');
+      await this.resources.check(task.id);
       await lockTaskContext(task, () => this.persist());
       await this.scheduler.enqueue(task, message.type === 'followUp' ? { type: 'followUp', prompt: message.prompt } : { type: message.type as 'launch' | 'terminal' | 'startManaged' });
       return;
@@ -780,7 +829,7 @@ class Manager {
       if (message.type === 'startManaged' && task.sessionId) throw new Error('This task already has a session. Send a follow-up to resume it.');
       if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task first before sending a follow-up.');
       const max = vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2);
-      if (this.terminals.size + this.managed.count >= max) throw new Error('The task concurrency limit is reached. Stop a task writer first.');
+      if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached. Stop a task writer first.');
       this.busy = true;
       const controller = new AbortController(), generation = this.diagnosticGeneration;
       this.diagnosticChecks.add(controller);
@@ -795,8 +844,13 @@ class Manager {
         if (diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Managed ${task.provider} supports tested CLI ${testedVersion} only. Use the terminal for another version; see provider diagnostics.`);
         assertLaunchCurrent();
         this.checkBudget(task, true);
+        await this.resources.check(task.id);
         task.providerVersion = diagnostic.version;
-        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt, () => { this.checkBudget(task, true); });
+        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt, () => {
+          if (controller.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because workspace or provider configuration changed.');
+          if (scheduledLaunch && (task.schedule !== expectedSchedule || !expectedSchedule?.request || !['starting', 'running', 'waiting-for-approval'].includes(expectedSchedule.state))) throw new Error('Queued managed turn cancelled before provider submission.');
+          this.checkBudget(task, true); this.resources.assertReady(task.id);
+        }, this.resources.environment(task.id));
       } catch (error) {
         if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); await this.persist(); }
         throw error;
@@ -836,7 +890,7 @@ class Manager {
       const existing = this.terminals.get(task.id);
       if (existing) { existing.show(false); return; }
       const max = vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentTasks', 2);
-      if (this.terminals.size + this.managed.count >= max) throw new Error(`The ${max}-task concurrency limit is reached. Stop a task writer before launching another.`);
+      if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error(`The ${max}-task concurrency limit is reached. Stop a task writer before launching another.`);
       await this.refreshProviders();
       const provider = this.providers.find(item => item.provider === task.provider);
       if (!provider?.executable) throw new Error(`${task.provider} CLI not found. Install it or set Hydra's ${task.provider} path. Authentication remains with the official CLI.`);
@@ -846,10 +900,14 @@ class Manager {
       if (this.managed.has(task.id)) throw new Error('Stop the managed process before opening a terminal writer.');
       const duplicate = this.terminals.get(task.id);
       if (duplicate) { duplicate.show(false); return; }
-      if (this.terminals.size + this.managed.count >= max) throw new Error('The task concurrency limit is reached.');
+      if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached.');
       assertLaunchCurrent();
       this.checkBudget(task, true);
-      const terminal = vscode.window.createTerminal({ name: `Hydra · ${task.title}`, cwd: task.worktree, ...terminalLaunch(provider.executable), isTransient: true });
+      await this.resources.check(task.id);
+      if (this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted) throw new Error('Terminal startup cancelled because workspace availability changed.');
+      if (this.terminals.size + this.managed.count + this.resources.count >= max) throw new Error('The task concurrency limit is reached.');
+      assertLaunchCurrent(); this.checkBudget(task, true); this.resources.assertReady(task.id);
+      const terminal = vscode.window.createTerminal({ env: this.resources.environment(task.id), name: `Hydra · ${task.title}`, cwd: task.worktree, ...terminalLaunch(provider.executable), isTransient: true });
       this.terminals.set(task.id, terminal);
       task.interface = 'interactive-cli';
       task.state = 'external';
@@ -861,6 +919,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    this.pendingResource?.controller.abort(); await this.pendingResource?.done;
     await this.accounts.shutdown();
     await this.quota.shutdown();
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
@@ -868,6 +927,7 @@ class Manager {
     await this.pendingDiscard?.catch(() => {});
     await this.pendingBudgetSave?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
+    await this.resources.shutdown();
     await this.managed.shutdown();
     this.scheduler.reconcile();
     for (const [id, terminal] of this.terminals) {

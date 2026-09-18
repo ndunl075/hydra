@@ -12,6 +12,7 @@ if (args.includes('--version')) { console.log('codex-cli 0.154.0'); process.exit
 if (args.includes('--help')) { console.log('app-server generate-ts generate-json-schema --listen'); process.exit(0); }
 if (!args.length) { fs.writeFileSync(path.join(process.cwd(), 'hydra-terminal-cwd.txt'), process.cwd()); setInterval(() => {}, 1000); }
 else {
+  fs.writeFileSync(path.join(process.cwd(), 'codex-resource-environment.json'), JSON.stringify({ database: process.env.HYDRA_TASK_DATABASE, service: process.env.HYDRA_TASK_SERVICE, port: process.env.HYDRA_TASK_PORT }));
   let initialized = false, prompt = '', approval = false, holding = false;
   const input = readline.createInterface({ input: process.stdin });
   input.on('line', line => {

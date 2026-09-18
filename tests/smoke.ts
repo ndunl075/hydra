@@ -10,6 +10,7 @@ import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/ta
 import type { UsageSummary } from '../src/core/usage';
 import type { BudgetSettings, BudgetObservation } from '../src/core/budgets';
 import type { QuotaState } from '../src/core/quota';
+import type { ResourceView } from '../src/core/resourceModel';
 import type { ModelCatalog } from '../src/core/modelSelection';
 import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
@@ -55,7 +56,7 @@ export async function run(): Promise<void> {
   }
   if (process.env.HYDRA_TEST_RECOVERY === '1') {
     const tasks = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
-    assert.equal(tasks?.length, 6, 'All task records, including reviewed commit, selected model and discard preview, are recovered');
+    assert.equal(tasks?.length, 7, 'All task records, including reviewed commit, selected model, discard preview and resources, are recovered');
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
@@ -66,6 +67,11 @@ export async function run(): Promise<void> {
     const recoveredBudgets = await vscode.commands.executeCommand<{ settings: BudgetSettings }>('hydra.getBudgets');
     assert.deepEqual(recoveredBudgets?.settings.tasks[budgetTask.id], [{ provider: 'codex', action: 'hold', inputOutputTokens: 16 }]);
     assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', budgetTask.id))?.turns.length, 1, 'Budget-held follow-up was not submitted on restart');
+    const resourceTask = tasks.find(task => task.title === 'Resource fixture'); assert.ok(resourceTask);
+    const resources = await vscode.commands.executeCommand<Record<string, ResourceView>>('hydra.getResources');
+    assert.equal(resources?.[resourceTask.id]?.status, 'passed'); assert.equal(resources?.[resourceTask.id]?.reserved, true);
+    assert.equal(resources?.[resourceTask.id]?.config.database, `db_${resourceTask.id}`);
+    assert.equal((await vscode.commands.executeCommand<SessionView>('hydra.getSession', resourceTask.id))?.turns.length, 1, 'Recovery does not rerun setup or submit a provider turn');
     const selectedModelTask = tasks.find(task => task.title === 'Selected model'); assert.ok(selectedModelTask);
     assert.deepEqual(selectedModelTask.modelSelection, { model: 'fixture-model', effort: 'high' });
     const modelHistory = await vscode.commands.executeCommand<SessionView>('hydra.getSession', selectedModelTask.id);
@@ -484,5 +490,20 @@ export async function run(): Promise<void> {
     await vscode.workspace.getConfiguration('hydra').update('codexPath', process.env.HYDRA_TEST_CODEX_PROVIDER, vscode.ConfigurationTarget.Workspace);
     await waitFor(async () => (await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'))?.status === 'unchecked');
     console.log('PASS: native quota view is passive/reused, explicitly refreshes reported windows, strips identities/reset tokens, preserves exact held tasks/history, makes zero model requests and clears observations on provider configuration changes.');
+    const resourceTask = await vscode.commands.executeCommand<Task>('hydra.createTask', { title: 'Resource fixture', prompt: 'Resource-aware local fixture', repository, provider: 'codex' }); assert.ok(resourceTask);
+    const setupExecutable = process.env.HYDRA_TEST_NODE; assert.ok(setupExecutable);
+    const setup = { database: `db_${resourceTask.id}`, service: `service_${resourceTask.id}`, commands: [{ executable: setupExecutable, args: ['-e', 'require("fs").writeFileSync("setup-environment.json",JSON.stringify({cwd:process.cwd(),db:process.env.HYDRA_TASK_DATABASE}));console.log("native setup passed")'] }], timeoutMs: 10000 };
+    await vscode.commands.executeCommand('hydra.saveResources', resourceTask.id, setup);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.startManaged', resourceTask.id), /Run.*setup/);
+    await assert.rejects(readFile(path.join(resourceTask.worktree, 'codex-requests.jsonl')), { code: 'ENOENT' });
+    await vscode.commands.executeCommand('hydra.runSetup', resourceTask.id);
+    await waitFor(async () => (await vscode.commands.executeCommand<Record<string, ResourceView>>('hydra.getResources'))?.[resourceTask.id]?.status === 'passed');
+    const setupEvidence = JSON.parse(await readFile(path.join(resourceTask.worktree, 'setup-environment.json'), 'utf8')); assert.equal(setupEvidence.db, setup.database); assert.equal(path.relative(await realpath(setupEvidence.cwd), await realpath(resourceTask.worktree)), '');
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.handoffCodex', resourceTask.id), /resources.*supported/);
+    await vscode.commands.executeCommand('hydra.startManaged', resourceTask.id);
+    await waitFor(async () => { const view = await vscode.commands.executeCommand<SessionView>('hydra.getSession', resourceTask.id); return view?.turns[0]?.status === 'completed' && !view.active; });
+    const environment = JSON.parse(await readFile(path.join(resourceTask.worktree, 'codex-resource-environment.json'), 'utf8')); assert.equal(environment.database, setup.database); assert.equal(environment.service, setup.service);
+    await assert.rejects(async () => await vscode.commands.executeCommand('hydra.saveResources', resourceTask.id, setup), /locked/);
+    console.log('PASS: native saved setup blocks provider requests until passing, uses the exact checkout and resource environment, passes assignments to managed Codex and locks configuration after launch.');
   }
 }

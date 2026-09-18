@@ -9,6 +9,7 @@ import type { ProfileResources } from '../src/core/profileImport';
 import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/taskContext';
 import type { UsageSummary } from '../src/core/usage';
 import type { BudgetSettings, BudgetObservation } from '../src/core/budgets';
+import type { QuotaState } from '../src/core/quota';
 import type { ModelCatalog } from '../src/core/modelSelection';
 import type { IntegrationOperation } from '../src/core/integrationModel';
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
@@ -58,6 +59,7 @@ export async function run(): Promise<void> {
     assert.ok(tasks.every(task => task.repository === repository && ['idle', 'interrupted'].includes(task.state)), 'No lost terminal is marked completed or running');
     for (const task of tasks) assert.equal((await readFile(path.join(task.worktree, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'base\n');
     assert.ok(!vscode.window.terminals.some(terminal => terminal.name.startsWith('Hydra · ')), 'Recovery does not relaunch providers automatically');
+    assert.equal((await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'))?.status, 'unchecked', 'Quota observations are transient and never auto-refreshed on restart');
     const budgetTask = tasks.find(task => task.title === 'Discard preview'); assert.ok(budgetTask);
     assert.equal(budgetTask.schedule?.budgetHold, true); assert.equal(budgetTask.schedule?.state, 'blocked');
     assert.deepEqual(budgetTask.schedule?.request, { type: 'followUp', prompt: 'Retained budget-held follow-up ü' });
@@ -460,5 +462,27 @@ export async function run(): Promise<void> {
     assert.equal(await readFile(path.join(discardTask.worktree, 'codex-requests.jsonl'), 'utf8'), requestsBeforeHold);
     assert.equal((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === discardTask.id)?.schedule?.budgetHold, true);
     console.log('PASS: native soft budgets hold unmeasured new tasks using reported project usage, retain exact follow-ups without provider requests, require explicit retry, allow warnings, and retain settings/holds for restart.');
+    const quotasBefore = await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState');
+    const tasksBeforeQuota = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
+    const historyBeforeQuota = await vscode.commands.executeCommand<SessionView>('hydra.getSession', discardTask.id);
+    await vscode.commands.executeCommand('hydra.openQuotaStatus');
+    await waitFor(() => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra · Usage limits'));
+    await vscode.commands.executeCommand('hydra.openQuotaStatus');
+    assert.equal(vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra · Usage limits').length, 1);
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.getQuotaState'), quotasBefore, 'Opening and reopening quota view are passive');
+    await vscode.commands.executeCommand('hydra.refreshQuota');
+    const quotas = await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'); assert.ok(quotas);
+    assert.equal(quotas.status, 'checked'); assert.equal(quotas.snapshot?.buckets[0]?.primary?.remainingPercent, 75);
+    assert.equal(quotas.snapshot?.buckets[0]?.secondary, undefined); assert.equal(quotas.snapshot?.ordinaryUsageAllowed, undefined);
+    assert.ok(!JSON.stringify(quotas).includes('private-fixture-account')); assert.ok(!JSON.stringify(quotas).includes('private-reset-token'));
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.listTasks'), tasksBeforeQuota); assert.deepEqual(await vscode.commands.executeCommand('hydra.getSession', discardTask.id), historyBeforeQuota);
+    assert.equal(await readFile(path.join(discardTask.worktree, 'codex-requests.jsonl'), 'utf8'), requestsBeforeHold, 'Quota refresh starts no model turn');
+    await vscode.workspace.getConfiguration('hydra').update('codexPath', 'relative-invalid-quota', vscode.ConfigurationTarget.Workspace);
+    await waitFor(async () => (await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'))?.status === 'unchecked');
+    assert.equal((await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'))?.snapshot, undefined);
+    await vscode.commands.executeCommand('hydra.refreshQuota'); assert.equal((await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'))?.status, 'error');
+    await vscode.workspace.getConfiguration('hydra').update('codexPath', process.env.HYDRA_TEST_CODEX_PROVIDER, vscode.ConfigurationTarget.Workspace);
+    await waitFor(async () => (await vscode.commands.executeCommand<QuotaState>('hydra.getQuotaState'))?.status === 'unchecked');
+    console.log('PASS: native quota view is passive/reused, explicitly refreshes reported windows, strips identities/reset tokens, preserves exact held tasks/history, makes zero model requests and clears observations on provider configuration changes.');
   }
 }

@@ -23,6 +23,7 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
 
 ## Available features
 
+- In standalone Hydra, open **Hydra: Provider Usage Limits** or the task usage panel's **Provider usage limits** button. Opening is passive; explicitly refresh account windows through tested Codex 0.154.0 without submitting a model turn. Missing fields remain unavailable, observations are timestamped, and stale data is labelled. Claude limits remain unavailable with official `/usage` guidance. See [provider usage limits](docs/Provider_Quotas.md).
 - Open **Hydra: Toggle Editor / Agents** from the Command Palette or press **Ctrl+Alt+A**.
 - A persistent status-bar control switches modes.
 - The README's Hydra logo is used for the extension, sidebar, and agent-manager tab icons.
@@ -43,13 +44,13 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
 
 The manager occupies a supported editor tab alongside native editors and terminals. Its compact **Agent map** connects each repository to its worktrees and assigned agents. Select an agent node to open the task; collapse the map or pause its motion at any time. Moving arrows indicate locally observed running managed sessions and stop for approvals. External sessions remain static because their progress is unavailable. Connections show checkout context; agent-to-agent dependencies and message flow are not implemented yet. The map follows the editor theme and reduced-motion preference, and makes no model requests.
 
-The manager does not promise exact restoration of arbitrary grid layouts. Model controls, broader provider approval prompts, integration, and discard are subsequent features. Authenticated Codex acceptance remains pending.
+The manager does not promise exact restoration of arbitrary grid layouts. Managed Codex model/effort controls, guarded integration and reversible confirmed discard are implemented. Broader provider approval prompts and authenticated Codex acceptance remain pending; see [implementation status](docs/Implementation_Status.md).
 
 ## Provider and worktree settings
 
 Install the official Claude Code and/or Codex CLI separately using its supported login flow. Hydra searches PATH; set **Hydra: Claude Path** or **Hydra: Codex Path** to an absolute executable path if needed. Executable presence does not prove authentication or protocol compatibility. Windows `.cmd` / `.bat` shims are launched through PowerShell with an encoded, quoted executable path; task prompts are never inserted into shell commands.
 
-The default limit is two active managed processes or provider terminals. Extra launches are refused with an explanation; this terminal prototype does not implement the future managed-session queue. Tasks can still be created while that limit is reached. Configure **Hydra: Worktree Root** to choose an absolute directory outside the main repository. No secrets, ignored files, or dependencies are copied automatically.
+The default limit is two active managed processes or provider terminals per window. Excess launches enter a persistent queue with explicit dependencies and restart reconciliation. External extension sessions are shown separately. Soft task/project budgets can warn or hold new work using reported usage; holds require explicit retry. See [scheduling](docs/Task_Scheduling.md) and [soft budgets](docs/Soft_Budgets.md). Configure **Hydra: Worktree Root** to choose an absolute directory outside the main repository. No secrets, ignored files, or dependencies are copied automatically.
 
 One Hydra window owns each canonical repository at a time. A second owner displays an error and disables task operations. Records are local under VS Code's extension global-storage directory, with atomic, versioned metadata. Corrupt records are preserved for diagnosis. Worktrees isolate files and indexes; they are not a security sandbox.
 
@@ -65,7 +66,7 @@ npm.cmd run test:smoke
 npm.cmd run package
 ```
 
-Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.14.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import is unavailable in that development host. The standalone installer and subscription-account onboarding remain upcoming desktop features.
+Press **F5** in this repository to launch a VS Code Extension Development Host for fast core tests. `hydra-core-0.15.0.vsix` is a development artifact for **Extensions: Install from VSIX**, not the final Hydra product. Settings import and quota refresh are available in standalone Hydra. The installer, replayable onboarding and passive provider account setup have passed automated Windows acceptance; live sign-in, signing/distribution and the remaining delivery gates are tracked in [implementation status](docs/Implementation_Status.md).
 
 `npm.cmd test` runs real-Git safety, storage, and handoff ownership tests. The smoke test uses installed VS Code on Windows and downloads a host on other platforms. It checks three mode cycles, three isolated tasks in a dirty repository, both provider launch routes with local test executables, exact terminal working directories, duplicate prevention, concurrency, and recovery in a second fresh host. Two additional hosts load the actual generated Claude and Codex workspace files, validate checkout identity, and test the missing-extension fallback. These executables make no model requests and do not validate authenticated provider sessions. Linux CI runs the same host tests under Xvfb. Failed fixtures are retained under `.test-build` for diagnosis.
 
@@ -95,7 +96,7 @@ A finished model turn leaves the task idle for follow-up, rather than claiming t
 
 Owned session storage contains atomic conversation snapshots and sequenced append-only raw event logs. Reload recovers text and session IDs, marks unfinished turns interrupted, and never sends a model request automatically. The view shows ten recent turns and up to 50,000 response characters per turn, with visible truncation notices; full local output is retained. A 32 MiB per-turn output guard stops excessive output with an error. Token figures are provider-reported, and dollar figures are provider estimates, not an asserted bill or savings percentage.
 
-Managed processes and terminal writers share the configured concurrency cap; extra starts are refused rather than queued. An active managed writer blocks terminal launch and extension handoff for that task. Mode changes preserve running processes; extension shutdown stops them. See [the tested protocol and acceptance limits](docs/Provider_Protocol.md). Automated host tests use local fixtures without model requests; a separate real, tools-disabled CLI test confirmed streamed text, session-ID follow-up, and usage in a scratch directory.
+Managed processes and terminal writers share the configured concurrency cap and persistent launch queue. An active managed writer blocks terminal launch and extension handoff for that task. Mode changes preserve running processes; extension shutdown stops them. See [the tested protocol and acceptance limits](docs/Provider_Protocol.md). Automated host tests use local fixtures without model requests; a separate real, tools-disabled CLI test confirmed streamed text, session-ID follow-up, and usage in a scratch directory.
 
 ## Managed Codex sessions
 

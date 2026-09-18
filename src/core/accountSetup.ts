@@ -27,10 +27,10 @@ export interface AccountRpc {
   close(): Promise<void>;
 }
 /** Separate account-only channel. Never logs protocol payloads or requests a model turn. */
-export function accountRpc(executable: string, cwd: string, notify: (method: string, params: unknown) => void, failed: () => void): AccountRpc {
+export function accountRpc(executable: string, cwd: string, notify: (method: string, params: unknown) => void, failed: () => void, mode: 'setup' | 'quota' = 'setup'): AccountRpc {
   const launch = processLaunch(executable, ['app-server', '--listen', 'stdio://']);
   const child = spawn(launch.executable, launch.args, { cwd, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe','pipe','pipe'] });
-  let next = 0, closed = false;
+  let next = 0, closed = false, bytes = 0;
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const clear = () => { for (const value of pending.values()) { clearTimeout(value.timer); value.reject(new Error('Codex account connection closed.')); } pending.clear(); };
   const stop = async () => { if (closed) return; closed = true; clear(); child.stdin.end(); if (child.pid && child.exitCode === null && child.signalCode === null) await terminateProcessTree(child.pid); };
@@ -47,11 +47,12 @@ export function accountRpc(executable: string, cwd: string, notify: (method: str
     if ('error' in message) entry.reject(new Error('Codex rejected the account request. Use its official client or retry.'));
     else entry.resolve(message.result);
   });
-  child.stdout.on('data', data => { try { messages.push(data); } catch { fail(); } });
+  child.stdout.on('data', data => { bytes += data.length; if (bytes > 2 * 1024 * 1024) { fail(); return; } try { messages.push(data); } catch { fail(); } });
   // Provider diagnostics can contain private data. Drain without retaining or publishing.
-  child.stderr.resume(); child.stdin.on('error', fail); child.on('error', fail); child.on('close', fail);
+  child.stderr.on('data', data => { bytes += data.length; if (bytes > 2 * 1024 * 1024) fail(); }); child.stdin.on('error', fail); child.on('error', fail); child.on('close', fail);
   return { close: stop, request(method, params) {
-    if (!['initialize','account/read','account/login/start','account/login/cancel'].includes(method)) return Promise.reject(new Error('Unsupported account method.'));
+    const allowed = mode === 'quota' ? ['initialize', 'account/rateLimits/read'] : ['initialize','account/read','account/login/start','account/login/cancel'];
+    if (!allowed.includes(method)) return Promise.reject(new Error('Unsupported account method.'));
     return new Promise((resolve,reject) => {
       const id = ++next;
       const timer = setTimeout(() => { pending.delete(id); reject(new Error('Codex account request timed out.')); }, 15000);

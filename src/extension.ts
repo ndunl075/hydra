@@ -19,6 +19,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
+import { createDelegatedChildren } from './core/delegationChildren';
 import { hostDelegationPolicy } from './core/delegationHost';
 import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
@@ -204,7 +205,16 @@ class Manager {
       const parent = this.getTask(parentId);
       if (parent.state === 'discarded') throw new Error('Restore the parent task before materializing child worktrees.');
       const decisions = (await this.delegations.load(parent.id, runId)).decisions;
-      return structuredClone(await this.delegationDispatches.materialize({ parentId: parent.id, runId, repository: parent.repository, parentTitle: parent.title, configuredRoot: vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), decisions }));
+      const dispatches = await this.delegationDispatches.materialize({ parentId: parent.id, runId, repository: parent.repository, parentTitle: parent.title, configuredRoot: vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), decisions });
+      const children = createDelegatedChildren(parent, decisions, dispatches), existing = new Map(this.tasks.filter(task => task.delegation?.parentId === parent.id && task.delegation?.runId === runId).map(task => [task.delegation!.dispatchKey, task]));
+      for (const child of children) {
+        const prior = existing.get(child.delegation!.dispatchKey);
+        if (prior && (prior.id !== child.id || prior.worktree !== child.worktree || prior.branch !== child.branch)) throw new Error('A stored child task conflicts with its immutable delegation dispatch. Reconcile it before retrying.');
+        if (!prior && this.tasks.some(task => task.id === child.id || task.worktree === child.worktree || task.branch === child.branch)) throw new Error('A task already owns this delegated worktree. Reconcile it before retrying.');
+      }
+      const added = children.filter(child => !existing.has(child.delegation!.dispatchKey));
+      if (added.length) { this.tasks.push(...added); await this.persist(); await this.broadcast({ type: 'taskCreated' }); await this.publish(); }
+      return structuredClone(children);
     });
     command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
       const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;

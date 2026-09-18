@@ -7,6 +7,8 @@ import { assertFreshContext, digest, overlappingScopes, scopePath } from '../src
 import { defaultDelegationPreferences, parseDelegationProposal, prepareDelegation, type DelegationChild, type DelegationPolicy, type DelegationProposal } from '../src/core/delegationPlan';
 import { DelegationStore } from '../src/core/delegationStore';
 import { DelegationDispatchStore } from '../src/core/delegationDispatch';
+import { createDelegatedChildren } from '../src/core/delegationChildren';
+import type { Task } from '../src/core/model';
 
 const parentId = '123456789abc', runId = 'abcdef123456', planId = '0123456789ab', base = 'a'.repeat(40);
 function child(key = 'parser', writeScope = ['src/parser.ts']): DelegationChild {
@@ -199,6 +201,15 @@ test('failed child worktree creation stays uncertain and refuses an automatic du
     const prepared = prepareDelegation(proposal(), policy()), created: string[] = [];
     await assert.rejects(dispatchStore(directory, created, true).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] }), /uncertain/); assert.equal(created.length, 1);
     await assert.rejects(dispatchStore(directory, created).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] }), /unresolved/); assert.equal(created.length, 1); assert.equal((await dispatchStore(directory).load(parentId, runId))[0]!.status, 'uncertain');
+  } finally { await clean(directory); }
+});
+test('materialized worktrees become idempotent idle children with focused manifests and no schedule', async () => {
+  const directory = await fixture();
+  try {
+    const prepared = prepareDelegation(proposal(), policy()), dispatch = await dispatchStore(directory).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] });
+    const parent: Task = { id: parentId, title: 'Parent', prompt: 'Parent prompt', repository: path.resolve('fixture'), worktree: path.resolve('parent'), branch: 'agent/parent-123456789abc', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const [childTask] = createDelegatedChildren(parent, [prepared], dispatch, '2026-01-01T00:00:00.000Z');
+    assert.equal(childTask!.state, 'idle'); assert.equal(childTask!.schedule, undefined); assert.equal(childTask!.delegation?.dispatchKey, dispatch[0]!.dispatchKey); assert.match(childTask!.prompt, /Implement parser/);
   } finally { await clean(directory); }
 });
 test('separate processes cannot bypass the run counter with simultaneous writes', async () => {

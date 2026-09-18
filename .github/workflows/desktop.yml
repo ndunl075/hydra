@@ -66,6 +66,27 @@ jobs:
           # Upstream ripgrep uses GitHub's release API; avoid shared-runner anonymous limits.
           GITHUB_TOKEN: ${{ github.token }}
       - run: npm.cmd run desktop:smoke
+      - run: npm.cmd run desktop:installer
+      - name: Verify installer lifecycle on disposable runner
+        shell: pwsh
+        run: ./scripts/desktop-installer-test.ps1 -InstallerPath .desktop/code-oss/.build/win32-x64/user-setup/HydraSetup.exe
+      - name: Upload tested user installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hydra-win32-x64-user-installer
+          path: .desktop/code-oss/.build/win32-x64/user-setup/HydraSetup.exe
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload installer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hydra-installer-test-logs
+          path: .desktop/installer-test-logs/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload standalone editor
         uses: actions/upload-artifact@v4
         with:

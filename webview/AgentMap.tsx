@@ -1,6 +1,7 @@
 ﻿import React, { useId, useState } from 'react';
 import type { Snapshot, Task } from '../src/core/model';
 import { ProviderLogo } from './ProviderLogo';
+import { delegationGraph } from '../src/core/delegationGraph';
 import './agent-map.css';
 
 const basename = (value: string) => value.split(/[\\/]/).filter(Boolean).at(-1) || value;
@@ -42,6 +43,7 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
   const repositories = [...new Set([...snapshot.repositories, ...snapshot.tasks.map(task => task.repository)])];
   const running = snapshot.tasks.filter(task => task.state === 'running').length;
   const groups = repositories.map(repository => ({ repository, tasks: snapshot.tasks.filter(task => task.repository === repository) }));
+  const delegationEdges = delegationGraph(snapshot.tasks);
   const graphHeight = groups.reduce((height, group) => height + Math.max(group.tasks.length, 1) * 148 + 20, 0);
   let groupOffset = 0;
 
@@ -66,6 +68,7 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
                 const rootY = Math.min(130, 60 + Math.max(tasks.length - 1, 0) * 74);
                 return <div className="agent-map-repository" key={repository} style={{ top, height }}>
                   <svg className="agent-map-connections" width="850" height={height} fill="none" aria-hidden="true">
+                    {delegationEdges.filter(edge => tasks.some(task => task.id === edge.from) && tasks.some(task => task.id === edge.to)).map(edge => { const from = tasks.findIndex(task => task.id === edge.from), to = tasks.findIndex(task => task.id === edge.to); return <path key={`${edge.kind}-${edge.from}-${edge.to}`} className={`agent-map-delegation-link agent-map-delegation-${edge.state}`} d={`M794 ${100 + from * 148} C842 ${100 + from * 148} 842 ${60 + to * 148} 794 ${60 + to * 148}`} />; })}
                     {tasks.map((task, index) => {
                       const y = 60 + index * 148;
                       const { moving } = observedActivity(snapshot, task);
@@ -120,7 +123,7 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
       </div>
       <p className="agent-map-legend" id={legendId}>
         <span><span className="agent-map-line-key" aria-hidden="true" />Repository → worktree → assigned agent</span>
-        <span>Motion = observed managed task running. Lines show context, not messages or dependencies.</span>
+        <span>Dashed lines are recorded delegation assignments/dependencies; motion is observed managed execution, not messages.</span>
       </p>
       {Object.entries(snapshot.delegationPlans || {}).length > 0 && <div className="agent-map-plans" aria-label="Recorded delegation plans">{Object.entries(snapshot.delegationPlans || {}).flatMap(([parentId, plans]) => plans.map(plan => <article key={`${parentId}-${plan.runId}-${plan.id}`}><header><strong>Recorded plan</strong><span>{plan.mode === 'auto' ? 'Auto preference' : 'Solo preference'} · not dispatched</span></header><p>{plan.rationale}</p><ul>{plan.children.map(child => <li key={child.key}><code>{child.key}</code><span>{child.goal}</span><small>{child.provider} · {child.writeScope.join(', ')}{child.dependencies.length ? ` · waits for ${child.dependencies.join(', ')}` : ''}</small></li>)}</ul></article>))}</div>}
     </div>}

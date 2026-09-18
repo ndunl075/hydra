@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { replaceAtomic } from './atomicFile';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { emptyBudgets, parseBudgets, type BudgetSettings } from './budgets';
@@ -30,7 +31,7 @@ export class BudgetStore {
       await mkdir(this.directory, { recursive: true });
       const temporary = path.join(this.directory, `budgets-${randomUUID()}.tmp`);
       await writeFile(temporary, data, { encoding: 'utf8', flag: 'wx' });
-      await rename(temporary, path.join(this.directory, 'budgets.json'));
+      await replaceAtomic(temporary, path.join(this.directory, 'budgets.json'));
     });
     this.queue = operation.catch(() => {});
     return operation;

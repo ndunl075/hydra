@@ -50,11 +50,13 @@ export async function readCodexQuota(connect: () => AccountRpc, signal?: AbortSi
   const rpc = connect();
   let rejectStop!: (error: Error) => void;
   const stopped = new Promise<never>((_resolve, reject) => { rejectStop = reject; });
-  const abort = () => { rejectStop(new Error('Quota refresh cancelled.')); void rpc.close().catch(() => {}); };
-  const timer = setTimeout(() => { rejectStop(new Error('Quota refresh timed out.')); void rpc.close().catch(() => {}); }, 18000);
+  // Close once in finally: reentrant transport.close calls can return before the
+  // first owned-tree termination finishes, allowing cancellation to settle early.
+  const abort = () => { rejectStop(new Error('Quota refresh cancelled.')); };
+  const timer = setTimeout(() => { rejectStop(new Error('Quota refresh timed out.')); }, 18000);
   signal?.addEventListener('abort', abort, { once: true });
   try {
-    if (signal?.aborted) abort();
+    if (signal?.aborted) throw new Error('Quota refresh cancelled.');
     const init = object(await Promise.race([rpc.request('initialize', { clientInfo: { name: 'hydra_quota_status', title: 'Hydra usage limits', version: '1' }, capabilities: { experimentalApi: false, requestAttestation: false } } satisfies InitializeParams), stopped]));
     if (signal?.aborted) throw new Error('Quota refresh cancelled.');
     if (typeof init.userAgent !== 'string' || !/(?:^|[^0-9])0\.154\.0(?:[^0-9A-Za-z_.-]|$)/.test(init.userAgent)) throw new Error('Quota refresh requires tested Codex 0.154.0.');

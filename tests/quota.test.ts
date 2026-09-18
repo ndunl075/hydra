@@ -71,6 +71,17 @@ test('quota refresh has an overall deadline even if a transport never resolves',
   await assert.rejects(pending, /timed out/); assert.ok(closed >= 1); t.mock.timers.reset();
 });
 
+test('cancelled quota refresh waits for owned transport termination before settling', async () => {
+  const controller = new AbortController(); let closes = 0, settled = false;
+  let finishClose!: () => void;
+  const termination = new Promise<void>(resolve => { finishClose = resolve; });
+  const pending = readCodexQuota(() => ({ request() { return new Promise(() => {}); }, async close() { if (++closes === 1) await termination; } }), controller.signal);
+  const rejected = assert.rejects(pending, /cancelled/).finally(() => { settled = true; });
+  controller.abort(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closes, 1); assert.equal(settled, false, 'Caller must wait until owned termination is complete');
+  finishClose(); await rejected; assert.equal(settled, true); assert.equal(closes, 1);
+});
+
 test('real JSONL quota channel rejects model, login and billing mutations and never logs private payloads', async () => {
   const root = await fixture();
   try {

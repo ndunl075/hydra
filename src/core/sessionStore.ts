@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
+import { replaceAtomic } from './atomicFile';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { SessionView } from './model';
@@ -24,7 +25,7 @@ export class SessionStore {
       await mkdir(directory, { recursive: true });
       const temporary = path.join(directory, `${randomUUID()}.tmp`);
       await writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
-      await rename(temporary, filename);
+      await replaceAtomic(temporary, filename);
     });
     // A nonessential handoff export must not poison the provider evidence queue.
     this.artifactQueue = operation.catch(() => {});
@@ -64,7 +65,7 @@ export class SessionStore {
       await mkdir(directory, { recursive: true });
       const temporary = path.join(directory, `${randomUUID()}.tmp`);
       await writeFile(temporary, data, { flag: 'wx' });
-      await rename(temporary, path.join(directory, 'history.json'));
+      await replaceAtomic(temporary, path.join(directory, 'history.json'));
     });
   }
   log(id: string, turnId: string, event: unknown): Promise<void> {

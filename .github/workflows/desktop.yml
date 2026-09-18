@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   desktop:
@@ -60,6 +61,28 @@ jobs:
             if ($ready -ne $vsPath) { throw 'Spectre component verification failed.' }
           }
           "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
+      - name: Verify prior tested upgrade artifact provenance
+        id: upgrade-baseline
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const baseline = JSON.parse(fs.readFileSync('desktop/upgrade-baseline.json', 'utf8'));
+            const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: baseline.runId });
+            if (run.conclusion !== 'success' || run.head_sha !== baseline.headSha || run.path !== '.github/workflows/desktop.yml') throw new Error('Pinned prior installer run has not passed the exact expected Windows workflow/head.');
+            const { data: artifact } = await github.rest.actions.getArtifact({ ...context.repo, artifact_id: baseline.artifactId });
+            if (artifact.expired || artifact.name !== baseline.artifactName || artifact.digest !== baseline.artifactDigest || artifact.workflow_run?.id !== baseline.runId || artifact.workflow_run?.head_sha !== baseline.headSha) throw new Error('Pinned prior installer artifact is expired or its provenance changed. Revalidate a replacement baseline explicitly.');
+            core.setOutput('run-id', String(baseline.runId));
+            core.setOutput('artifact-id', String(baseline.artifactId));
+      - name: Download pinned prior tested installer
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.upgrade-baseline.outputs.run-id }}
+          artifact-ids: ${{ steps.upgrade-baseline.outputs.artifact-id }}
+          merge-multiple: true
+          path: .desktop/upgrade-prior
       - run: npm.cmd ci
       - run: npm.cmd run desktop:build
         env:
@@ -70,6 +93,9 @@ jobs:
       - name: Verify installer lifecycle on disposable runner
         shell: pwsh
         run: ./scripts/desktop-installer-test.ps1 -InstallerPath .desktop/code-oss/.build/win32-x64/user-setup/HydraSetup.exe
+      - name: Verify distinct-version upgrade on disposable runner
+        shell: pwsh
+        run: ./scripts/desktop-upgrade-test.ps1 -PriorInstallerPath .desktop/upgrade-prior/HydraSetup.exe -InstallerPath .desktop/code-oss/.build/win32-x64/user-setup/HydraSetup.exe -BuiltAppPath .desktop/VSCode-win32-x64
       - name: Upload tested user installer
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +110,15 @@ jobs:
         with:
           name: Hydra-installer-test-logs
           path: .desktop/installer-test-logs/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hydra-upgrade-test-logs
+          path: .desktop/upgrade-test-logs/
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

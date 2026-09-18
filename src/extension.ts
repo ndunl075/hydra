@@ -19,7 +19,8 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
-import { createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
+import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
+import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { hostDelegationPolicy } from './core/delegationHost';
 import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
@@ -112,6 +113,7 @@ class Manager {
   private readonly commitReviews = new Map<string, PreparedReview>();
   private readonly discardReviews = new Map<string, DiscardReview>();
   private pendingDiscard?: Promise<void>;
+  private pendingDelegationSave?: Promise<void>;
   private pendingCommit?: Promise<ReviewedCommit>;
   private readonly integrations: Integrations;
   private readonly integrationOperations = new Map<string, IntegrationOperation>();
@@ -202,33 +204,49 @@ class Manager {
       return structuredClone(await this.delegations.load(parentId, runId));
     });
     command('hydra.materializeDelegationRun', async (parentId: string, runId: string) => {
-      const parent = this.getTask(parentId);
-      if (parent.state === 'discarded') throw new Error('Restore the parent task before materializing child worktrees.');
-      const decisions = (await this.delegations.load(parent.id, runId)).decisions;
-      const dispatches = await this.delegationDispatches.materialize({ parentId: parent.id, runId, repository: parent.repository, parentTitle: parent.title, configuredRoot: vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), decisions });
-      const children = createDelegatedChildren(parent, decisions, dispatches), existing = new Map(this.tasks.filter(task => task.delegation?.parentId === parent.id && task.delegation?.runId === runId).map(task => [task.delegation!.dispatchKey, task]));
-      for (const child of children) {
-        const prior = existing.get(child.delegation!.dispatchKey);
-        if (prior && (prior.id !== child.id || prior.worktree !== child.worktree || prior.branch !== child.branch)) throw new Error('A stored child task conflicts with its immutable delegation dispatch. Reconcile it before retrying.');
-        if (!prior && this.tasks.some(task => task.id === child.id || task.worktree === child.worktree || task.branch === child.branch)) throw new Error('A task already owns this delegated worktree. Reconcile it before retrying.');
-      }
-      const added = children.filter(child => !existing.has(child.delegation!.dispatchKey));
-      if (added.length) { this.tasks.push(...added); await this.persist(); await this.broadcast({ type: 'taskCreated' }); await this.publish(); }
-      return structuredClone(children);
+      if (this.busy) throw new Error('Another task operation is in progress.');
+      this.busy = true;
+      try {
+        const parent = this.getTask(parentId);
+        if (parent.state === 'discarded') throw new Error('Restore the parent task before materializing child worktrees.');
+        const decisions = (await this.delegations.load(parent.id, runId)).decisions;
+        const dispatches = await this.delegationDispatches.materialize({ parentId: parent.id, runId, repository: parent.repository, parentTitle: parent.title, configuredRoot: vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), decisions });
+        const children = createDelegatedChildren(parent, decisions, dispatches), existing = new Map(this.tasks.filter(task => task.delegation?.parentId === parent.id && task.delegation?.runId === runId).map(task => [task.delegation!.dispatchKey, task]));
+        for (const child of children) {
+          const prior = existing.get(child.delegation!.dispatchKey);
+          if (prior && (prior.id !== child.id || prior.worktree !== child.worktree || prior.branch !== child.branch)) throw new Error('A stored child task conflicts with its immutable delegation dispatch. Reconcile it before retrying.');
+          if (!prior && this.tasks.some(task => task.id === child.id || task.worktree === child.worktree || task.branch === child.branch)) throw new Error('A task already owns this delegated worktree. Reconcile it before retrying.');
+        }
+        const added = children.filter(child => !existing.has(child.delegation!.dispatchKey));
+        if (added.length) { this.tasks.push(...added); await this.persist(); await this.broadcast({ type: 'taskCreated' }); await this.publish(); }
+        return structuredClone(children);
+      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
     });
     command('hydra.enrollDelegationRun', async (parentId: string, runId: string) => {
-      const parent = this.getTask(parentId);
-      if (parent.state === 'discarded') throw new Error('Restore the parent task before enrolling delegated children.');
-      const decisions = (await this.delegations.load(parent.id, runId)).decisions;
-      const dispatches = await this.delegationDispatches.load(parent.id, runId);
-      const expected = createDelegatedChildren(parent, decisions, dispatches);
-      const persisted = this.tasks.filter(task => task.delegation?.parentId === parent.id && task.delegation?.runId === runId);
-      const needsSave = persisted.some(task => !task.schedule);
-      const enrolled = enrollDelegatedChildren(parent, expected, persisted);
-      if (needsSave) {
-        await this.persist(); await this.publish();
-      }
-      return structuredClone(enrolled);
+      this.assertDelegationEnrollmentWritable();
+      if (this.busy) throw new Error('Another task operation is in progress.');
+      this.busy = true;
+      try {
+        const parent = this.getTask(parentId);
+        if (parent.state === 'discarded') throw new Error('Restore the parent task before enrolling delegated children.');
+        const decisions = (await this.delegations.load(parent.id, runId)).decisions;
+        const dispatches = await this.delegationDispatches.load(parent.id, runId);
+        const expected = createDelegatedChildren(parent, decisions, dispatches);
+        return await this.saveDelegatedEnrollment(parent, expected, runId, enrollDelegatedChildren);
+      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+    });
+    command('hydra.cancelDelegationEnrollment', async (parentId: string, runId: string) => {
+      this.assertDelegationEnrollmentWritable();
+      if (this.busy) throw new Error('Another task operation is in progress.');
+      this.busy = true;
+      try {
+        const parent = this.getTask(parentId);
+        if (parent.state === 'discarded') throw new Error('Restore the parent task before cancelling delegated enrollment.');
+        const decisions = (await this.delegations.load(parent.id, runId)).decisions;
+        const dispatches = await this.delegationDispatches.load(parent.id, runId);
+        const expected = createDelegatedChildren(parent, decisions, dispatches);
+        return await this.saveDelegatedEnrollment(parent, expected, runId, cancelDelegatedEnrollment);
+      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
     });
     command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
       const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;
@@ -473,6 +491,10 @@ class Manager {
     // Session completions can save unrelated tasks while discard/restore commits
     // an immutable record. Wait so an older snapshot cannot overwrite that record.
     await this.pendingDiscard?.catch(() => {});
+    // Enrollment writes a snapshot with detached child schedules. Wait until it
+    // has copied the durable result onto the live task objects, then serialize
+    // this ordinary save from the current live state.
+    while (this.pendingDelegationSave) await this.pendingDelegationSave.catch(() => {});
     for (const task of this.tasks) {
       const s = task.schedule;
       if (this.managed.view(task.id)?.writerUncertain && s) { s.uncertain = true; s.reason = 'Owned process cleanup could not prove writer absence. Stop surviving children and reconcile explicitly.'; this.capacity.hold(task.id); }
@@ -486,6 +508,42 @@ class Manager {
     }
     await this.store.save(this.tasks); await this.settleCapacity(); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
+  }
+  /**
+   * Keep a delegation schedule detached until its disk record is durable. The
+   * task array and every live task object stay in place: managed-session and
+   * scheduler references therefore cannot be replaced by a stale full clone.
+   */
+  private async saveDelegatedEnrollment(
+    parent: Task,
+    expected: Task[],
+    runId: string,
+    change: (parent: Task, expected: Task[], persisted: Task[]) => Task[]
+  ): Promise<Task[]> {
+    // A discard/restore can be persisting a full task snapshot. This command
+    // has already set `busy`, so no newer discard can begin while we wait.
+    // Waiting before installing the enrollment barrier matters: discard calls
+    // persist(), and persist() waits for that barrier. Installing it first
+    // would create a circular wait between the two operations.
+    await this.pendingDiscard?.catch(() => {});
+    // Loading delegation records above is asynchronous. Shutdown may have
+    // begun while it was in flight, so fence the command immediately before
+    // installing the pending-write barrier that shutdown waits for.
+    this.assertDelegationEnrollmentWritable();
+    let changed: Task[] = [];
+    const transaction = (async () => {
+      changed = await saveDelegatedEnrollmentTransaction({ tasks: () => this.tasks, parent, expected, runId, change, assertWritable: () => this.assertDelegationEnrollmentWritable(), save: snapshot => this.store.save(snapshot), settleCapacity: () => this.settleCapacity() });
+    })();
+    this.pendingDelegationSave = transaction;
+    try { await transaction; return structuredClone(changed); }
+    finally {
+      if (this.pendingDelegationSave === transaction) this.pendingDelegationSave = undefined;
+    }
+  }
+  private assertDelegationEnrollmentWritable(): void {
+    if (this.disabled || this.closing || !vscode.workspace.isTrusted) {
+      throw new Error('Hydra cannot update delegation enrollment while this workspace is unavailable.');
+    }
   }
   private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
@@ -1080,6 +1138,7 @@ class Manager {
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     await this.pendingDiscard?.catch(() => {});
+    await this.pendingDelegationSave?.catch(() => {});
     await this.pendingBudgetSave?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.scheduler.idle();

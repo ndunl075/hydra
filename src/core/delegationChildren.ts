@@ -30,13 +30,37 @@ export function enrollDelegatedChildren(parent: Task, expected: Task[], persiste
     if (!link || !source || link.parentId !== parent.id || link.runId !== source.delegation!.runId || task.id !== source.id || task.repository !== parent.repository || task.worktree !== source.worktree || task.branch !== source.branch || task.baseCommit !== source.baseCommit || task.integrationTarget !== source.integrationTarget || task.provider !== source.provider || task.interface !== source.interface || task.prompt !== source.prompt || JSON.stringify(task.modelSelection) !== JSON.stringify(source.modelSelection) || task.state !== 'idle') throw new Error('Stored delegated child does not match its immutable materialization receipt. Reconcile it before enrollment.');
     if (link.childKey !== source.delegation!.childKey || link.dependencies.length !== source.delegation!.dependencies.length || link.dependencies.some((dependency, index) => dependency !== source.delegation!.dependencies[index])) throw new Error('Stored delegated child dependencies do not match the recorded plan. Reconcile them before enrollment.');
     if (task.schedule) {
-      if (task.schedule.state !== 'enrolled' || task.schedule.request || task.schedule.uncertain || task.schedule.startFromDependency || task.schedule.dependencies.length !== link.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index])) throw new Error('Delegated child is already scheduled differently. Stop and reconcile it before enrollment.');
+      const schedule = task.schedule;
+      const wasCancelledBeforeLaunch = schedule.state === 'cancelled' && !schedule.request && !schedule.uncertain && !schedule.startFromDependency && !schedule.queuedAt && !schedule.actualStartingCommit && !schedule.budgetHold && schedule.budgetWarnings === undefined && schedule.artifacts.length === 0;
+      if ((!wasCancelledBeforeLaunch && schedule.state !== 'enrolled') || schedule.request || schedule.uncertain || schedule.startFromDependency || schedule.dependencies.length !== link.dependencies.length || schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index])) throw new Error('Delegated child is already scheduled differently. Stop and reconcile it before enrollment.');
     }
   }
   for (const task of persisted) {
-    if (task.schedule) continue;
+    if (task.schedule?.state === 'enrolled') continue;
     const link = task.delegation!;
     task.schedule = { state: 'enrolled', dependencies: [...link.dependencies], artifacts: [], reason: 'Delegated child enrolled; launch it explicitly when ready.' };
+    task.updatedAt = now;
+  }
+  return persisted;
+}
+
+/**
+ * Cancels an enrollment before any scheduler request exists. Worktree, dispatch,
+ * and dependency receipts remain intact so the owning run can be explicitly
+ * re-enrolled later. This never invokes the provider or scheduler launch path.
+ */
+export function cancelDelegatedEnrollment(parent: Task, expected: Task[], persisted: Task[], now = new Date().toISOString()): Task[] {
+  if (parent.state === 'discarded' || !expected.length || expected.length !== persisted.length) throw new Error('Delegated children must be materialized before cancelling enrollment.');
+  const expectedByDispatch = new Map(expected.map(task => [task.delegation!.dispatchKey, task]));
+  if (expectedByDispatch.size !== expected.length || new Set(persisted.map(task => task.delegation?.dispatchKey)).size !== persisted.length) throw new Error('Delegated child cancellation has duplicate dispatch identities.');
+  for (const task of persisted) {
+    const link = task.delegation, source = link && expectedByDispatch.get(link.dispatchKey), schedule = task.schedule;
+    if (!link || !source || link.parentId !== parent.id || link.runId !== source.delegation!.runId || task.id !== source.id || task.repository !== parent.repository || task.worktree !== source.worktree || task.branch !== source.branch || task.baseCommit !== source.baseCommit || task.integrationTarget !== source.integrationTarget || task.provider !== source.provider || task.interface !== source.interface || task.prompt !== source.prompt || JSON.stringify(task.modelSelection) !== JSON.stringify(source.modelSelection) || task.state !== 'idle') throw new Error('Stored delegated child does not match its immutable materialization receipt. Reconcile it before cancelling enrollment.');
+    if (link.childKey !== source.delegation!.childKey || link.dependencies.length !== source.delegation!.dependencies.length || link.dependencies.some((dependency, index) => dependency !== source.delegation!.dependencies[index])) throw new Error('Stored delegated child dependencies do not match the recorded plan. Reconcile them before cancelling enrollment.');
+    if (!schedule || schedule.state !== 'enrolled' || schedule.request || schedule.uncertain || schedule.startFromDependency || schedule.queuedAt || schedule.actualStartingCommit || schedule.budgetHold || schedule.budgetWarnings !== undefined || schedule.artifacts.length !== 0 || schedule.dependencies.length !== link.dependencies.length || schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index])) throw new Error('Only an enrolled delegated child with no launch history can be cancelled. Stop and reconcile it before changing the delegation run.');
+  }
+  for (const task of persisted) {
+    task.schedule = { state: 'cancelled', dependencies: [...task.delegation!.dependencies], artifacts: [], reason: 'Delegated enrollment cancelled before any provider launch. Re-enroll this recorded run explicitly to make it launchable again.' };
     task.updatedAt = now;
   }
   return persisted;

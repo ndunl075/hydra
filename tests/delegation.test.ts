@@ -7,7 +7,8 @@ import { assertFreshContext, digest, overlappingScopes, scopePath } from '../src
 import { defaultDelegationPreferences, parseDelegationProposal, prepareDelegation, type DelegationChild, type DelegationPolicy, type DelegationProposal } from '../src/core/delegationPlan';
 import { DelegationStore } from '../src/core/delegationStore';
 import { DelegationDispatchStore } from '../src/core/delegationDispatch';
-import { createDelegatedChildren, enrollDelegatedChildren } from '../src/core/delegationChildren';
+import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from '../src/core/delegationChildren';
+import { saveDelegatedEnrollmentTransaction } from '../src/core/delegationEnrollmentTransaction';
 import { TaskScheduler } from '../src/core/scheduler';
 import type { Task } from '../src/core/model';
 
@@ -253,6 +254,98 @@ test('explicit enrollment preserves immutable dependency order without queuing o
     assert.throws(() => enrollDelegatedChildren(parent, fresh, malformed), /immutable/);
     assert.deepEqual(malformed.map(task => task.schedule), [undefined, undefined], 'A later invalid child must not partially enroll an earlier sibling.');
   } finally { await clean(directory); }
+});
+function enrollmentTasks(): { parent: Task; expected: Task[]; tasks: Task[]; children: Task[]; unrelated: Task } {
+  const parent: Task = { id: parentId, title: 'Parent', prompt: 'Parent', repository: path.resolve('fixture'), worktree: path.resolve('parent'), branch: 'agent/parent-123456789abc', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+  const childTask = (id: string, key: string, dispatchKey: string): Task => ({ id, title: `Parent: ${key}`, prompt: `Implement ${key}`, repository: parent.repository, worktree: path.resolve('fixture-worktrees', id), branch: `agent/${key}-${id}`, baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: parent.createdAt, updatedAt: parent.updatedAt, delegation: { parentId, runId, childKey: key, dispatchKey, dependencies: [] } });
+  const children = [childTask('111111111111', 'first', '1'.repeat(24)), childTask('222222222222', 'second', '2'.repeat(24))];
+  const unrelated: Task = { id: '333333333333', title: 'Unrelated', prompt: 'Keep me', repository: parent.repository, worktree: path.resolve('unrelated'), branch: 'agent/unrelated-333333333333', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: parent.createdAt, updatedAt: parent.updatedAt };
+  return { parent, expected: structuredClone(children), tasks: [parent, ...children, unrelated], children, unrelated };
+}
+function enrollForTransaction(_parent: Task, _expected: Task[], persisted: Task[]): Task[] {
+  for (const task of persisted) {
+    task.schedule = { state: 'enrolled', dependencies: [], artifacts: [], reason: 'Delegated child enrolled; launch it explicitly when ready.' };
+    task.updatedAt = '2026-01-02T00:00:00.000Z';
+  }
+  return persisted;
+}
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  return { promise: new Promise<void>(done => { resolve = done; }), resolve };
+}
+test('delegated enrollment can be cancelled and explicitly restored before any launch without changing receipts', async () => {
+  const directory = await fixture();
+  try {
+    const first = child('first'), second = child('second', ['tests/second.ts']); second.dependencies = ['first'];
+    const prepared = prepareDelegation(proposal([first, second]), policy()), dispatch = await dispatchStore(directory).materialize({ parentId, runId, repository: path.resolve('fixture'), parentTitle: 'Parser work', decisions: [prepared] });
+    const parent: Task = { id: parentId, title: 'Parent', prompt: 'Parent', repository: path.resolve('fixture'), worktree: path.resolve('parent'), branch: 'agent/parent-123456789abc', baseCommit: base, integrationTarget: 'main', provider: 'claude', interface: 'managed-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const children = createDelegatedChildren(parent, [prepared], dispatch, '2026-01-01T00:00:00.000Z');
+    enrollDelegatedChildren(parent, children, children, '2026-01-02T00:00:00.000Z');
+    const receipt = children.map(task => structuredClone(task.delegation));
+    const cancelled = cancelDelegatedEnrollment(parent, children, children, '2026-01-03T00:00:00.000Z');
+    assert.deepEqual(cancelled.map(task => task.schedule), [
+      { state: 'cancelled', dependencies: [], artifacts: [], reason: 'Delegated enrollment cancelled before any provider launch. Re-enroll this recorded run explicitly to make it launchable again.' },
+      { state: 'cancelled', dependencies: [children[0]!.id], artifacts: [], reason: 'Delegated enrollment cancelled before any provider launch. Re-enroll this recorded run explicitly to make it launchable again.' }
+    ]);
+    assert.deepEqual(children.map(task => task.delegation), receipt, 'Cancellation must retain immutable dispatch and dependency receipts.');
+    let launches = 0;
+    const scheduler = new TaskScheduler({ tasks: () => children, capacity: () => 2, liveCount: () => 0, enabled: () => true, persist: async () => {}, prepare: async task => ({ commit: task.baseCommit, artifacts: [] }), launch: async () => { launches++; } });
+    await scheduler.drain(); assert.equal(launches, 0, 'Cancellation and re-enrollment never launch a provider.');
+    const reenrolled = enrollDelegatedChildren(parent, children, children, '2026-01-04T00:00:00.000Z');
+    assert.ok(reenrolled.every(task => task.schedule?.state === 'enrolled'));
+    await scheduler.drain(); assert.equal(launches, 0, 'Re-enrollment still needs an explicit launch request.');
+    cancelDelegatedEnrollment(parent, children, children, '2026-01-05T00:00:00.000Z');
+    children[1]!.schedule!.queuedAt = '2026-01-05T00:00:01.000Z';
+    assert.throws(() => enrollDelegatedChildren(parent, children, children), /already scheduled differently/);
+    assert.equal(children[0]!.schedule?.state, 'cancelled', 'A later child with launch history must not partially re-enroll an earlier sibling.');
+    children[1]!.schedule!.queuedAt = undefined;
+    enrollDelegatedChildren(parent, children, children, '2026-01-06T00:00:00.000Z');
+    children[1]!.schedule = { state: 'queued', dependencies: [children[0]!.id], artifacts: [], request: { type: 'startManaged' } };
+    assert.throws(() => cancelDelegatedEnrollment(parent, children, children), /Only an enrolled delegated child/);
+    assert.equal(children[0]!.schedule?.state, 'enrolled', 'A later invalid sibling must not partially cancel the earlier child.');
+  } finally { await clean(directory); }
+});
+test('delegated enrollment storage failure leaves every live child and identity untouched', async () => {
+  const { parent, expected, tasks, children, unrelated } = enrollmentTasks();
+  const references = [...tasks]; let settled = false;
+  await assert.rejects(saveDelegatedEnrollmentTransaction({ tasks: () => tasks, parent, expected, runId, change: enrollForTransaction, save: async () => { throw new Error('disk unavailable'); }, settleCapacity: async () => { settled = true; } }), /disk unavailable/);
+  assert.deepEqual(tasks, references, 'The live list is not replaced after a rejected write.');
+  assert.ok(tasks.every((task, index) => task === references[index]), 'Managed-session and scheduler references retain their original objects.');
+  assert.ok(children.every(task => task.schedule === undefined), 'No child becomes launchable when its durable write failed.');
+  assert.equal(unrelated.schedule, undefined); assert.equal(settled, false);
+});
+test('delegated enrollment checks its write fence before constructing or saving a snapshot', async () => {
+  const { parent, expected, tasks, children } = enrollmentTasks(); let saved = false;
+  await assert.rejects(saveDelegatedEnrollmentTransaction({ tasks: () => tasks, parent, expected, runId, change: enrollForTransaction, assertWritable: () => { throw new Error('workspace unavailable'); }, save: async () => { saved = true; }, settleCapacity: async () => {} }), /workspace unavailable/);
+  assert.equal(saved, false);
+  assert.ok(children.every(task => task.schedule === undefined), 'A closed host cannot make a child launchable.');
+});
+test('an unrelated callback update survives the enrollment write barrier and is included by its later ordinary save', async () => {
+  const { parent, expected, tasks, children, unrelated } = enrollmentTasks();
+  const writing = deferred(), release = deferred(); const durable: Task[][] = [];
+  const transaction = saveDelegatedEnrollmentTransaction({ tasks: () => tasks, parent, expected, runId, change: enrollForTransaction, save: async snapshot => { durable.push(structuredClone(snapshot)); writing.resolve(); await release.promise; }, settleCapacity: async () => {} });
+  await writing.promise;
+  unrelated.error = 'managed callback completed'; unrelated.updatedAt = '2026-01-03T00:00:00.000Z';
+  release.resolve(); await transaction;
+  // Manager.persist waits for pendingDelegationSave, then takes a fresh live
+  // snapshot. Model that ordinary post-barrier write here.
+  durable.push(structuredClone(tasks));
+  assert.equal(unrelated.error, 'managed callback completed');
+  assert.equal(durable.at(-1)!.find(task => task.id === unrelated.id)!.error, 'managed callback completed');
+  assert.ok(children.every(task => task.schedule?.state === 'enrolled'));
+  assert.equal(tasks[3], unrelated, 'The unrelated live object was never replaced by the detached child snapshot.');
+});
+test('an affected-child fingerprint conflict refuses to overwrite any live child schedule', async () => {
+  const { parent, expected, tasks, children } = enrollmentTasks();
+  const writing = deferred(), release = deferred(); let diskSnapshot: Task[] | undefined;
+  const transaction = saveDelegatedEnrollmentTransaction({ tasks: () => tasks, parent, expected, runId, change: enrollForTransaction, save: async snapshot => { diskSnapshot = structuredClone(snapshot); writing.resolve(); await release.promise; }, settleCapacity: async () => {} });
+  await writing.promise;
+  children[1]!.error = 'managed callback changed this child'; children[1]!.updatedAt = '2026-01-03T00:00:00.000Z';
+  release.resolve();
+  await assert.rejects(transaction, /changed while its durable record was being saved/);
+  assert.equal(children[1]!.error, 'managed callback changed this child');
+  assert.ok(children.every(task => task.schedule === undefined), 'The conflict fence checks every affected child before patching any schedule.');
+  assert.ok(diskSnapshot!.filter(task => task.delegation).every(task => task.schedule?.state === 'enrolled'), 'The rejected in-memory patch is distinguishable from the detached record that triggered the conflict.');
 });
 test('separate processes cannot bypass the run counter with simultaneous writes', async () => {
   const directory = await fixture();

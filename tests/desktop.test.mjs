@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
-import { brandedProduct, brandedInstaller, installerVersionSource, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
 
 test('nested editor compiles its own API declarations without loading the parent extension API', async () => {
   const parent = path.join(root, '.test-build');
@@ -81,6 +81,30 @@ test('installer versions follow Hydra while preserving the editor API version an
   assert.throws(() => installerVersionSource(original, '1.2.3";process.exit()'), /invalid/);
   assert.throws(() => installerVersionSource(original.replace('Version: pkg.version,', 'Version: changed,'), '1.2.3'), /contract changed/);
 });
+test('Hydra startup honors explicit appearance instead of forcing system detection for new users; upstream drift refuses', () => {
+  for (const name of ['isNewUser', 'isNewUser3']) {
+    const original = `this.settings = new ThemeConfiguration(configurationService, hostColorService, ${name});\nawait this.migrateAutoDetectColorScheme();`;
+    const branded = brandedThemeStartup(original);
+    assert.ok(branded.includes('new ThemeConfiguration(configurationService, hostColorService, false);'));
+    assert.ok(!branded.includes('await this.migrateAutoDetectColorScheme();'));
+    assert.throws(() => brandedThemeStartup(original + original), /contract changed/);
+    assert.throws(() => brandedThemeStartup(original.replace('hostColorService', 'changedService')), /contract changed/);
+    assert.throws(() => brandedThemeStartup(original.replace('await this.migrateAutoDetectColorScheme();', '')), /contract changed/);
+  }
+});
+
+test('native splash honors configured automatic detection instead of overriding it on fresh installs', () => {
+  const original = `isAutoDetectColorScheme() { if (Setting.DETECT_COLOR_SCHEME.getValue(this.configurationService)) { return true; } if (!this.stateService.getItem(THEME_STORAGE_KEY)) { const { userValue } = this.configurationService.inspect(Setting.DETECT_COLOR_SCHEME.key); return userValue === void 0; } return false; }`;
+  const branded = brandedNativeThemeStartup(original);
+  for (const configured of [false, true]) {
+    const service = new Function('Setting', `return { ${branded} };`)({ DETECT_COLOR_SCHEME: { getValue: () => configured } });
+    service.stateService = { getItem: () => { throw new Error('Fresh-install state must not override the preference'); } };
+    assert.equal(service.isAutoDetectColorScheme(), configured);
+  }
+  assert.throws(() => brandedNativeThemeStartup(original + original), /contract changed/);
+  assert.throws(() => brandedNativeThemeStartup(original.replace('THEME_STORAGE_KEY', 'changed')), /contract changed/);
+});
+
 test('standalone staging embeds the real Hydra runtime and themes with an app-only default', async () => {
   const parent = path.join(root, '.test-build');
   await fs.mkdir(parent, { recursive: true });
@@ -92,6 +116,8 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     assert.equal(staged.name, original.name);
     assert.equal(staged.version, original.version);
     assert.equal(staged.contributes.configurationDefaults['workbench.colorTheme'], 'Hydra Dark');
+    assert.equal(staged.contributes.configurationDefaults['workbench.preferredDarkColorTheme'], 'Hydra Dark');
+    assert.equal(staged.contributes.configurationDefaults['window.autoDetectColorScheme'], false);
     assert.equal(original.contributes.configurationDefaults?.['workbench.colorTheme'], undefined);
     assert.deepEqual(await fs.readFile(path.join(fixture, 'dist', 'extension.cjs')), await fs.readFile(path.join(root, 'dist', 'extension.cjs')));
     assert.deepEqual(await fs.readFile(path.join(fixture, 'hydra-logo.png')), await fs.readFile(path.join(root, 'hydra-logo.png')));

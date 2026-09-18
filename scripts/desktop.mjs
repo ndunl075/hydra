@@ -83,6 +83,19 @@ async function npm(args, cwd, extraEnv) {
   await fs.access(cli);
   await run(process.execPath, [cli, ...args], cwd, extraEnv);
 }
+export function brandedThemeStartup(text) {
+  const constructor = /new ThemeConfiguration\(configurationService, hostColorService, isNewUser\d*\);/g;
+  const migration = 'await this.migrateAutoDetectColorScheme();';
+  if ([...text.matchAll(constructor)].length !== 1 || text.split(migration).length !== 2) throw new Error('Pinned theme startup contract changed.');
+  return text.replace(constructor, 'new ThemeConfiguration(configurationService, hostColorService, false);')
+    .replace(migration, '// Hydra honors its dark default without writing a system-theme preference for new users.');
+}
+export function brandedNativeThemeStartup(text) {
+  const method = /(isAutoDetectColorScheme\(\)(?:: boolean)? \{)\s*if \(Setting\.DETECT_COLOR_SCHEME\.getValue\(this\.configurationService\)\) \{[\s\S]*?return false;\s*\}/g;
+  const matches = [...text.matchAll(method)];
+  if (matches.length !== 1 || !matches[0][0].includes('this.stateService.getItem(THEME_STORAGE_KEY)') || !matches[0][0].includes('userValue')) throw new Error('Pinned native theme startup contract changed.');
+  return text.replace(method, '$1\n    return Setting.DETECT_COLOR_SCHEME.getValue(this.configurationService);\n  }');
+}
 export async function prepare() {
   await fs.mkdir(cache, { recursive: true });
   await contained(cache);
@@ -96,6 +109,10 @@ export async function prepare() {
   if (desktopMain.split(desktopExport).length !== 2) throw new Error('Pinned desktop entrypoint changed.');
   await fs.copyFile(path.join(root, 'desktop', 'workbench', 'hydraProfile.ts'), path.join(source, 'src', 'vs', 'workbench', 'hydraProfile.ts'));
   await fs.writeFile(path.join(source, 'src', 'vs', 'workbench', 'workbench.desktop.main.ts'), desktopMain.replace(desktopExport, `import './hydraProfile.js';\n\n${desktopExport}`));
+  const themeStartupPath = 'src/vs/workbench/services/themes/browser/workbenchThemeService.ts';
+  await fs.writeFile(path.join(source, themeStartupPath), brandedThemeStartup(await git(['show', `${pin.commit}:${themeStartupPath}`])));
+  const nativeThemePath = 'src/vs/platform/theme/electron-main/themeMainServiceImpl.ts';
+  await fs.writeFile(path.join(source, nativeThemePath), brandedNativeThemeStartup(await git(['show', `${pin.commit}:${nativeThemePath}`])));
   for (const [configPath, declaration, typeRoots] of [
     ['src/tsconfig.base.json', './vscode-dts/vscode.d.ts', ['../node_modules/@types']],
     ['extensions/tsconfig.base.json', '../src/vscode-dts/vscode.d.ts', ['./node_modules/@types', '../node_modules/@types']]
@@ -115,7 +132,9 @@ export async function prepare() {
 }
 export async function stageHydra(destination) {
   const manifest = await readJson(path.join(root, 'package.json'));
-  manifest.contributes.configurationDefaults = { ...manifest.contributes.configurationDefaults, 'workbench.colorTheme': 'Hydra Dark' };
+  manifest.contributes.configurationDefaults = { ...manifest.contributes.configurationDefaults,
+    'workbench.colorTheme': 'Hydra Dark', 'workbench.preferredDarkColorTheme': 'Hydra Dark',
+    'window.autoDetectColorScheme': false };
   await fs.mkdir(destination, { recursive: true });
   for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.
@@ -151,6 +170,7 @@ export async function build() {
 }
 export async function smoke() {
   await verify();
+  await run(process.execPath, [path.join(root, 'scripts', 'desktop-appearance-smoke.mjs')], root);
   await npm(['run', 'test:smoke'], root, { HYDRA_TEST_DESKTOP: path.join(output, 'Hydra.exe') });
 }
 export async function installer() {

@@ -14,7 +14,7 @@ export interface DelegationEvaluationImportBundle {
   case: { id: string; sha256: string; baseCommit: string; provider: 'claude' | 'codex'; model: string; effort: string };
   observation: unknown;
 }
-interface DelegationEvaluationBinding { delegatedRunId: string; observationId: string; observationSha256: string; }
+interface DelegationEvaluationBinding { delegatedRunId: string; observationId: string; observationSha256: string; corpusSha256?: string; }
 
 const runId = (value: unknown): string => {
   if (typeof value !== 'string' || !/^[a-f0-9]{12}$/.test(value)) throw new Error('Invalid delegated evaluation run binding.');
@@ -84,6 +84,27 @@ export class DelegationEvaluationImport {
   constructor(private readonly storageDirectory: string, private readonly bundleDirectory: string, private readonly ledger = new DelegationEvaluationLedger(storageDirectory)) {}
   private file() { return path.join(this.storageDirectory, 'delegation-evaluation-import-bindings.json'); }
   private lock() { return `${this.file()}.lock`; }
+  private corpusFile(corpusSha256: string) { return path.join(this.storageDirectory, `delegation-evaluation-corpus-${sha(corpusSha256, 'corpus SHA-256')}.json`); }
+  private async savedCorpus(corpusSha256: string): Promise<DelegationEvaluationCorpus | undefined> {
+    const filename = this.corpusFile(corpusSha256);
+    let info;
+    try { info = await lstat(filename); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+    if (!info.isFile() || info.isSymbolicLink() || info.size > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation corpus storage is unsafe or oversized.');
+    const bytes = await readFile(filename);
+    if (bytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation corpus storage is unsafe or oversized.');
+    const corpus = parseDelegationEvaluationCorpus(JSON.parse(bytes.toString('utf8')));
+    if (corpus.sha256 !== corpusSha256) throw new Error('Evaluation corpus binding changed.');
+    return corpus;
+  }
+  private async retainCorpus(corpus: DelegationEvaluationCorpus): Promise<void> {
+    const existing = await this.savedCorpus(corpus.sha256);
+    if (existing) { if (JSON.stringify(existing) !== JSON.stringify(corpus)) throw new Error('Evaluation corpus binding changed.'); return; }
+    const bytes = Buffer.from(JSON.stringify(corpus), 'utf8');
+    if (bytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation corpus storage is oversized.');
+    const temporary = path.join(this.storageDirectory, `delegation-evaluation-corpus-${randomUUID()}.tmp`);
+    try { const handle = await open(temporary, 'wx'); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } await replaceAtomic(temporary, this.corpusFile(corpus.sha256)); }
+    catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+  }
   private async loadBindings(): Promise<DelegationEvaluationBinding[]> {
     let bytes: Buffer;
     try { const info = await lstat(this.file()); if (!info.isFile() || info.isSymbolicLink() || info.size > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation import binding storage is unsafe.'); bytes = await readFile(this.file()); }
@@ -91,9 +112,16 @@ export class DelegationEvaluationImport {
     if (bytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation import binding storage is unsafe.');
     const value = object(JSON.parse(bytes.toString('utf8')), 'binding store'); exact(value, ['version', 'bindings'], 'binding store fields');
     if (value.version !== 1 || !Array.isArray(value.bindings) || value.bindings.length > 10_000) throw new Error('Invalid evaluation import binding storage.');
-    const bindings = value.bindings.map(item => { const binding = object(item, 'binding'); exact(binding, ['delegatedRunId', 'observationId', 'observationSha256'], 'binding fields'); return { delegatedRunId: runId(binding.delegatedRunId), observationId: observationId(binding.observationId), observationSha256: sha(binding.observationSha256, 'observation SHA-256') }; });
+    const bindings = value.bindings.map(item => { const binding = object(item, 'binding'); exact(binding, binding.corpusSha256 === undefined ? ['delegatedRunId', 'observationId', 'observationSha256'] : ['delegatedRunId', 'observationId', 'observationSha256', 'corpusSha256'], 'binding fields'); return { delegatedRunId: runId(binding.delegatedRunId), observationId: observationId(binding.observationId), observationSha256: sha(binding.observationSha256, 'observation SHA-256'), ...(binding.corpusSha256 === undefined ? {} : { corpusSha256: sha(binding.corpusSha256, 'corpus SHA-256') }) }; });
     if (new Set(bindings.map(item => item.delegatedRunId)).size !== bindings.length || new Set(bindings.map(item => item.observationId)).size !== bindings.length) throw new Error('Conflicting evaluation import bindings.');
     return bindings;
+  }
+  private async saveBindings(bindings: DelegationEvaluationBinding[]): Promise<void> {
+    const bytes = Buffer.from(JSON.stringify({ version: 1, bindings }, null, 2), 'utf8');
+    if (bytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation import binding storage is oversized.');
+    const temporary = path.join(this.storageDirectory, `delegation-evaluation-import-${randomUUID()}.tmp`);
+    try { const handle = await open(temporary, 'wx'); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } await replaceAtomic(temporary, this.file()); }
+    catch (error) { await unlink(temporary).catch(() => {}); throw error; }
   }
   async import(relativeBundlePath: string, corpusValue: unknown): Promise<DelegationEvaluationBinding> {
     const operation = this.queue.then(async () => {
@@ -109,19 +137,23 @@ export class DelegationEvaluationImport {
       const token = randomUUID(), lock = this.lock();
       await writeFile(lock, token, { flag: 'wx' }).catch(error => { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('Evaluation import has another writer or a retained lock.'); throw error; });
       try {
-        const bindings = await this.loadBindings(), candidate = { delegatedRunId: bundle.delegatedRunId, observationId: observation.id, observationSha256: observation.sha256 };
+        const bindings = await this.loadBindings(), candidate = { delegatedRunId: bundle.delegatedRunId, observationId: observation.id, observationSha256: observation.sha256, corpusSha256: corpus.sha256 };
         const existing = bindings.find(item => item.delegatedRunId === candidate.delegatedRunId || item.observationId === candidate.observationId);
-        if (existing) { if (existing.delegatedRunId === candidate.delegatedRunId && existing.observationId === candidate.observationId && existing.observationSha256 === candidate.observationSha256) return existing; throw new Error('Evaluation import binding conflicts with immutable prior evidence.'); }
+        if (existing) {
+          if (existing.delegatedRunId !== candidate.delegatedRunId || existing.observationId !== candidate.observationId || existing.observationSha256 !== candidate.observationSha256 || (existing.corpusSha256 && existing.corpusSha256 !== candidate.corpusSha256)) throw new Error('Evaluation import binding conflicts with immutable prior evidence.');
+          const retained = (await this.ledger.load(corpus)).some(item => item.id === candidate.observationId && item.sha256 === candidate.observationSha256);
+          if (!retained) throw new Error('Evaluation import binding has no matching retained observation.');
+          await this.retainCorpus(corpus);
+          if (!existing.corpusSha256) await this.saveBindings(bindings.map(item => item === existing ? candidate : item));
+          return candidate;
+        }
         // The ledger parser validates each sealed record; projection also refuses a
         // stale/conflicting Auto/Solo pair before this importer appends anything.
         const prior = await this.ledger.load(corpus);
         projectDelegationEvaluationLedger(corpus, [...prior, observation]);
+        await this.retainCorpus(corpus);
         await this.ledger.append(bundle.observation, corpus);
-        const bytes = Buffer.from(JSON.stringify({ version: 1, bindings: [...bindings, candidate] }, null, 2), 'utf8');
-        if (bytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Evaluation import binding storage is oversized.');
-        const temporary = path.join(this.storageDirectory, `delegation-evaluation-import-${randomUUID()}.tmp`);
-        try { const handle = await open(temporary, 'wx'); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } await replaceAtomic(temporary, this.file()); }
-        catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+        await this.saveBindings([...bindings, candidate]);
         return candidate;
       } finally {
         const info = await lstat(lock).catch(() => undefined);
@@ -137,5 +169,12 @@ export class DelegationEvaluationImport {
     if (!binding) return { availability: 'unavailable', references: [] };
     const observation = (await this.ledger.load(corpus)).find(item => item.id === binding.observationId && item.sha256 === binding.observationSha256);
     return observation ? { availability: 'available', references: [{ id: binding.observationId, sha256: binding.observationSha256 }] } : { availability: 'unavailable', references: [] };
+  }
+  /** Archive adapter: fixed storage paths only; missing legacy corpus bindings stay unavailable. */
+  async exportStoredEvidence(delegatedRunId: string): Promise<{ availability: 'available' | 'unavailable'; references: DelegationRunArchiveEvidenceReference[] }> {
+    const binding = (await this.loadBindings()).find(item => item.delegatedRunId === runId(delegatedRunId));
+    if (!binding?.corpusSha256) return { availability: 'unavailable', references: [] };
+    const corpus = await this.savedCorpus(binding.corpusSha256);
+    return corpus ? this.exportEvidence(delegatedRunId, corpus) : { availability: 'unavailable', references: [] };
   }
 }

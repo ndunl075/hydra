@@ -5,7 +5,7 @@ import { recordDelegatedSession, validateDelegatedExecution } from './core/deleg
 import { prepareScheduledTask } from './core/schedulerGit';
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalStore } from './core/store';
 import { OwnershipLock } from './core/ownership';
@@ -47,6 +47,8 @@ import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } fro
 import { delegationRunUsage, usageSnapshot } from './core/usage';
 import { projectDelegationRunUsage, releaseDelegationBudget, reserveDelegationBudget } from './core/delegationRunAccounting';
 import { createDelegationRunArchive } from './core/delegationRunExport';
+import { DelegationEvaluationImport, maxDelegationEvaluationImportBundleBytes } from './core/delegationEvaluationImport';
+import { parseDelegationEvaluationCorpus } from './core/delegationEvaluationCorpus';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
 import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
@@ -258,6 +260,25 @@ class Manager {
       finally { await this.publish(); }
       return structuredClone(delivered.receipt);
     });
+    command('hydra.importDelegationEvaluationObservation', async () => {
+      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot import evaluation evidence while this workspace is unavailable.');
+      const corpusSelection = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFiles: true, canSelectFolders: false, filters: { JSON: ['json'] }, openLabel: 'Select immutable evaluation corpus' });
+      if (!corpusSelection?.length) return;
+      if (corpusSelection[0]!.scheme !== 'file') throw new Error('Select a local evaluation corpus JSON file.');
+      const corpusFile = corpusSelection[0]!.fsPath, corpusInfo = await lstat(corpusFile);
+      if (!corpusInfo.isFile() || corpusInfo.isSymbolicLink() || corpusInfo.size > maxDelegationEvaluationImportBundleBytes) throw new Error('Selected evaluation corpus must be a bounded regular JSON file.');
+      const corpusBytes = await readFile(corpusFile);
+      if (corpusBytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Selected evaluation corpus is oversized.');
+      const corpus = parseDelegationEvaluationCorpus(JSON.parse(corpusBytes.toString('utf8')));
+      const bundleSelection = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFiles: true, canSelectFolders: false, filters: { JSON: ['json'] }, openLabel: 'Select sealed local observation bundle' });
+      if (!bundleSelection?.length) return;
+      if (bundleSelection[0]!.scheme !== 'file') throw new Error('Select a local evaluation observation JSON file.');
+      const bundleFile = bundleSelection[0]!.fsPath;
+      const importer = new DelegationEvaluationImport(path.join(this.storageDirectory, 'delegation-evaluation'), path.dirname(bundleFile));
+      const binding = await importer.import(path.basename(bundleFile), corpus);
+      await vscode.window.showInformationMessage(`Sealed evaluation observation ${binding.observationId.slice(0, 12)} linked to delegated run ${binding.delegatedRunId}.`);
+      return structuredClone(binding);
+    });
     // Read-only: this only projects already-durable local facts. It starts no process,
     // provider turn, scheduler action, upload, or archive import.
     command('hydra.exportDelegationRunArchive', async (requestedParentId?: string, requestedRunId?: string) => {
@@ -270,7 +291,8 @@ class Manager {
       })();
       if (!parent) throw new Error('Select a delegated child or specify the parent and run to export.');
       const recovery = projectDelegationReconciliation(parent, runId, this.tasks, await this.delegationDispatches.load(parent.id, runId), await this.delegationJournal.load(parent.id, runId));
-      const archive = createDelegationRunArchive({ parent, runId, tasks: this.tasks, recovery });
+      const evaluationEvidence = await new DelegationEvaluationImport(path.join(this.storageDirectory, 'delegation-evaluation'), '').exportStoredEvidence(runId);
+      const archive = createDelegationRunArchive({ parent, runId, tasks: this.tasks, recovery, ...(evaluationEvidence.availability === 'available' ? { evaluationEvidence: evaluationEvidence.references } : {}) });
       await vscode.env.clipboard.writeText(JSON.stringify(archive, null, 2));
       await vscode.window.showInformationMessage(`Delegated run archive copied (${archive.sha256.slice(0, 12)}; evaluation evidence ${archive.evaluationEvidence.availability}).`);
       return archive;

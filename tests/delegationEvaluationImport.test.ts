@@ -23,10 +23,19 @@ test('imports an exact sealed local observation, persists the run binding, and e
     await writeFile(path.join(bundles, 'observation.json'), JSON.stringify(bundle()));
     const importer = new DelegationEvaluationImport(storage, bundles);
     const first = await importer.import('observation.json', corpus());
-    assert.deepEqual(first, { delegatedRunId: '333333333333', observationId: '111111111111111111111111', observationSha256: (bundle().observation as any).sha256 });
+    assert.deepEqual(first, { delegatedRunId: '333333333333', observationId: '111111111111111111111111', observationSha256: (bundle().observation as any).sha256, corpusSha256: corpus().sha256 });
     assert.deepEqual(await importer.import('observation.json', corpus()), first);
     assert.deepEqual(await new DelegationEvaluationImport(storage, bundles).exportEvidence('333333333333', corpus()), { availability: 'available', references: [{ id: first.observationId, sha256: first.observationSha256 }] });
+    assert.deepEqual(await new DelegationEvaluationImport(storage, bundles).exportStoredEvidence('333333333333'), { availability: 'available', references: [{ id: first.observationId, sha256: first.observationSha256 }] });
     assert.deepEqual(await importer.exportEvidence('444444444444', corpus()), { availability: 'unavailable', references: [] });
+    assert.deepEqual(await importer.exportStoredEvidence('444444444444'), { availability: 'unavailable', references: [] });
+    await writeFile(path.join(storage, 'delegation-evaluation-import-bindings.json'), JSON.stringify({ version: 1, bindings: [{ delegatedRunId: first.delegatedRunId, observationId: first.observationId, observationSha256: first.observationSha256 }] }));
+    assert.deepEqual(await importer.exportStoredEvidence(first.delegatedRunId), { availability: 'unavailable', references: [] });
+    assert.deepEqual(await importer.import('observation.json', corpus()), first);
+    assert.equal((await importer.exportStoredEvidence(first.delegatedRunId)).availability, 'available');
+    const corpusFile = path.join(storage, `delegation-evaluation-corpus-${corpus().sha256}.json`);
+    await writeFile(corpusFile, JSON.stringify({ ...corpus(), id: 'changed' }));
+    await assert.rejects(new DelegationEvaluationImport(storage, bundles).exportStoredEvidence('333333333333'), /corpus changed|corpus binding changed/);
     await writeFile(path.join(bundles, 'evidence', 'summary.json'), '{"ok":false}\n');
     await assert.rejects(importer.import('observation.json', corpus()), /artifact hash/);
   } finally { await rm(directory, { recursive: true, force: true }); }

@@ -112,6 +112,10 @@
       {
         "command": "hydra.exportDelegationRunArchive",
         "title": "Hydra: Export Delegated Run Archive"
+      },
+      {
+        "command": "hydra.importDelegationEvaluationObservation",
+        "title": "Hydra: Import Sealed Evaluation Observation"
       }
     ],
     "keybindings": [

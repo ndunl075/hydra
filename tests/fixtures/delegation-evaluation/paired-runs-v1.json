@@ -1,0 +1,18 @@
+{
+  "auto": {
+    "version": 1,
+    "mode": "auto",
+    "corpusId": "delegation-v1",
+    "corpusSha256": "dfb6a5d24b85bf891e2fc78cbb5a6e608a1ce1185eba47f0fbbecc6861446af3",
+    "caseId": "localized-fix",
+    "caseSha256": "2332b78528fe703b9b239be23b31924cf03ddc0fca188b1cc922ccab920991d7"
+  },
+  "solo": {
+    "version": 1,
+    "mode": "solo",
+    "corpusId": "delegation-v1",
+    "corpusSha256": "dfb6a5d24b85bf891e2fc78cbb5a6e608a1ce1185eba47f0fbbecc6861446af3",
+    "caseId": "localized-fix",
+    "caseSha256": "2332b78528fe703b9b239be23b31924cf03ddc0fca188b1cc922ccab920991d7"
+  }
+}

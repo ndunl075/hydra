@@ -19,6 +19,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
+import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
@@ -132,6 +133,7 @@ class Manager {
   private readonly quota: ProviderQuota;
   private readonly delegations: DelegationStore;
   private readonly delegationDispatches: DelegationDispatchStore;
+  private readonly delegationJournal: DelegationOrchestrationJournal;
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -153,6 +155,9 @@ class Manager {
     });
     this.delegationDispatches = new DelegationDispatchStore(path.join(this.storageDirectory, 'delegation'), async () => {
       if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot materialize delegation worktrees while this workspace is unavailable.');
+    });
+    this.delegationJournal = new DelegationOrchestrationJournal(path.join(this.storageDirectory, 'delegation'), async () => {
+      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation orchestration while this workspace is unavailable.');
     });
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
       this.integrationOperations.set(op.taskId,op);
@@ -227,7 +232,19 @@ class Manager {
           if (!prior && this.tasks.some(task => task.id === child.id || task.worktree === child.worktree || task.branch === child.branch)) throw new Error('A task already owns this delegated worktree. Reconcile it before retrying.');
         }
         const added = children.filter(child => !existing.has(child.delegation!.dispatchKey));
-        if (added.length) { this.tasks.push(...added); await this.persist(); await this.broadcast({ type: 'taskCreated' }); await this.publish(); }
+        if (added.length) {
+          const pending = added.map(child => ({ ...child, delegationJournalPending: { version: 1 as const, event: { version: 1 as const, id: child.delegation!.dispatchKey, occurredAt: new Date().toISOString(), kind: 'assignment' as const, parentId: parent.id, runId, from: { kind: 'task' as const, taskId: parent.id }, to: { kind: 'task' as const, taskId: child.id }, provenance: { producer: 'host' as const, recordId: child.delegation!.dispatchKey } } } }));
+          const candidate = [...this.tasks, ...pending];
+          try {
+            await this.store.save(candidate);
+            this.tasks = candidate;
+            // This is the only Feature 07 producer: it records the already durable child creation.
+            for (const child of pending) { try { await this.delegationJournal.appendEvent(child.delegationJournalPending!.event); const cleared = structuredClone(this.tasks); const target = cleared.find(item => item.id === child.id)!; target.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; } catch (error) { this.error = `Delegation assignment journal is pending recovery: ${this.describe(error)}`; } }
+          } catch (error) {
+            throw error;
+          }
+          await this.broadcast({ type: 'taskCreated' }); await this.publish();
+        }
         return structuredClone(children);
       } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
     });
@@ -391,6 +408,11 @@ class Manager {
           const lock = new OwnershipLock();
           await lock.acquire(path.join(this.context.globalStorageUri.fsPath, 'ownership'), repository);
           this.locks.push(lock);
+        }
+        // Recover only explicit durable assignment drafts; ordinary child state never creates history.
+        for (const task of this.tasks) if (task.delegation?.parentId && task.delegationJournalPending) {
+          try { await this.delegationJournal.appendEvent(task.delegationJournalPending.event); const cleared = structuredClone(this.tasks); cleared.find(item => item.id === task.id)!.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; }
+          catch (error) { this.error = `Delegation assignment recovery is required before this child can launch: ${this.describe(error)}`; this.output.appendLine(this.describe(error)); }
         }
         await this.capacity.refresh();
         this.capacity.startWatching(error => { this.output.appendLine(this.describe(error)); void this.publish(); });
@@ -664,6 +686,12 @@ class Manager {
       }
     }
     if (generation !== this.snapshotGeneration) return;
+    const delegationOrchestration: NonNullable<Snapshot['delegationOrchestration']> = {};
+    for (const parent of this.tasks.filter(item => !item.delegation)) {
+      const runs = new Set(this.tasks.filter(item => item.delegation?.parentId === parent.id).map(item => item.delegation!.runId));
+      for (const runId of runs) { try { delegationOrchestration[`${parent.id}:${runId}`] = await this.delegationJournal.load(parent.id, runId); } catch (failure) { error ||= this.describe(failure); } }
+    }
+    if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
       conversationDraft: task ? this.conversationDrafts.get(task.id) : undefined,
@@ -676,6 +704,7 @@ class Manager {
       budgets: this.budgetSnapshot(),
       delegation: this.delegationPreferences(),
       delegationPlans: Object.fromEntries(this.delegationPlans),
+      delegationOrchestration,
       resources: this.resources.snapshot(),
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
@@ -821,6 +850,7 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
+    if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
     if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }
     if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');

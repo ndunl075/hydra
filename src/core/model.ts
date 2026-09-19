@@ -10,6 +10,7 @@ import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOper
 import type { ConversationDraft } from './conversationDrafts';
 import { requireDelegationMode, type DelegationPreferences, type DelegationMode } from './delegationPreferences';
 import type { DelegatedVerificationEvidence } from './delegationEvidence';
+import type { DelegationResultBoundary } from './delegationResultBoundary';
 import type { DelegationPlannerRun } from './delegationPlannerIngestion';
 import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
 import type { DelegatedExecutionReceipt } from './delegationRunner';
@@ -44,6 +45,8 @@ export interface Task {
   delegationPlanner?: DelegationPlannerRun;
   /** Durable verification attempts for a managed delegated child. */
   verificationEvidence?: DelegatedVerificationEvidence;
+  /** Immutable inspection receipts for verification superseded by a later reviewed result. */
+  delegationResultBoundaries?: DelegationResultBoundary[];
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
 export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }

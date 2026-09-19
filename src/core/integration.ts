@@ -12,6 +12,7 @@ import { parseNameStatus } from './review';
 import { runProbe } from './process';
 import { delegationIntegrationGate } from './delegationIntegrationGate';
 export type IntegrationGuard = (paths: string[]) => void | Promise<void>;
+export type DelegationAcceptanceGuard = (task: Task, tasks: readonly Task[]) => void | Promise<void>;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0,8000);
 const same = (a: string,b: string) => path.relative(a,b) === '';
 function notCancelled(signal?:AbortSignal):void{if(signal?.aborted)throw new Error('Integration checks cancelled. Preserved candidate requires a fresh review.');}
@@ -25,11 +26,11 @@ async function clean(directory: string): Promise<void> {
   }
   if(await git(directory,['--no-optional-locks','-c','core.fsmonitor=false','status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none'])) throw new Error(`Integration requires a clean saved checkout: ${directory}`);
 }
-async function inputs(task: Task, tasks: readonly Task[], op?: IntegrationOperation): Promise<{target: string; common: string}> {
+async function inputs(task: Task, tasks: readonly Task[], delegationGuard: DelegationAcceptanceGuard, op?: IntegrationOperation): Promise<{target: string; common: string}> {
   if(task.state === 'discarded')throw new Error('Restore this discarded task before integration.');
   if(task.state === 'running' || task.state === 'external' || task.interface === 'official-extension') throw new Error('Stop the task writer and acknowledge external handback before integration.');
   if(!task.reviewedCommit)throw new Error('Commit and record a reviewed task tree before integration.');
-  delegationIntegrationGate(task,tasks);
+  await delegationGuard(task,tasks);
   const receipt=task.reviewedCommit;
   if(receipt.baseCommit!==task.baseCommit)throw new Error('Reviewed task base changed. Prepare a fresh review.');
   const repository=await realpath(task.repository), worktree=await realpath(task.worktree);
@@ -59,13 +60,13 @@ async function recordCandidate(op: IntegrationOperation): Promise<void> {
 }
 export class Integrations {
   readonly store: IntegrationStore;
-  constructor(private readonly directory: string, private readonly changed: (op: IntegrationOperation)=>void = ()=>{}, private readonly tasks: () => readonly Task[] = () => []) { this.store=new IntegrationStore(path.join(directory,'operations')); }
+  constructor(private readonly directory: string, private readonly changed: (op: IntegrationOperation)=>void = ()=>{}, private readonly tasks: () => readonly Task[] = () => [], private readonly delegationGuard: DelegationAcceptanceGuard = delegationIntegrationGate) { this.store=new IntegrationStore(path.join(directory,'operations')); }
   private async save(op: IntegrationOperation): Promise<void>{op.updatedAt=new Date().toISOString();await this.store.save(op);this.changed(op);}
   private async locked<T>(task:Task,action:()=>Promise<T>):Promise<T>{const shared=await common(task.repository);const lock=new OwnershipLock();await lock.acquire(path.join(shared,'hydra-integration-locks'),shared);try{return await action();}finally{await lock.release();}}
   async prepare(task:Task,commands:IntegrationCommand[],guard:IntegrationGuard,signal?:AbortSignal):Promise<IntegrationOperation>{
     commands=parseIntegrationCommands(commands);
     return this.locked(task,async()=>{
-      await guard([task.worktree,task.repository]);const state=await inputs(task,this.tasks());
+      await guard([task.worktree,task.repository]);const state=await inputs(task,this.tasks(),this.delegationGuard);
       if(await git(task.repository,['merge-base','--is-ancestor',task.reviewedCommit!.commit,state.target]).then(()=>true,()=>false))throw new Error('This reviewed commit is already integrated into the target.');
       const id=randomBytes(12).toString('hex'),receipt=task.reviewedCommit!,stamp=new Date().toISOString();
       const op:IntegrationOperation={version:1,id,taskId:task.id,repository:task.repository,taskWorktree:task.worktree,taskBranch:task.branch,targetBranch:task.integrationTarget,baseCommit:receipt.baseCommit,taskCommit:receipt.commit,taskTree:receipt.tree,targetCommit:state.target,candidate:candidatePath(task,id),phase:'preparing',checks:commands.map(command=>({...command,status:'pending'})),files:[],createdAt:stamp,updatedAt:stamp};
@@ -74,7 +75,7 @@ export class Integrations {
         const parent=await realpath(path.dirname(task.worktree)),directory=path.dirname(op.candidate);
         if(isInside(await realpath(task.repository),directory))throw new Error('Integration candidates must be outside the target checkout.');
         await mkdir(directory,{recursive:true});if(!same(await realpath(directory),path.join(parent,'.hydra-integrations')))throw new Error('Integration candidate directory escapes its expected parent.');
-        await guard([task.worktree,task.repository]);await inputs(task,this.tasks(),op);
+        await guard([task.worktree,task.repository]);await inputs(task,this.tasks(),this.delegationGuard,op);
         await git(task.repository,['worktree','add','--detach',op.candidate,op.targetCommit]);
         try{await git(op.candidate,['merge','--no-ff','--no-edit',op.taskCommit]);}
         catch(error){op.phase=(await git(op.candidate,['ls-files','--unmerged','-z'])).length?'conflicted':'failed';op.error=message(error);await this.save(op);return op;}
@@ -88,7 +89,7 @@ export class Integrations {
     notCancelled(signal);
     op.phase='checking';op.error=undefined;op.reviewToken=undefined;op.checks=op.checks.map(check=>({executable:check.executable,args:check.args,status:'pending'}));await this.save(op);
     for(const check of op.checks){
-      await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),op);await candidateIdentity(task,op);
+      await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),this.delegationGuard,op);await candidateIdentity(task,op);
       if(await head(op.candidate)!==op.candidateCommit)throw new Error('Candidate commit changed. Review and validate it again.');
       notCancelled(signal);
       check.status='running';await this.save(op);
@@ -98,7 +99,7 @@ export class Integrations {
       check.status=result.exitCode===0&&!result.error?'passed':'failed';await this.save(op);
       if(check.status==='failed'){op.phase='failed';op.error='Acceptance check failed. Target and task are preserved; inspect the candidate and logs.';await this.save(op);return;}
     }
-    await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),op);await candidateIdentity(task,op);
+    await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),this.delegationGuard,op);await candidateIdentity(task,op);
     if(await head(op.candidate)!==op.candidateCommit||(await git(op.candidate,['rev-parse','HEAD^{tree}'])).trim()!==op.candidateTree)throw new Error('Checks changed the candidate. Review the resulting commit and validate it again.');
     notCancelled(signal);
     op.phase='validated';await this.save(op);
@@ -106,7 +107,7 @@ export class Integrations {
   async reviewResolution(task:Task,op:IntegrationOperation,guard:IntegrationGuard):Promise<void>{
     await this.locked(task,async()=>{
       if(!['conflicted','failed','interrupted'].includes(op.phase))throw new Error('This candidate does not need a resolution review.');
-      await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),op);await candidateIdentity(task,op);await recordCandidate(op);
+      await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),this.delegationGuard,op);await candidateIdentity(task,op);await recordCandidate(op);
       op.phase='resolution-review';op.reviewToken=randomBytes(12).toString('hex');op.error=undefined;await this.save(op);
     });
   }
@@ -119,7 +120,7 @@ export class Integrations {
   async promote(task:Task,op:IntegrationOperation,guard:IntegrationGuard):Promise<void>{
     await this.locked(task,async()=>{
       validateIntegration(op,[task]);if(op.phase!=='validated'||!op.candidateCommit||!op.candidateTree||op.checks.some(check=>check.status!=='passed'||check.exitCode!==0||check.error))throw new Error('A validated candidate with passed acceptance checks is required.');
-      await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),op);await candidateIdentity(task,op);
+      await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),this.delegationGuard,op);await candidateIdentity(task,op);
       if(await head(op.candidate)!==op.candidateCommit||(await git(op.candidate,['rev-parse','HEAD^{tree}'])).trim()!==op.candidateTree)throw new Error('Validated candidate changed. Review and validate it again.');
       op.rollbackRef=`refs/hydra/integration-backups/${op.id}`;
       const prior=await git(task.repository,['rev-parse','--verify',op.rollbackRef]).then(value=>value.trim(),()=>undefined);
@@ -127,7 +128,7 @@ export class Integrations {
       if(prior === undefined) await git(task.repository,['update-ref',op.rollbackRef,op.targetCommit,'0'.repeat(op.targetCommit.length)]);
       op.phase='promoting';await this.save(op);
       try{
-        await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),op);
+        await guard([task.worktree,task.repository,op.candidate]);await inputs(task,this.tasks(),this.delegationGuard,op);
         await git(task.repository,['merge','--ff-only',op.candidateCommit]);
         if(await head(task.repository)!==op.candidateCommit)throw new Error('Target changed during promotion. Preserve the checkout and inspect the rollback reference.');
         op.phase='promoted';op.error=undefined;

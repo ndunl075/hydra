@@ -141,16 +141,12 @@ export class DelegationIngressHost {
   }
   /** Derives review inputs from durable host records; callers never supply hashes or bindings. */
   async parentReviewSource(taskId: string): Promise<ParentReviewSource> {
-    const child = this.child(taskId), manifest = await this.manifest(child), link = child.delegation!;
+    const child = this.child(taskId), link = child.delegation!;
+    await this.manifest(child);
     const dispatch = (await this.dispatches.load(link.parentId, link.runId)).find(item => item.childKey === link.childKey);
-    const history = await this.journal.load(link.parentId, link.runId);
-    const result = history.results.find(item => item.childKey === link.childKey);
-    if (!dispatch || !result) throw new Error('A durable dispatch and child result receipt are required before parent review.');
-    const dependencies = this.dependencyKeys(child).map(childKey => {
-      const receiptSha256 = history.results.find(item => item.childKey === childKey)?.sha256;
-      if (!receiptSha256) throw new Error('A dependent child result has not been durably delivered.');
-      return { childKey, receiptSha256 };
-    });
-    return { child, result, binding: { parentId: link.parentId, runId: link.runId, childKey: link.childKey, dispatchKey: link.dispatchKey, baseCommit: child.baseCommit, writeScope: manifest.child.writeScope, dependencies } };
+    const records = await this.journal.loadResultRecords(link.parentId, link.runId);
+    const matches = records.filter(item => item.binding.parentId === link.parentId && item.binding.runId === link.runId && item.binding.childKey === link.childKey && item.binding.dispatchKey === link.dispatchKey);
+    if (!dispatch || dispatch.status !== 'materialized' || dispatch.dispatchKey !== link.dispatchKey || matches.length !== 1) throw new Error('A durable dispatch and exact saved child result binding are required before parent review.');
+    return { child, result: matches[0]!.receipt, binding: matches[0]!.binding };
   }
 }

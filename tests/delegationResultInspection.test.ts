@@ -30,3 +30,10 @@ test('result inspection blocks absent, stale, and other-child evidence', () => {
   assert.match(html, /Blocked — evidence is missing or stale/);
   assert.match(html, /Not accepted for integration/);
 });
+
+test('current parent decision is visible and cannot be submitted twice from the focused view', () => {
+  const html = renderToStaticMarkup(React.createElement(DelegationResultInspection, { identity, result: result(), verification: verification(), parentReview: { decision: 'approved', reviewedAt: '2026-09-19T00:02:00.000Z', reason: 'Reviewed diff and checks.' }, onReview: () => {} }));
+  assert.match(html, /Explicitly approved for combined integration review/);
+  assert.match(html, /Reviewed diff and checks/);
+  assert.doesNotMatch(html, /Approve child result|Reject child result|<textarea/);
+});

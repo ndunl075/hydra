@@ -42,6 +42,7 @@ import { ConversationDrafts } from './core/conversationDrafts';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
 import { delegationRunUsage, usageSnapshot } from './core/usage';
 import { projectDelegationRunUsage, releaseDelegationBudget, reserveDelegationBudget } from './core/delegationRunAccounting';
+import { createDelegationRunArchive } from './core/delegationRunExport';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
 import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
@@ -224,6 +225,23 @@ class Manager {
     command('hydra.getDelegationRun', async (parentId: string, runId: string) => {
       this.getTask(parentId);
       return structuredClone(await this.delegations.load(parentId, runId));
+    });
+    // Read-only: this only projects already-durable local facts. It starts no process,
+    // provider turn, scheduler action, upload, or archive import.
+    command('hydra.exportDelegationRunArchive', async (requestedParentId?: string, requestedRunId?: string) => {
+      const selected = requestedParentId ? this.getTask(requestedParentId) : this.selectedId ? this.getTask(this.selectedId) : undefined;
+      const parent = selected?.delegation ? this.getTask(selected.delegation.parentId) : selected;
+      const runId = requestedRunId || selected?.delegation?.runId || (() => {
+        const runs = [...new Set(this.tasks.filter(task => task.delegation?.parentId === parent?.id).map(task => task.delegation!.runId))];
+        if (runs.length !== 1) throw new Error('Select a delegated child or specify the parent and run to export.');
+        return runs[0]!;
+      })();
+      if (!parent) throw new Error('Select a delegated child or specify the parent and run to export.');
+      const recovery = projectDelegationReconciliation(parent, runId, this.tasks, await this.delegationDispatches.load(parent.id, runId), await this.delegationJournal.load(parent.id, runId));
+      const archive = createDelegationRunArchive({ parent, runId, tasks: this.tasks, recovery });
+      await vscode.env.clipboard.writeText(JSON.stringify(archive, null, 2));
+      await vscode.window.showInformationMessage(`Delegated run archive copied (${archive.sha256.slice(0, 12)}; evaluation evidence ${archive.evaluationEvidence.availability}).`);
+      return archive;
     });
     command('hydra.materializeDelegationRun', async (parentId: string, runId: string) => {
       if (this.busy) throw new Error('Another task operation is in progress.');

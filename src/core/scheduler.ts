@@ -84,6 +84,8 @@ export class TaskScheduler {
     prepare(task: Task): Promise<{ commit: string; artifacts: DependencyArtifact[] }>;
     launch(task: Task, request: LaunchRequest): Promise<void>;
     budget?(task: Task): string[];
+    guardBudget?(task: Task, request: LaunchRequest): void;
+    releaseBudgetGuard?(task: Task): void;
     reserve?(task: Task, request: LaunchRequest): Promise<boolean>;
     release?(task: Task): Promise<void>;
   }) {}
@@ -92,17 +94,17 @@ export class TaskScheduler {
     if (task.delegationJournalPending) throw new Error('Delegation assignment journal recovery is pending.');
     if (task.delegation && (!task.schedule || task.schedule.dependencies.length !== task.delegation.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== task.delegation!.dependencies[index]) || (!task.sessionId && (task.schedule.state !== 'enrolled' || task.schedule.request || task.schedule.uncertain)))) throw new Error('Delegated child must be explicitly enrolled with its immutable dependency graph before its first writer launch.');
     if (pendingSchedule(task)) throw new Error('This task already has queued work or an unreconciled writer.');
-    const previousSchedule = task.schedule, previousExecution = task.delegationExecution;
+    const previousSchedule = task.schedule, previousExecution = task.delegationExecution, previousBudgetReservation = task.delegationBudgetReservation;
     if (task.delegation) {
       if (request.type !== 'startManaged' && request.type !== 'followUp') throw new Error('Delegated children must use the managed scheduler launch path.');
       if (!task.sessionId) task.delegationExecution = reserveDelegatedExecution(task);
       else { validateDelegatedExecution(task); if (task.delegationExecution!.status === 'uncertain') throw new Error('Reconcile the delegated writer before resuming.'); }
     }
     task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false, budgetHold: undefined, budgetWarnings: undefined, wakeupKey: undefined };
-    try { task.schedule.budgetWarnings = this.hooks.budget?.(task); }
-    catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hold(task, error); }
+    try { this.hooks.guardBudget?.(task, request); task.schedule.budgetWarnings = this.hooks.budget?.(task); }
+    catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hooks.releaseBudgetGuard?.(task); this.hold(task, error); }
     try { await this.hooks.persist(); }
-    catch (error) { task.schedule = previousSchedule; task.delegationExecution = previousExecution; throw error; }
+    catch (error) { task.schedule = previousSchedule; task.delegationExecution = previousExecution; task.delegationBudgetReservation = previousBudgetReservation; throw error; }
     await this.drain();
   }
   /** Resume a suspended parent exactly once for a durable coalesced child-result set. */
@@ -130,6 +132,7 @@ export class TaskScheduler {
     const s = task.schedule;
     if (!s || !['queued', 'starting', 'waiting-for-children', 'blocked', 'interrupted'].includes(s.state) || s.uncertain) throw new Error('Stop and reconcile this writer before cancelling queued work.');
     s.state = 'cancelled'; s.request = undefined; s.reason = 'Queued launch cancelled.'; s.budgetHold = undefined;
+    this.hooks.releaseBudgetGuard?.(task);
     if (task.delegationExecution) task.delegationExecution = { ...task.delegationExecution, status: 'stopped', updatedAt: new Date().toISOString() };
     await this.hooks.persist();
   }
@@ -140,12 +143,19 @@ export class TaskScheduler {
   async retryBudgetHold(task: Task): Promise<void> {
     const s = task.schedule;
     if (!s?.budgetHold || s.state !== 'blocked' || !s.request || s.uncertain || task.state === 'running' || task.state === 'external') throw new Error('This task has no stopped budget-held launch.');
-    const warnings = this.hooks.budget?.(task);
-    const previous = { ...s };
+    const previous = structuredClone(s), previousBudgetReservation = task.delegationBudgetReservation && structuredClone(task.delegationBudgetReservation);
+    const restore = () => {
+      Object.assign(s, previous);
+      if (previousBudgetReservation) task.delegationBudgetReservation = previousBudgetReservation;
+      else delete task.delegationBudgetReservation;
+    };
     if (s.request.type === 'startManaged' && task.sessionId) s.request = { type: 'followUp', prompt: task.prompt };
+    let warnings: string[];
+    try { this.hooks.guardBudget?.(task, s.request); warnings = this.hooks.budget?.(task) || []; }
+    catch (error) { this.hooks.releaseBudgetGuard?.(task); restore(); throw error; }
     s.state = 'queued'; s.budgetHold = undefined; s.reason = undefined; s.budgetWarnings = warnings;
     try { await this.hooks.persist(); }
-    catch (error) { Object.assign(s, previous); throw error; }
+    catch (error) { this.hooks.releaseBudgetGuard?.(task); restore(); throw error; }
     await this.drain();
   }
   async reconcileStopped(task: Task): Promise<void> {
@@ -168,8 +178,8 @@ export class TaskScheduler {
       if (!this.hooks.enabled()) return;
       const s = task.schedule;
       if (!s || s.state !== 'queued' || !s.request) continue;
-      try { s.budgetWarnings = this.hooks.budget?.(task); }
-      catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hold(task, error); await this.hooks.persist(); continue; }
+      try { this.hooks.guardBudget?.(task, s.request); s.budgetWarnings = this.hooks.budget?.(task); }
+      catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hooks.releaseBudgetGuard?.(task); this.hold(task, error); await this.hooks.persist(); continue; }
       const held = this.hooks.tasks().filter(item => item.schedule?.uncertain).length;
       if (this.hooks.liveCount() + held >= this.hooks.capacity()) continue;
       try { assertDependencyGraph(this.hooks.tasks(), task.id); }
@@ -201,7 +211,9 @@ export class TaskScheduler {
           s.state = 'queued'; s.reason = 'Waiting for task operations or capacity before provider start.';
           await this.hooks.persist(); return;
         }
-        s.budgetWarnings = this.hooks.budget?.(task);
+        this.hooks.guardBudget?.(task, s.request);
+        try { s.budgetWarnings = this.hooks.budget?.(task); }
+        catch (error) { this.hooks.releaseBudgetGuard?.(task); throw error; }
         if (task.delegation && !task.sessionId) {
           startDelegatedExecution(task);
           // The dispatch attempt is durable before the host can create any provider process.
@@ -210,6 +222,7 @@ export class TaskScheduler {
           if (cancelled() || !this.hooks.enabled()) continue;
         }
         await this.hooks.launch(task, s.request!);
+        this.hooks.releaseBudgetGuard?.(task);
         if (cancelled()) continue;
         if (s.budgetHold) { await this.hooks.persist(); continue; }
         s.state = task.state === 'error' ? 'blocked' : task.state === 'interrupted' ? 'interrupted' : task.state === 'idle' ? 'finished' : 'running';
@@ -217,6 +230,7 @@ export class TaskScheduler {
         s.reason = task.error;
         await this.hooks.persist();
       } catch (error) {
+        this.hooks.releaseBudgetGuard?.(task);
         if (cancelled()) continue;
         if (startingSaveFailed) { s.state = 'blocked'; s.reason = error instanceof Error ? error.message : String(error); throw error; }
         if (error instanceof BudgetHoldError && task.state !== 'running' && task.state !== 'external') {

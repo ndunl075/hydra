@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { DelegationDispatchStore } from './delegationDispatch';
 import { DelegationResultIngress } from './delegationResultIngress';
+import type { ParentReviewSource } from './delegationParentReview';
 import { DelegationStore } from './delegationStore';
 import { ingressDelegationContextRequest, type ContextIngressReceipt } from './delegationContextIngress';
 import { parseDelegationContextRequest } from './delegationContextRequests';
@@ -117,5 +118,19 @@ export class DelegationIngressHost {
       child, dispatch,
       binding: { parentId: link.parentId, runId: link.runId, childKey: link.childKey, dispatchKey: link.dispatchKey, baseCommit: child.baseCommit, writeScope: manifest.child.writeScope, dependencies },
     });
+  }
+  /** Derives review inputs from durable host records; callers never supply hashes or bindings. */
+  async parentReviewSource(taskId: string): Promise<ParentReviewSource> {
+    const child = this.child(taskId), manifest = await this.manifest(child), link = child.delegation!;
+    const dispatch = (await this.dispatches.load(link.parentId, link.runId)).find(item => item.childKey === link.childKey);
+    const history = await this.journal.load(link.parentId, link.runId);
+    const result = history.results.find(item => item.childKey === link.childKey);
+    if (!dispatch || !result) throw new Error('A durable dispatch and child result receipt are required before parent review.');
+    const dependencies = this.dependencyKeys(child).map(childKey => {
+      const receiptSha256 = history.results.find(item => item.childKey === childKey)?.sha256;
+      if (!receiptSha256) throw new Error('A dependent child result has not been durably delivered.');
+      return { childKey, receiptSha256 };
+    });
+    return { child, result, binding: { parentId: link.parentId, runId: link.runId, childKey: link.childKey, dispatchKey: link.dispatchKey, baseCommit: child.baseCommit, writeScope: manifest.child.writeScope, dependencies } };
   }
 }

@@ -24,6 +24,8 @@ import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentT
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
 import { DelegatedVerificationActionGate, interruptLatestDelegatedVerification, persistDelegatedVerification } from './core/delegationVerificationTransaction';
 import { hostDelegationPolicy } from './core/delegationHost';
+import { bindDelegationPlannerTurn, createDelegationPlannerRun, ingestDelegationPlannerCompletion, plannerPromptSuffix } from './core/delegationPlannerIngestion';
+import type { DelegationPolicy } from './core/delegationPlan';
 import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
@@ -178,7 +180,10 @@ class Manager {
       }),
       launch: (task, request) => this.handle({ ...request, id: task.id }, true)
     });
-    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error));
+    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error), {
+      prepared: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'prepared') return; task.delegationPlanner = bindDelegationPlannerTurn(task.delegationPlanner, turn); task.updatedAt = new Date().toISOString(); await this.persist(); },
+      completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); }
+    });
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -400,6 +405,7 @@ class Manager {
             try { await this.managed.load(task); }
             catch (error) { if (task.state !== 'discarded') task.state = 'error'; task.error = this.describe(error); }
           }
+          if (task.delegationPlanner?.state === 'submitted') await this.reconcileDelegationPlanner(task).catch(error => { task.error = this.describe(error); });
         }
         await this.store.save(this.tasks);
         for(const op of await this.integrations.recover(this.tasks))this.integrationOperations.set(op.taskId,op);
@@ -476,6 +482,14 @@ class Manager {
     const config = vscode.workspace.getConfiguration('hydra');
     return parseDelegationPreferences({ mode: config.get('delegationMode', 'solo'), maxChildren: config.get('maxDelegatedChildren', 2) });
   }
+  /** Conservative host facts for a normal-turn proposal; no field is supplied by the provider. */
+  private plannerPolicy(task: Task, runId: string): DelegationPolicy {
+    const selection = task.modelSelection, preferences = this.delegationPreferences(), brief = task.brief;
+    const models = selection ? [{ model: selection.model, displayName: selection.model, efforts: [selection.effort], defaultEffort: selection.effort }] : [];
+    return { parentId: task.id, runId, mode: preferences.mode, level: 0, maxChildren: preferences.maxChildren, provider: task.provider, ...(selection ? { modelSelection: structuredClone(selection) } : {}), models,
+      approvedBases: [task.baseCommit], writeScope: ['src/', 'webview/', 'tests/', 'docs/', 'scripts/'], otherOwners: [],
+      context: { userIntent: brief?.goal || task.title, qualityTarget: brief?.acceptance || 'Complete the parent task with its stated acceptance criteria.', constraints: [brief?.constraints || 'Do not broaden the parent task scope.'], instructions: [], interfaces: [], evidence: [], maxTurns: 1, timeoutMs: 300000 } };
+  }
   private async refreshDelegationPlans(parentId?: string): Promise<void> {
     const parents = parentId ? [this.getTask(parentId)] : this.tasks.filter(task => task.state !== 'discarded');
     for (const parent of parents) {
@@ -483,6 +497,14 @@ class Manager {
       const views = runs.flatMap(run => run.decisions.map(decision => ({ runId: run.runId, id: decision.proposal.id, rationale: decision.proposal.rationale, mode: decision.mode, children: decision.proposal.children.map(child => ({ key: child.key, goal: child.goal, provider: child.provider, writeScope: child.writeScope, dependencies: child.dependencies, brief: decision.manifests.find(manifest => manifest.child.key === child.key)?.prompt || '' })) })));
       if (views.length) this.delegationPlans.set(parent.id, views); else this.delegationPlans.delete(parent.id);
     }
+  }
+  private async reconcileDelegationPlanner(task: Task): Promise<void> {
+    const planner = task.delegationPlanner;
+    if (!planner || planner.state !== 'submitted') return;
+    const turn = this.managed.view(task.id)?.turns.find(item => item.id === planner.turnId);
+    if (!turn || turn.status !== 'completed') return;
+    await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations });
+    task.updatedAt = new Date().toISOString(); await this.refreshDelegationPlans(task.id);
   }
   private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
     await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
@@ -1098,14 +1120,21 @@ class Manager {
         this.checkBudget(task, true);
         await this.resources.check(task.id);
         task.providerVersion = diagnostic.version;
-        await this.managed.start(task, info.executable, message.type === 'followUp' ? message.prompt : task.prompt, async () => {
+        if (task.delegationPlanner && ['prepared', 'submitted'].includes(task.delegationPlanner.state)) throw new Error('The prior normal-turn planner receipt is still recoverable. Reload and reconcile it before another managed turn.');
+        const runId = randomBytes(6).toString('hex');
+        const planner = createDelegationPlannerRun(this.plannerPolicy(task, runId), this.delegationPreferences(), runId);
+        task.delegationPlanner = planner; task.updatedAt = new Date().toISOString();
+        // This task-store write is intentionally before Managed* can spawn or submit a provider turn.
+        await this.persist();
+        const normalPrompt = `${message.type === 'followUp' ? message.prompt : task.prompt}${plannerPromptSuffix(planner)}`;
+        await this.managed.start(task, info.executable, normalPrompt, async () => {
           await this.capacity.check(task.id, this.profileLimit()); await this.resources.check(task.id);
           if (controller.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because workspace or provider configuration changed.');
           if (scheduledLaunch && (task.schedule !== expectedSchedule || !expectedSchedule?.request || !['starting', 'running', 'waiting-for-approval'].includes(expectedSchedule.state))) throw new Error('Queued managed turn cancelled before provider submission.');
           this.checkBudget(task, true); this.resources.assertReady(task.id);
         }, this.resources.environment(task.id));
       } catch (error) {
-        if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); await this.persist(); }
+        if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); if (task.delegationPlanner?.state === 'submitted') task.delegationPlanner = { ...task.delegationPlanner, state: 'rejected', error: 'Normal turn did not reach a completed planner result.' }; await this.persist(); }
         throw error;
       } finally { this.diagnosticChecks.delete(controller); this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;

@@ -1,4 +1,4 @@
-import { ManagedClaude } from './managedClaude';
+import { ManagedClaude, type ManagedTurnObserver } from './managedClaude';
 import { ManagedCodex } from './managedCodex';
 import { SessionStore } from './sessionStore';
 import type { Task, SessionView, Provider } from './model';
@@ -7,9 +7,9 @@ export class ManagedSessions {
   private readonly claude: ManagedClaude;
   private readonly codex: ManagedCodex;
   private readonly providers = new Map<string, Provider>();
-  constructor(readonly store: SessionStore, persist: () => Promise<void>, changed: () => void, report: (error: unknown) => void) {
-    this.claude = new ManagedClaude(store, persist, changed, report);
-    this.codex = new ManagedCodex(store, persist, changed, report);
+  constructor(readonly store: SessionStore, persist: () => Promise<void>, changed: () => void, report: (error: unknown) => void, observer: ManagedTurnObserver = {}) {
+    this.claude = new ManagedClaude(store, persist, changed, report, undefined, observer);
+    this.codex = new ManagedCodex(store, persist, changed, report, undefined, observer);
   }
   get count(): number { return this.claude.count + this.codex.count; }
   has(id: string): boolean { return this.claude.has(id) || this.codex.has(id); }

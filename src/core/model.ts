@@ -10,6 +10,7 @@ import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOper
 import type { ConversationDraft } from './conversationDrafts';
 import { requireDelegationMode, type DelegationPreferences, type DelegationMode } from './delegationPreferences';
 import type { DelegatedVerificationEvidence } from './delegationEvidence';
+import type { DelegationPlannerRun } from './delegationPlannerIngestion';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -28,6 +29,8 @@ export interface Task {
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
   delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
+  /** Host-bound normal-turn planner lifecycle. It never represents child execution. */
+  delegationPlanner?: DelegationPlannerRun;
   /** Durable verification attempts for a managed delegated child. */
   verificationEvidence?: DelegatedVerificationEvidence;
 }

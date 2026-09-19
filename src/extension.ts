@@ -20,6 +20,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
+import { dispatchAcceptedAutoDelegation } from './core/autoDelegationDispatch';
 import { projectDelegationReconciliation } from './core/delegationReconciliation';
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { DelegationIngressHost } from './core/delegationIngressHost';
@@ -150,6 +151,7 @@ class Manager {
   private readonly delegationIngress: DelegationIngressHost;
   private readonly parentReviews: DelegationParentReviewJournal;
   private readonly delegationHandoffs: DelegationHandoffHost;
+  private readonly autoDispatching = new Map<string, Promise<void>>();
   private approvalPauseReplay: Promise<void> = Promise.resolve();
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
@@ -221,7 +223,7 @@ class Manager {
     this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error), {
       sessionIdentified: (task, sessionId) => recordDelegatedSession(task, sessionId, () => this.persist()),
       prepared: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'prepared') return; task.delegationPlanner = bindDelegationPlannerTurn(task.delegationPlanner, turn); task.updatedAt = new Date().toISOString(); await this.persist(); },
-      completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); }
+      completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); void this.dispatchAcceptedAutoRun(task).catch(error => this.report(error)); }
     });
   }
   async initialize(): Promise<void> {
@@ -538,6 +540,9 @@ class Manager {
     this.schedulerReady = true;
     await this.publish();
     await this.scheduler.drain();
+    for (const parent of this.tasks.filter(task => !task.delegation && task.delegationPlanner?.state === 'accepted' && task.delegationPlanner.preferences.mode === 'auto')) {
+      await this.dispatchAcceptedAutoRun(parent).catch(error => this.report(error));
+    }
   }
   async showFirstRun(): Promise<void> {
     if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
@@ -621,6 +626,27 @@ class Manager {
     if (!turn || turn.status !== 'completed') return;
     await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations });
     task.updatedAt = new Date().toISOString(); await this.refreshDelegationPlans(task.id);
+  }
+  private async dispatchAcceptedAutoRun(parent: Task): Promise<void> {
+    const receipt = parent.delegationPlanner;
+    if (!receipt || receipt.state !== 'accepted' || receipt.preferences.mode !== 'auto' || this.disabled || this.closing || !vscode.workspace.isTrusted) return;
+    const key = `${parent.id}:${receipt.runId}`;
+    const pending = this.autoDispatching.get(key);
+    if (pending) return pending;
+    const operation = (async () => {
+      const decisions = (await this.delegations.load(parent.id, receipt.runId)).decisions;
+      await dispatchAcceptedAutoDelegation(parent, decisions, {
+        tasks: () => this.tasks,
+        materialize: (parentId, runId) => vscode.commands.executeCommand<Task[]>('hydra.materializeDelegationRun', parentId, runId),
+        enroll: (parentId, runId) => vscode.commands.executeCommand<Task[]>('hydra.enrollDelegationRun', parentId, runId),
+        enqueue: async child => {
+          if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.getTask(child.id) !== child) throw new Error('Auto child dispatch lost its host owner.');
+          await this.scheduler.enqueue(child, { type: 'startManaged' });
+        }
+      });
+    })();
+    this.autoDispatching.set(key, operation);
+    try { await operation; } finally { if (this.autoDispatching.get(key) === operation) this.autoDispatching.delete(key); }
   }
   private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
     await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
@@ -1415,6 +1441,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    await Promise.allSettled(this.autoDispatching.values());
     this.pendingResource?.controller.abort(); await this.pendingResource?.done;
     await this.accounts.shutdown();
     await this.quota.shutdown();

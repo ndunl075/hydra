@@ -11,6 +11,7 @@ import type { ConversationDraft } from './conversationDrafts';
 import { requireDelegationMode, type DelegationPreferences, type DelegationMode } from './delegationPreferences';
 import type { DelegatedVerificationEvidence } from './delegationEvidence';
 import type { DelegationPlannerRun } from './delegationPlannerIngestion';
+import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -28,7 +29,9 @@ export interface Task {
   handoffSummary?: TaskHandoffSummary;
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
-  delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
+    delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
+    /** Durable retry marker for an assignment fact whose source transition committed first. */
+    delegationJournalPending?: { version: 1; event: { version: 1; id: string; occurredAt: string; kind: 'assignment'; parentId: string; runId: string; from: { kind: 'task'; taskId: string }; to: { kind: 'task'; taskId: string }; provenance: { producer: 'host'; recordId: string } } };
   /** Host-bound normal-turn planner lifecycle. It never represents child execution. */
   delegationPlanner?: DelegationPlannerRun;
   /** Durable verification attempts for a managed delegated child. */
@@ -82,7 +85,9 @@ export interface Snapshot {
   discardReview?: DiscardReview;
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
   delegation?: DelegationPreferences;
-  delegationPlans?: Record<string, DelegationPlanView[]>;
+    delegationPlans?: Record<string, DelegationPlanView[]>;
+    /** Read-only durable delegation facts. No event is inferred from task state. */
+    delegationOrchestration?: Record<string, DelegationOrchestrationProjection>;
 }
 export type ClientMessage =
   | { type: 'saveResources'; id: string; config: ResourceConfig }

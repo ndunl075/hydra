@@ -46,8 +46,9 @@ export class LocalStore {
         const link = task.delegation;
         if (!link || typeof link !== 'object' || !/^[a-f0-9]{12}$/.test(link.parentId) || !/^[a-f0-9]{12}$/.test(link.runId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(link.childKey) || !/^[a-f0-9]{24}$/.test(link.dispatchKey) || !Array.isArray(link.dependencies) || link.dependencies.length > 8 || !link.dependencies.every(value => typeof value === 'string' && /^[a-f0-9]{12}$/.test(value)) || new Set(link.dependencies).size !== link.dependencies.length || link.parentId === task.id || link.dependencies.includes(task.id)) throw new Error('Invalid delegated child task link. Original data has been retained.');
         if (task.schedule && (task.schedule.dependencies.length !== link.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index]))) throw new Error('Delegated child schedule does not match its immutable dependencies. Original data has been retained.');
+        if (task.delegationJournalPending !== undefined) { const pending = task.delegationJournalPending.event; if (!task.delegationJournalPending || task.delegationJournalPending.version !== 1 || !pending || pending.version !== 1 || pending.kind !== 'assignment' || pending.id !== link.dispatchKey || !/^[a-f0-9]{24}$/.test(pending.id) || pending.parentId !== link.parentId || pending.runId !== link.runId || pending.from.kind !== 'task' || pending.from.taskId !== link.parentId || pending.to.kind !== 'task' || pending.to.taskId !== task.id || pending.provenance.producer !== 'host' || pending.provenance.recordId !== link.dispatchKey || typeof pending.occurredAt !== 'string' || !Number.isFinite(Date.parse(pending.occurredAt))) throw new Error('Invalid delegated journal recovery marker. Original data has been retained.'); }
         if (task.verificationEvidence !== undefined) validateDelegatedVerificationEvidence(task.verificationEvidence);
-      } else if (task.verificationEvidence !== undefined) throw new Error('Only delegated child tasks can retain delegation verification evidence. Original data has been retained.');
+      } else if (task.verificationEvidence !== undefined || task.delegationJournalPending !== undefined) throw new Error('Only delegated child tasks can retain delegation evidence. Original data has been retained.');
       if (task.delegationPlanner !== undefined) {
         const planner = parseDelegationPlannerRun(task.delegationPlanner);
         if (planner.policy.parentId !== task.id || planner.policy.provider !== task.provider || planner.policy.level !== 0 || !planner.policy.approvedBases.includes(task.baseCommit) || JSON.stringify(planner.policy.modelSelection || null) !== JSON.stringify(task.modelSelection || null)) throw new Error('Invalid parent planner receipt. Original data has been retained.');
@@ -57,6 +58,7 @@ export class LocalStore {
         if (!record || typeof record !== 'object' || ![record.commit, record.tree, record.baseCommit].every(value => typeof value === 'string' && /^[a-f0-9]{40,64}$/.test(value)) || record.baseCommit !== task.baseCommit || typeof record.reviewedAt !== 'string' || !Number.isFinite(Date.parse(record.reviewedAt))) throw new Error('Invalid reviewed commit. Original data has been retained.');
       }
     }
+    const pending = (data.tasks as Task[]).flatMap(task => task.delegationJournalPending ? [task.delegationJournalPending.event.id] : []); if (new Set(pending).size !== pending.length) throw new Error('Duplicate delegated journal recovery event. Original data has been retained.');
     return data.tasks as Task[];
   }
   save(tasks: Task[]): Promise<void> {

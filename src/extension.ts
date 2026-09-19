@@ -23,10 +23,11 @@ import { DelegationDispatchStore } from './core/delegationDispatch';
 import { projectDelegationReconciliation } from './core/delegationReconciliation';
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { DelegationIngressHost } from './core/delegationIngressHost';
-import { DelegationParentReviewJournal } from './core/delegationParentReview';
+import { assertCurrentParentReviewInput, DelegationParentReviewJournal } from './core/delegationParentReview';
 import { DelegationHandoffProducer } from './core/delegationHandoffProducer';
 import { DelegationHandoffHost } from './core/delegationHandoffHost';
 import { captureDelegationApprovalPauses } from './core/delegationApprovalPause';
+import { delegationIntegrationGate, type SavedParentReviewProjection } from './core/delegationIntegrationGate';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
@@ -190,7 +191,7 @@ class Manager {
       this.integrationOperations.set(op.taskId,op);
       if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
       void this.publish();
-    }, () => this.tasks);
+    }, () => this.tasks, (task, tasks) => this.guardDelegatedIntegrationAcceptance(task, tasks));
     this.review = new ReviewDocuments(context);
     this.scheduler = new TaskScheduler({
       tasks: () => this.tasks,
@@ -686,6 +687,23 @@ class Manager {
     if (this.closing && (this.disabled || !vscode.workspace.isTrusted)) throw new Error('Hydra cannot retain verification evidence while this workspace is unavailable.');
     await this.store.save(this.tasks);
   }
+  /**
+   * The integration core is intentionally synchronous at its decision point.
+   * Load the immutable result binding and parent-review journal first, then
+   * pass that durable projection into every prepare/check/promote gate.
+   */
+  private async guardDelegatedIntegrationAcceptance(parent: Task, tasks: readonly Task[]): Promise<void> {
+    const children = tasks.filter(child => child.delegation?.parentId === parent.id);
+    if (!children.length) { delegationIntegrationGate(parent, tasks); return; }
+    const parentReviews: SavedParentReviewProjection[] = await Promise.all(children.map(async child => {
+      const link = child.delegation!;
+      const records = await this.delegationJournal.loadResultRecords(parent.id, link.runId);
+      const matches = records.filter(record => record.binding.parentId === parent.id && record.binding.runId === link.runId && record.binding.childKey === link.childKey && record.binding.dispatchKey === link.dispatchKey);
+      if (matches.length !== 1) throw new Error(`Delegated prerequisite ${link.childKey} blocks combined acceptance: one durable current child result receipt is required.`);
+      return { source: { child, binding: matches[0]!.binding, result: matches[0]!.receipt }, receipts: await this.parentReviews.load(parent.id, link.runId) };
+    }));
+    delegationIntegrationGate(parent, tasks, { parentReviews });
+  }
   private async guardDelegatedVerification(task: Task): Promise<void> {
     if (!task.delegation) throw new Error('Only delegated child tasks can run delegated verification.');
     if (!task.reviewedCommit) throw new Error('Commit and record a reviewed child tree before verification.');
@@ -821,6 +839,17 @@ class Manager {
       for (const runId of runs) { const key = `${parent.id}:${runId}`; try { delegationOrchestration[key] = await this.delegationJournal.load(parent.id, runId); delegationRunAccounting[key] = projectDelegationRunUsage(parent, runId, this.tasks, id => this.managed.view(id)); delegationReconciliation[key] = projectDelegationReconciliation(parent, runId, this.tasks, await this.delegationDispatches.load(parent.id, runId), delegationOrchestration[key]); } catch (failure) { error ||= this.describe(failure); delegationReconciliation[key] = projectDelegationReconciliation(parent, runId, this.tasks); } }
     }
     if (generation !== this.snapshotGeneration) return;
+    let parentReview: Snapshot['parentReview'];
+    if (task?.delegation) {
+      try {
+        const source = await this.delegationIngress.parentReviewSource(task.id);
+        const current = assertCurrentParentReviewInput(source);
+        const receipts = await this.parentReviews.load(current.parentId, current.runId);
+        const matching = receipts.filter(item => item.childKey === current.childKey && item.resultSha256 === current.resultSha256 && item.evidenceSha256 === current.evidenceSha256 && item.commit === current.commit && item.tree === current.tree);
+        if (matching.length === 1) parentReview = { decision: matching[0]!.decision, reviewedAt: matching[0]!.reviewedAt, reason: matching[0]!.reason };
+      } catch (failure) { if (task.verificationEvidence && task.reviewedCommit) error ||= this.describe(failure); }
+    }
+    if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
       conversationDraft: task ? this.conversationDrafts.get(task.id) : undefined,
@@ -837,6 +866,7 @@ class Manager {
       delegationRunAccounting,
       delegationReconciliation,
       resources: this.resources.snapshot(),
+      parentReview,
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,

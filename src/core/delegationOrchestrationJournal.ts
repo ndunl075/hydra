@@ -17,6 +17,8 @@ export type ContextIngressOutcome =
 interface StoredContextOutcome { requestKey: string; requestSha256: string; outcome: ContextIngressOutcome; }
 interface StoredResult { binding: ResultReceiptBinding; receipt: DelegationResultReceipt; occurredAt?: string; }
 export interface DelegationResultDelivery { receipt: DelegationResultReceipt; occurredAt?: string; }
+/** A host-loaded result receipt with the immutable dispatch binding that authenticated it. */
+export interface DelegationOrchestrationResultRecord { binding: ResultReceiptBinding; receipt: DelegationResultReceipt; occurredAt?: string; }
 export interface DelegationOrchestrationRecord { version: 1; parentId: string; runId: string; nextSequence: number; events: DelegationGraphEvent[]; contextRequests: StoredContext[]; contextOutcomes: StoredContextOutcome[]; results: StoredResult[]; }
 export interface DelegationOrchestrationProjection { events: DelegationGraphEvent[]; contextRequests: DelegationContextRequest[]; results: DelegationResultReceipt[]; contextOutcomes?: Record<string, ContextIngressOutcome>; }
 const maxBytes = 1024 * 1024, maxReceipts = 64;
@@ -77,6 +79,14 @@ export class DelegationOrchestrationJournal {
     this.queue.set(key, operation.then(() => {}, () => {})); return operation;
   }
   async load(parentId: string, runId: string): Promise<DelegationOrchestrationProjection> { const value = await this.read(id(parentId), id(runId)); const outcomes = Object.fromEntries(value.contextOutcomes.map(entry => [entry.requestKey, entry.outcome])); return clone({ events: value.events, contextRequests: value.contextRequests.map(entry => entry.receipt), ...(Object.keys(outcomes).length ? { contextOutcomes: outcomes } : {}), results: value.results.map(entry => entry.receipt) }); }
+  /**
+   * Integration needs the saved binding as well as the compact receipt. Do not
+   * reconstruct it from a mutable task or provider output after restart.
+   */
+  async loadResultRecords(parentId: string, runId: string): Promise<DelegationOrchestrationResultRecord[]> {
+    const value = await this.read(id(parentId), id(runId));
+    return clone(value.results);
+  }
   async appendEvent(value: unknown): Promise<DelegationGraphEvent> {
     const raw = record(value, ['version','id','sequence','occurredAt','kind','parentId','runId','from','to','provenance']); if (raw.version !== 1) throw new Error('Unsupported delegation graph event schema.'); const parentId = id(raw.parentId), runId = id(raw.runId);
     return this.mutate(parentId, runId, journal => { const prior = journal.events.find(item => item.id === raw.id); if (prior) { const canonical = { ...prior } as Record<string, unknown>; delete canonical.sequence; if (raw.sequence !== undefined || JSON.stringify(canonical) !== JSON.stringify(raw)) throw new Error('Conflicting delegation event identity. Original record was retained.'); return prior; } if (raw.sequence !== undefined) throw new Error('Delegation event sequence is assigned only by the journal.'); const event = parseDelegationGraphEvent({ ...raw, sequence: journal.nextSequence }); const next = boundDelegationGraphEventHistory([...journal.events, event]); journal.events = next.events; journal.nextSequence++; return event; });

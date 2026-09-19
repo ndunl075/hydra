@@ -20,6 +20,7 @@ export interface DelegationResultInspectionProps {
   verification?: FocusedVerification;
   /** Host-owned combined integration state; child verification never implies this. */
   integration?: IntegrationAcceptance;
+  parentReview?: { decision: 'approved' | 'rejected'; reviewedAt: string; reason: string };
   onReview?: (decision: 'approved' | 'rejected', reason: string) => void;
 }
 
@@ -54,7 +55,7 @@ const integrationLabel: Record<IntegrationAcceptance, string> = {
 };
 
 /** Presentation-only child result surface. It has no opener, command, or message handler. */
-export function DelegationResultInspection({ identity, result, verification, integration = 'not-reviewed', onReview }: DelegationResultInspectionProps) {
+export function DelegationResultInspection({ identity, result, verification, integration = 'not-reviewed', parentReview, onReview }: DelegationResultInspectionProps) {
   const [reason, setReason] = useState('');
   const state = resultInspectionState(result, verification, identity);
   const selectedResult = result && matches(result, identity) ? result : undefined;
@@ -78,7 +79,7 @@ export function DelegationResultInspection({ identity, result, verification, int
       <section aria-label="Unresolved issues"><h4>Unresolved issues</h4>{selectedResult.unresolved.length ? <ul>{selectedResult.unresolved.map(issue => <li key={issue}>{issue}</li>)}</ul> : <p className="quiet">No unresolved issues were recorded.</p>}</section>
       <section aria-label="Verification state"><h4>Verification</h4><p>{verificationLabel[state]}</p>{selectedResult.validations.length ? <ul className="result-validations">{selectedResult.validations.map(validation => <li key={validation.command}><span className={`validation-${validation.status}`}>{validation.status}</span><code>{validation.command}</code></li>)}</ul> : <p className="quiet">No child validation summary was recorded.</p>}</section>
       <section aria-label="Evidence references"><h4>Evidence references</h4>{selectedResult.evidence.length ? <ul className="result-evidence">{selectedResult.evidence.map(reference => <li key={reference.id}><span>{reference.kind}</span><strong>{reference.label}</strong><code>{reference.id}</code></li>)}</ul> : <p className="quiet">No evidence references were recorded.</p>}<p className="quiet">References are retained locally. Opening this view does not open artifacts, copy logs or transcripts, run checks, start a process, or submit a model request.</p></section>
-      {onReview && <section aria-label="Explicit parent review"><h4>Parent review</h4><label>Concise review reason<textarea maxLength={1200} value={reason} onChange={event => setReason(event.target.value)} /></label><p className="quiet">This records an explicit human decision against the host's current durable result and evidence.</p><button className="secondary" disabled={state !== 'verified' || !reason.trim()} onClick={() => onReview('approved', reason)}>Approve child result</button><button className="secondary" disabled={state !== 'verified' || !reason.trim()} onClick={() => onReview('rejected', reason)}>Reject child result</button></section>}
+      {parentReview ? <section aria-label="Explicit parent review"><h4>Parent review</h4><p>{parentReview.decision === 'approved' ? 'Explicitly approved for combined integration review' : 'Explicitly rejected; combined integration is blocked'}</p><p className="quiet">{parentReview.reason} · {parentReview.reviewedAt}</p></section> : onReview && <section aria-label="Explicit parent review"><h4>Parent review</h4><label>Concise review reason<textarea maxLength={1200} value={reason} onChange={event => setReason(event.target.value)} /></label><p className="quiet">This records an explicit human decision against the host's current durable result and evidence.</p><button className="secondary" disabled={state !== 'verified' || !reason.trim()} onClick={() => onReview('approved', reason)}>Approve child result</button><button className="secondary" disabled={state !== 'verified' || !reason.trim()} onClick={() => onReview('rejected', reason)}>Reject child result</button></section>}
     </>}
   </section>;
 }

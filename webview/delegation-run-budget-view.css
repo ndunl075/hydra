@@ -1,0 +1,12 @@
+.delegation-run-budget { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 16px 0; }
+.delegation-run-budget header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+.delegation-run-budget header code { margin-left: auto; }
+.run-budget-total { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.run-budget-total strong { font-size: 1.4rem; }
+.run-budget-total span, .delegation-run-budget small { color: var(--muted); }
+.run-budget-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.delegation-run-budget ul { list-style: none; padding: 0; }
+.run-budget-groups li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 5px 0; }
+.run-budget-groups li small { grid-column: 1 / -1; }
+.delegation-run-budget h4 { margin-bottom: 4px; }
+@media (prefers-reduced-motion: reduce) { .delegation-run-budget *, .delegation-run-budget *::before, .delegation-run-budget *::after { animation: none !important; transition: none !important; } }

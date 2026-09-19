@@ -1,0 +1,4 @@
+[
+  {"version":1,"id":"aaaaaaaaaaaaaaaaaaaaaaaa","sequence":1,"occurredAt":"2026-09-18T00:00:00.000Z","kind":"assignment","parentId":"111111111111","runId":"aaaaaaaaaaaa","from":{"kind":"task","taskId":"111111111111"},"to":{"kind":"task","taskId":"333333333333"},"provenance":{"producer":"host","recordId":"bbbbbbbbbbbbbbbbbbbbbbbb"}},
+  {"version":1,"id":"cccccccccccccccccccccccc","sequence":2,"occurredAt":"2026-09-18T00:00:01.000Z","kind":"approval-pause","parentId":"111111111111","runId":"aaaaaaaaaaaa","from":{"kind":"host"},"to":{"kind":"task","taskId":"333333333333"},"provenance":{"producer":"host","recordId":"dddddddddddddddddddddddd"}}
+]

@@ -16,6 +16,7 @@
 .agent-map-context-link, .agent-map-context-arrow { stroke: var(--map-worktree); stroke-width: 1.5; opacity: .65; }
 .agent-map-connection { stroke: var(--map-provider); stroke-width: 1.5; opacity: .55; }
 .agent-map-delegation-link { stroke: var(--map-worktree); stroke-width: 1.25; stroke-dasharray: 4 5; opacity: .8; }.agent-map-delegation-blocked, .agent-map-delegation-interrupted { stroke: var(--warning); }.agent-map-delegation-completed { opacity: .4; }
+.agent-map-event-route { fill: none; stroke: var(--map-worktree); stroke-width: 2; opacity: .42; }.agent-map-event-paused { stroke: var(--warning); opacity: .8; stroke-dasharray: 3 4; }.agent-map-event-stopped { opacity: .22; }.agent-map-event-flow { fill: none; stroke: #f0c36a; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 2 13; animation: agent-map-handoff 1.15s linear infinite; filter: drop-shadow(0 0 3px #f0c36a88); }
 .agent-map-arrow { stroke: var(--map-provider); stroke-width: 1.5; }
 .agent-map-flow { stroke: var(--map-provider); stroke-width: 3; stroke-dasharray: 6 16; animation: agent-map-flow 1.8s linear infinite; }
 .agent-map-root { position: absolute; left: 27px; width: 148px; display: flex; flex-direction: column; align-items: center; gap: 7px; text-align: center; }
@@ -61,13 +62,14 @@
 .agent-map-plans small { grid-column: 2; color: var(--muted); overflow-wrap: anywhere; }
 .agent-map-legend > span:first-child { display: inline-flex; align-items: center; gap: 7px; }
 .agent-map-line-key { display: inline-block; width: 17px; border-top: 2px solid var(--map-worktree); }
-.agent-map-paused .agent-map-flow { animation-play-state: paused; }
+.agent-map-paused .agent-map-flow, .agent-map-paused .agent-map-event-flow { animation-play-state: paused; }
 @keyframes agent-map-flow { to { stroke-dashoffset: -44; } }
+@keyframes agent-map-handoff { to { stroke-dashoffset: -30; } }
 body.vscode-light .agent-map { --map-repository: #7452ab; --map-worktree: #386ca9; --map-claude: #a94e31; --map-codex: #147a65; --map-dot: #00000018; }
 body.vscode-high-contrast .agent-map, body.vscode-high-contrast-light .agent-map { --map-repository: var(--text); --map-worktree: var(--text); --map-claude: var(--text); --map-codex: var(--text); --map-dot: transparent; }
 body.vscode-high-contrast .agent-map-connection, body.vscode-high-contrast .agent-map-context-link, body.vscode-high-contrast-light .agent-map-connection, body.vscode-high-contrast-light .agent-map-context-link { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
-  .agent-map-flow { animation: none; }
+  .agent-map-flow, .agent-map-event-flow { animation: none; }
   .agent-map-motion { display: none; }
 }
 @media (max-width: 660px) {

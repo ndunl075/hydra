@@ -82,7 +82,7 @@ export interface SessionView { version: 1; turns: Turn[]; writerUncertain?: bool
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
-export interface DelegationPlanView { runId: string; id: string; rationale: string; mode: 'solo' | 'auto'; children: { key: string; goal: string; provider: Provider; writeScope: string[]; dependencies: string[]; brief: string }[] }
+export interface DelegationPlanView { runId: string; id: string; rationale: string; mode: 'solo' | 'auto'; decision: 'solo' | 'delegate'; children: { key: string; goal: string; provider: Provider; writeScope: string[]; dependencies: string[]; brief: string }[] }
 export interface Snapshot {
   capacity?: CapacityView;
   /** Current selected child only; stale historical decisions are never presented as current. */

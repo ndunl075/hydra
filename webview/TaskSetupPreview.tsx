@@ -1,5 +1,5 @@
 import React from 'react';
-import type { SetupRecipePreview } from '../src/core/setupRecipe';
+import type { SetupRecipePreview, SetupPreviewResourceState } from '../src/core/setupRecipe';
 import './task-setup-preview.css';
 
 /**
@@ -7,12 +7,6 @@ import './task-setup-preview.css';
  * not include a ResourceView, command arguments, environment values, logs, or
  * release actions.
  */
-export interface SetupPreviewResourceState {
-  key: string;
-  reservation: 'reserved' | 'conflict' | 'unavailable';
-  backingService?: 'available' | 'missing' | 'unknown';
-}
-
 const reservationText: Record<SetupPreviewResourceState['reservation'], string> = {
   reserved: 'Reserved for this task',
   conflict: 'Reservation conflict',

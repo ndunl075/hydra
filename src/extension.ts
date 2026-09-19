@@ -49,6 +49,7 @@ import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } fro
 import { delegationRunUsage, usageSnapshot } from './core/usage';
 import { projectDelegationRunUsage, releaseDelegationBudget, reserveDelegationBudget } from './core/delegationRunAccounting';
 import { createDelegationRunArchive } from './core/delegationRunExport';
+import { projectSelectedTaskSetupPreview } from './core/setupPreviewProjection';
 import { DelegationEvaluationImport, maxDelegationEvaluationImportBundleBytes } from './core/delegationEvaluationImport';
 import { parseDelegationEvaluationCorpus } from './core/delegationEvaluationCorpus';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
@@ -850,6 +851,9 @@ class Manager {
       } catch (failure) { if (task.verificationEvidence && task.reviewedCommit) error ||= this.describe(failure); }
     }
     if (generation !== this.snapshotGeneration) return;
+    const resourceViews = this.resources.snapshot();
+    let setupPreview: Snapshot['setupPreview'];
+    if (task) { try { setupPreview = projectSelectedTaskSetupPreview(task, resourceViews); } catch (failure) { error ||= this.describe(failure); } }
     const snapshot: Snapshot = {
       tasks: this.tasks, selectedId: this.selectedId, mode: this.mode, repositories: this.repositories,
       conversationDraft: task ? this.conversationDrafts.get(task.id) : undefined,
@@ -865,8 +869,9 @@ class Manager {
       delegationOrchestration,
       delegationRunAccounting,
       delegationReconciliation,
-      resources: this.resources.snapshot(),
+      resources: resourceViews,
       parentReview,
+      setupPreview,
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,

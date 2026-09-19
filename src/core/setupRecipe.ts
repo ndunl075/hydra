@@ -33,6 +33,11 @@ export interface SetupRecipePreview {
   commands: Array<{ order: number; executable: string; argumentCount: number; timeoutMs: number }>;
   timeoutMs: number;
 }
+export interface SetupPreviewResourceState {
+  key: string;
+  reservation: 'reserved' | 'conflict' | 'unavailable';
+  backingService?: 'available' | 'missing' | 'unknown';
+}
 
 function fail(message: string): never { throw new Error(message); }
 

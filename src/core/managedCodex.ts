@@ -6,6 +6,7 @@ import { processLaunch, terminateProcessTree } from './process';
 import { SessionStore } from './sessionStore';
 import { version as hydraVersion } from '../../package.json';
 import type { Approval, SessionView, Task, Turn } from './model';
+import type { ManagedTurnObserver } from './managedClaude';
 import type { InitializeParams } from './generated/codex-0.154.0/InitializeParams';
 import type { ThreadStartParams } from './generated/codex-0.154.0/v2/ThreadStartParams';
 import type { ThreadResumeParams } from './generated/codex-0.154.0/v2/ThreadResumeParams';
@@ -17,7 +18,7 @@ export class ManagedCodex {
   private readonly views = new Map<string, SessionView>();
   private readonly active = new Map<string, { stop: () => Promise<void>; done: Promise<void>; approve: (id: string, decision: 'accept' | 'decline') => void }>();
   private readonly starting = new Set<string>();
-  constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void, private readonly terminate = terminateProcessTree) {}
+  constructor(readonly store: SessionStore, private readonly persistTask: () => Promise<void>, private readonly changed: () => void, private readonly report: (error: unknown) => void, private readonly terminate = terminateProcessTree, private readonly observer: ManagedTurnObserver = {}) {}
   get count(): number { return this.active.size; }
   has(id: string): boolean { return this.active.has(id); }
   view(id: string): SessionView | undefined { const view = this.views.get(id); return view ? { ...view, active: this.has(id) || this.starting.has(id) } : undefined; }
@@ -49,6 +50,7 @@ export class ManagedCodex {
         task.state = 'interrupted'; task.error = undefined;
         await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
       }
+      await this.observer.prepared?.(task, structuredClone(turn));
     } catch (error) { turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`; task.state = 'error'; task.error = turn.error; throw error; }
     const launch = processLaunch(executable, ['app-server', '--listen', 'stdio://']);
     const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -167,7 +169,7 @@ export class ManagedCodex {
           await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'exit', code, status: turn.status, error: turn.error });
           await this.store.save(task.id, view);
         } catch (error) { turn.status = 'error'; task.state = 'error'; task.error = `Session storage failed: ${String(error)}`; this.report(error); }
-        try { await this.persistTask(); } catch (error) { this.report(error); }
+        try { await this.persistTask(); await this.observer.completed?.(task, structuredClone(turn)); } catch (error) { this.report(error); }
         finally { this.active.delete(task.id); this.changed(); resolveDone(); }
       })().catch(error => { this.report(error); this.active.delete(task.id); resolveDone(); });
     });

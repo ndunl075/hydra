@@ -8,6 +8,7 @@ import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext'
 import { parseModelSelection } from './modelSelection';
 import { validateDiscardReceipt } from './discard';
 import { validateDelegatedVerificationEvidence } from './delegationEvidence';
+import { parseDelegationPlannerRun } from './delegationPlannerIngestion';
 export class LocalStore {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -47,6 +48,10 @@ export class LocalStore {
         if (task.schedule && (task.schedule.dependencies.length !== link.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index]))) throw new Error('Delegated child schedule does not match its immutable dependencies. Original data has been retained.');
         if (task.verificationEvidence !== undefined) validateDelegatedVerificationEvidence(task.verificationEvidence);
       } else if (task.verificationEvidence !== undefined) throw new Error('Only delegated child tasks can retain delegation verification evidence. Original data has been retained.');
+      if (task.delegationPlanner !== undefined) {
+        const planner = parseDelegationPlannerRun(task.delegationPlanner);
+        if (planner.policy.parentId !== task.id || planner.policy.provider !== task.provider || planner.policy.level !== 0 || !planner.policy.approvedBases.includes(task.baseCommit) || JSON.stringify(planner.policy.modelSelection || null) !== JSON.stringify(task.modelSelection || null)) throw new Error('Invalid parent planner receipt. Original data has been retained.');
+      }
       if (task.reviewedCommit !== undefined) {
         const record = task.reviewedCommit;
         if (!record || typeof record !== 'object' || ![record.commit, record.tree, record.baseCommit].every(value => typeof value === 'string' && /^[a-f0-9]{40,64}$/.test(value)) || record.baseCommit !== task.baseCommit || typeof record.reviewedAt !== 'string' || !Number.isFinite(Date.parse(record.reviewedAt))) throw new Error('Invalid reviewed commit. Original data has been retained.');

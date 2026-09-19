@@ -36,8 +36,8 @@ function observedActivity(snapshot: Snapshot, task: Task) {
 }
 
 /** A view of recorded checkout relationships, never an editable dependency graph. */
-export function AgentMap({ snapshot, selectedId, onSelect, events = [] }: {
-  snapshot: Snapshot; selectedId?: string; onSelect: (id: string) => void; events?: DelegationGraphEvent[];
+export function AgentMap({ snapshot, selectedId, onSelect, events = [], eventRuns = [] }: {
+  snapshot: Snapshot; selectedId?: string; onSelect: (id: string) => void; events?: DelegationGraphEvent[]; eventRuns?: DelegationGraphEvent[][];
 }) {
   const [expanded, setExpanded] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -48,7 +48,10 @@ export function AgentMap({ snapshot, selectedId, onSelect, events = [] }: {
   const running = snapshot.tasks.filter(task => task.state === 'running').length;
   const groups = repositories.map(repository => ({ repository, tasks: snapshot.tasks.filter(task => task.repository === repository) }));
   const delegationEdges = delegationGraph(snapshot.tasks);
-  const recordedEvents = recordedDelegationGraphEdges(snapshot.tasks, events);
+  // Each durable journal is one parent/run. Keep those boundaries intact while
+  // composing a read-only map; the parser deliberately rejects mixed runs.
+  const recordedEventSets = [events, ...eventRuns].map(run => recordedDelegationGraphEdges(snapshot.tasks, run));
+  const recordedEvents = { edges: recordedEventSets.flatMap(value => value.edges), approvalTargets: recordedEventSets.flatMap(value => value.approvalTargets) };
   const graphHeight = groups.reduce((height, group) => height + Math.max(group.tasks.length, 1) * 148 + 20, 0);
   let groupOffset = 0;
 
@@ -74,7 +77,14 @@ export function AgentMap({ snapshot, selectedId, onSelect, events = [] }: {
                 return <div className="agent-map-repository" key={repository} style={{ top, height }}>
                   <svg className="agent-map-connections" width="850" height={height} fill="none" aria-hidden="true">
                     {delegationEdges.filter(edge => tasks.some(task => task.id === edge.from) && tasks.some(task => task.id === edge.to)).map(edge => { const from = tasks.findIndex(task => task.id === edge.from), to = tasks.findIndex(task => task.id === edge.to); return <path key={`${edge.kind}-${edge.from}-${edge.to}`} className={`agent-map-delegation-link agent-map-delegation-${edge.state}`} d={`M794 ${100 + from * 148} C842 ${100 + from * 148} 842 ${60 + to * 148} 794 ${60 + to * 148}`} />; })}
-                    {recordedEvents.edges.filter(edge => tasks.some(task => task.id === edge.from) && tasks.some(task => task.id === edge.to)).map(edge => { const from = tasks.findIndex(task => task.id === edge.from), to = tasks.findIndex(task => task.id === edge.to), route = `M794 ${100 + from * 148} C842 ${100 + from * 148} 842 ${60 + to * 148} 794 ${60 + to * 148}`; return <g key={edge.id} aria-label={`${edge.kind} recorded by ${edge.provenance.producer}`}><path className={`agent-map-event-route agent-map-event-${edge.state}`} d={route} />{edge.state === 'moving' && !paused && <path className="agent-map-event-flow" d={route} />}</g>; })}
+                    {recordedEvents.edges.filter(edge => edge.kind === 'dispatch' ? tasks.some(task => task.id === edge.to) : tasks.some(task => task.id === edge.from) && tasks.some(task => task.id === edge.to)).map(edge => {
+                      const to = tasks.findIndex(task => task.id === edge.to);
+                      const from = edge.from ? tasks.findIndex(task => task.id === edge.from) : -1;
+                      const route = edge.kind === 'dispatch'
+                        ? `M438 ${76 + to * 148} C466 ${76 + to * 148} 486 ${76 + to * 148} 520 ${76 + to * 148}`
+                        : `M794 ${100 + from * 148} C842 ${100 + from * 148} 842 ${60 + to * 148} 794 ${60 + to * 148}`;
+                      return <g key={edge.id} aria-label={`${edge.kind} recorded by ${edge.provenance.producer}`}><path className={`agent-map-event-route agent-map-event-${edge.state} agent-map-event-${edge.kind}`} d={route} />{edge.state === 'moving' && !paused && <path className="agent-map-event-flow" d={route} />}{edge.kind === 'dispatch' && <text className="agent-map-dispatch-label" x="442" y={70 + to * 148}>dispatch</text>}</g>;
+                    })}
                     {tasks.map((task, index) => {
                       const y = 60 + index * 148;
                       const { moving } = observedActivity(snapshot, task);
@@ -129,9 +139,12 @@ export function AgentMap({ snapshot, selectedId, onSelect, events = [] }: {
       </div>
       <p className="agent-map-legend" id={legendId}>
         <span><span className="agent-map-line-key" aria-hidden="true" />Repository → worktree → assigned agent</span>
-        <span>Dashed lines are durable links. Bright motion is a recorded handoff with source provenance; approval pauses its destination.</span>
+        <span>Dashed lines are durable links. Bright arrows are recorded dispatch or result delivery with source provenance; approval pauses its destination.</span>
       </p>
-      {Object.entries(snapshot.delegationPlans || {}).length > 0 && <div className="agent-map-plans" aria-label="Recorded delegation plans">{Object.entries(snapshot.delegationPlans || {}).flatMap(([parentId, plans]) => plans.map(plan => <article key={`${parentId}-${plan.runId}-${plan.id}`}><header><strong>Recorded plan</strong><span>{plan.decision === 'solo' ? 'Solo decision' : 'Auto proposal'} · {plan.mode === 'auto' ? 'Auto preference' : 'Solo preference'} · not dispatched</span></header><p>{plan.rationale}</p><ul>{plan.children.map(child => <li key={child.key}><code>{child.key}</code><span>{child.goal}</span><small>{child.provider} · {child.writeScope.join(', ')}{child.dependencies.length ? ` · waits for ${child.dependencies.join(', ')}` : ''}</small>{child.brief && <details><summary>Inspect saved brief</summary><pre>{child.brief}</pre></details>}</li>)}</ul></article>))}</div>}
+      {Object.entries(snapshot.delegationPlans || {}).length > 0 && <div className="agent-map-plans" aria-label="Recorded delegation plans">{Object.entries(snapshot.delegationPlans || {}).flatMap(([parentId, plans]) => plans.map(plan => {
+        const materialized = snapshot.tasks.filter(task => task.delegation?.parentId === parentId && task.delegation.runId === plan.runId).length;
+        return <article key={`${parentId}-${plan.runId}-${plan.id}`}><header><strong>Recorded plan</strong><span>{plan.decision === 'solo' ? 'Solo decision' : 'Auto proposal'} · {plan.mode === 'auto' ? 'Auto preference' : 'Solo preference'} · {materialized ? `${materialized} materialized` : 'not dispatched'}</span></header><p>{plan.rationale}</p><ul>{plan.children.map(child => <li key={child.key}><code>{child.key}</code><span>{child.goal}</span><small>{child.provider} · {child.writeScope.join(', ')}{child.dependencies.length ? ` · waits for ${child.dependencies.join(', ')}` : ''}</small>{child.brief && <details><summary>Inspect saved brief</summary><pre>{child.brief}</pre></details>}</li>)}</ul></article>;
+      }))}</div>}
     </div>}
   </section>;
 }

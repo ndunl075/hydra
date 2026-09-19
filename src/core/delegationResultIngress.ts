@@ -40,6 +40,12 @@ export class DelegationResultIngress {
     if (receipt.commit !== source.child.reviewedCommit!.commit || receipt.tree !== source.child.reviewedCommit!.tree) {
       throw new Error('Result receipt commit or tree does not match the reviewed child result.');
     }
+    // The saved verification gate attests the reviewed commit, but its artifacts
+    // do not carry SHA-256 digests. Until a host-derived evidence binding exists,
+    // no caller-supplied validation or evidence claim can be made durable.
+    if (receipt.validations.length || receipt.evidence.length) {
+      throw new Error('Result validation and evidence claims require host-attested references.');
+    }
     // appendResult is atomic and idempotent. This method does not alter the
     // child record, so a failed journal save leaves the recoverable source intact.
     return this.journal.appendResult(receipt, source.binding);

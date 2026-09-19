@@ -82,7 +82,7 @@ export async function ingestDelegationPlannerCompletion(input: { task: Task; tur
   // A decision-store failure is recoverable: retain the submitted receipt so
   // restart can replay the immutable completed turn without another model turn.
   await input.decisions.recordDecision(bound!.proposal, bound!.policy);
-  const accepted: DelegationPlannerRun = { ...run, state: 'accepted', proposalId: id(proposal.id), sha256: hash(proposal) };
+  const accepted: DelegationPlannerRun = { ...run, state: 'accepted', proposalId: id(bound.proposal.id), sha256: hash(bound.proposal) };
   input.task.delegationPlanner = accepted;
   return accepted;
 }

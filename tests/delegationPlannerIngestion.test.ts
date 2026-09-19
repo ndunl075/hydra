@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { bindDelegationPlannerTurn, createDelegationPlannerRun, ingestDelegationPlannerCompletion, plannerMarker, plannerPromptSuffix } from '../src/core/delegationPlannerIngestion';
 import type { Task } from '../src/core/model';
 import { DelegationStore } from '../src/core/delegationStore';
+import { digest } from '../src/core/delegationContext';
 import { LocalStore } from '../src/core/store';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -23,6 +24,21 @@ test('records one explicit Solo proposal and duplicate completion does not recor
   assert.equal(first?.state, 'accepted'); assert.equal(calls.length, 1);
   await ingestDelegationPlannerCompletion({ task: value, turn: completed(output), decisions: store });
   assert.equal(calls.length, 1);
+});
+
+test('receipt hashes the canonical saved proposal when provider JSON reorders fields and whitespace', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-canonical-planner-'));
+  try {
+    const value = task();
+    value.delegationPlanner = bindDelegationPlannerTurn(createDelegationPlannerRun(policy(), preferences, runId), { id: turnId });
+    const decisions = new DelegationStore(directory, async () => {});
+    const reordered = { children: [], rationale: 'One small localized change.', decision: 'solo', runId, parentId, id: '444444444444', version: 1 };
+    const raw = JSON.stringify(reordered).replace(/,/g, ', ');
+    await ingestDelegationPlannerCompletion({ task: value, turn: completed(`${plannerMarker}${raw}`), decisions });
+    const saved = (await decisions.load(parentId, runId)).decisions[0]!;
+    assert.equal(value.delegationPlanner?.sha256, digest(JSON.stringify(saved.proposal)));
+    assert.notEqual(value.delegationPlanner?.sha256, digest(JSON.stringify(reordered)));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('refuses malformed or inferred output without recording a decision', async () => {

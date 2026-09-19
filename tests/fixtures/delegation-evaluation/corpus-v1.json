@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "delegation-v1",
+  "tolerances": {
+    "samplesPerMode": 3,
+    "qualityRegressionPoints": 0,
+    "usageIncreasePercent": 0,
+    "elapsedTimeIncreasePercent": 10
+  },
+  "cases": [
+    {
+      "id": "localized-fix",
+      "repository": "ndunl075/hydra",
+      "baseCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "provider": "codex",
+      "modelSelection": { "model": "gpt-5.6-terra", "effort": "medium" },
+      "acceptanceCommands": [{ "executable": "npm.cmd", "args": ["run", "check"] }],
+      "qualityThreshold": { "metric": "review-score", "minimumScore": 90 },
+      "budgetCeiling": { "maxSubmittedTurns": 12, "maxReportedTokens": 200000 },
+      "requiredObservations": ["acceptance", "quality", "elapsed-time", "reported-usage", "regressions", "integration-conflicts", "manual-rework"],
+      "caseSha256": "2332b78528fe703b9b239be23b31924cf03ddc0fca188b1cc922ccab920991d7"
+    }
+  ],
+  "sha256": "dfb6a5d24b85bf891e2fc78cbb5a6e608a1ce1185eba47f0fbbecc6861446af3"
+}

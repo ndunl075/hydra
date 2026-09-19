@@ -1,71 +1,114 @@
-/* Use the native editor palette; the chat remains readable at narrow sidebar widths. */
+/* A compact, native-looking agent sidebar: dense like an editor, quiet like Cursor. */
 body[data-surface="editor"] {
-  --primary: var(--vscode-sideBar-background, #141414);
-  --rail: var(--vscode-sideBar-background, #141414);
-  --surface: var(--vscode-input-background, #1b1b1b);
-  --text: var(--vscode-foreground, #f5f5f5);
-  --body-text: var(--vscode-foreground, #c6ccc8);
-  --muted: var(--vscode-descriptionForeground, #999e9a);
-  --border: var(--vscode-widget-border, #2b2b2b);
-  --input-border: var(--vscode-input-border, #363636);
-  --hover: var(--vscode-list-hoverBackground, #262626);
-  --secondary: var(--vscode-button-background, #173c2c);
-  --secondary-hover: var(--vscode-button-hoverBackground, #24553f);
+  --primary: var(--vscode-sideBar-background, #151515);
+  --rail: var(--vscode-sideBar-background, #151515);
+  --surface: var(--vscode-input-background, #1d1d1d);
+  --text: var(--vscode-foreground, #ededed);
+  --body-text: var(--vscode-foreground, #c9c9c9);
+  --muted: var(--vscode-descriptionForeground, #929292);
+  --border: var(--vscode-widget-border, #303030);
+  --input-border: var(--vscode-input-border, #3b3b3b);
+  --hover: var(--vscode-list-hoverBackground, #292929);
+  --secondary: var(--vscode-button-background, #1d513c);
+  --secondary-hover: var(--vscode-button-hoverBackground, #28664c);
+  --cursor-green: #6bdfaa;
   overflow: hidden;
 }
-.editor-conversation { height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.editor-conversation .primary { color: var(--vscode-button-foreground, white); border-color: transparent; }
-.chat-toolbar { display: flex; align-items: center; gap: 4px; padding: 9px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.chat-toolbar .mode-switch { margin: 0 auto 0 0; border: 0; background: transparent; padding: 0; }
-.chat-toolbar .mode-switch button { padding: 5px 10px; }
-.chat-toolbar .mode-switch .current { background: var(--hover); color: var(--text); }
-.chat-task-picker { display: flex; align-items: center; gap: 10px; padding: 10px 12px 7px; }
+
+.editor-conversation { height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--primary); }
+.editor-conversation .primary { color: var(--vscode-button-foreground, #fff); border-color: transparent; }
+.chat-toolbar { min-height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 92%, #000); flex-shrink: 0; }
+.chat-brand { display: flex; align-items: center; gap: 6px; color: var(--text); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 10px; font-weight: 700; letter-spacing: .11em; }
+.chat-mark { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 5px; color: #fff; background: linear-gradient(145deg, #285a43, #113122); font-family: Georgia, serif; font-size: 17px; font-weight: 600; letter-spacing: -.08em; box-shadow: inset 0 0 0 1px #4a8c6c; }
+.chat-toolbar .mode-switch { margin-left: auto; display: flex; align-items: center; gap: 1px; padding: 2px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); }
+.chat-toolbar .mode-switch button { padding: 4px 8px; border-radius: 3px; color: var(--muted); font-size: 10px; line-height: 14px; }
+.chat-toolbar .mode-switch .current { color: #fff; background: #285b43; }
+.chat-toolbar-actions { display: flex; align-items: center; gap: 1px; }
+.chat-toolbar .icon-button { width: 25px; height: 25px; border-radius: 4px; color: var(--muted); font-size: 16px; line-height: 1; }
+.chat-toolbar .chat-settings { font-size: 13px; letter-spacing: 1px; }
+.chat-toolbar .icon-button:hover { background: var(--hover); color: var(--text); }
+
+.chat-task-picker { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; column-gap: 7px; min-height: 34px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--rail); }
+.picker-kicker { color: var(--cursor-green); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 8px; letter-spacing: .11em; }
 .chat-task-picker label { font-size: 10px; color: var(--muted); }
-.chat-task-picker select { flex: 1; min-width: 0; color: var(--text); background: var(--primary); border: 0; padding: 3px 0; text-overflow: ellipsis; }
-.chat-identity { display: flex; gap: 8px; padding: 4px 12px 10px; color: var(--muted); font-size: 10px; }
-.chat-identity > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-details { flex-shrink: 0; border-bottom: 1px solid var(--border); }
-.chat-details > summary { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; font-size: 11px; }
-.chat-details > summary::after { content: '+'; color: var(--muted); }
-.chat-details[open] > summary::after { content: '−'; }
-.chat-details > summary > span { margin-left: auto; color: var(--muted); font-size: 10px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-details-body { padding: 0 12px 12px; max-height: 40vh; overflow-y: auto; }
-.chat-worktree { display: block; font-size: 10px; overflow-wrap: anywhere; margin: 5px 0 14px; }
-.chat-start { padding: 28px 16px 20px; overflow-y: auto; }
-.chat-introduction { margin-bottom: 24px; }
-.chat-start h2 { font-size: 18px; line-height: 1.35; font-weight: 500; letter-spacing: -.3px; margin: 12px 0; }
-.chat-start p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.chat-task-picker select { min-width: 0; border: 0; padding: 0; color: var(--text); background: transparent; font-size: 11px; font-weight: 500; text-overflow: ellipsis; }
+
+.chat-identity { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; }
+.chat-identity > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-project { color: var(--text); }
+.chat-separator { padding: 0 5px; color: var(--muted); }
+.chat-branch { color: var(--muted); }
+.editor-conversation .state { margin-left: 0; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-family: var(--vscode-font-family, "Segoe UI", sans-serif); font-size: 9px; text-transform: capitalize; white-space: nowrap; }
+.editor-conversation .state.running, .editor-conversation .state.external { color: var(--cursor-green); border-color: color-mix(in srgb, var(--cursor-green) 35%, var(--border)); background: color-mix(in srgb, var(--cursor-green) 8%, transparent); }
+.editor-conversation .state.interrupted, .editor-conversation .state.error { color: var(--warning); }
+
+.chat-details { flex-shrink: 0; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 62%, var(--primary)); }
+.chat-details > summary { display: flex; align-items: center; gap: 7px; min-height: 38px; padding: 0 12px; cursor: pointer; font-size: 11px; list-style: none; }
+.chat-details > summary::-webkit-details-marker { display: none; }
+.chat-details > summary::after { content: "+"; margin-left: 7px; color: var(--muted); font-size: 15px; line-height: 1; }
+.chat-details[open] > summary::after { content: "−"; }
+.provider-badge { width: 17px; height: 17px; display: grid; place-items: center; border: 1px solid #426a56; border-radius: 4px; color: var(--cursor-green); font-family: Georgia, serif; font-size: 11px; font-weight: 700; }
+.chat-model { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-details-body { max-height: 42vh; overflow-y: auto; padding: 3px 12px 13px; border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); }
+.chat-worktree { display: block; margin: 4px 0 13px; padding: 7px 8px; overflow-wrap: anywhere; border-left: 2px solid #376c51; background: color-mix(in srgb, var(--surface) 80%, #000); color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; line-height: 1.45; }
+
+.chat-start { overflow-y: auto; max-width: 660px; margin: 0 auto; padding: 42px 27px 28px; }
+.chat-introduction { position: relative; margin-bottom: 28px; padding: 0 0 22px; border-bottom: 1px solid var(--border); }
+.chat-introduction::after { content: ""; position: absolute; bottom: -1px; left: 0; width: 68px; height: 2px; background: var(--cursor-green); }
+.chat-start h2 { margin: 12px 0 10px; color: var(--text); font-size: 23px; font-weight: 560; letter-spacing: -.5px; }
+.chat-start p { color: var(--muted); font-size: 12px; line-height: 1.65; }
 .chat-start form { gap: 14px; }
-.chat-start form label { font-size: 11px; gap: 7px; }
-.chat-start form input, .chat-start form select, .chat-start form textarea { padding: 9px; font-size: 12px; }
+.chat-start form label { gap: 6px; color: var(--muted); font-size: 10px; letter-spacing: .02em; }
+.chat-start form input, .chat-start form select, .chat-start form textarea { padding: 9px 10px; border: 1px solid var(--input-border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px; }
+.chat-start form textarea { min-height: 118px; }
 .chat-create-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .chat-create-options > label { min-width: 0; }
-.editor-conversation .delegation-control { padding: 10px; }
+.editor-conversation .delegation-control { padding: 10px; border: 1px solid var(--border); border-radius: 5px; background: color-mix(in srgb, var(--surface) 70%, var(--primary)); }
+.editor-conversation .delegation-control legend { color: var(--muted); font-size: 9px; letter-spacing: .1em; }
 .editor-conversation .delegation-control .secondary { padding: 5px 8px; }
-.chat-error, .chat-notice { padding: 9px 12px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; max-height: 20vh; overflow-y: auto; flex-shrink: 0; }
+
+.chat-error, .chat-notice { flex-shrink: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
 .chat-error { color: var(--vscode-errorForeground, #e0a090); background: var(--vscode-inputValidation-errorBackground, #302020); }
-.chat-notice { color: var(--muted); border-bottom: 1px solid var(--border); }
-.chat-loading { color: var(--muted); padding: 12px; }
+.chat-notice { color: var(--muted); background: color-mix(in srgb, var(--surface) 45%, var(--primary)); }
+.chat-loading { padding: 14px; color: var(--muted); font-size: 11px; }
+
 .editor-conversation .session-conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.editor-conversation .session-messages { overflow-y: auto; flex: 1; padding: 22px 14px 12px; overflow-wrap: anywhere; }
-.editor-conversation .message { margin-bottom: 24px; }
-.editor-conversation .message-author { font-size: 11px; gap: 7px; flex-wrap: wrap; }
-.editor-conversation .message-author time { font-size: 9px; }
-.editor-conversation .avatar { width: 19px; height: 19px; font-size: 10px; }
-.editor-conversation .local-tag { font-size: 8px; letter-spacing: .5px; }
-.editor-conversation .prompt-text { font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
-.editor-conversation .session-note, .editor-conversation .turn-model-settings { font-size: 10px; line-height: 1.5; }
-.editor-conversation .follow-up { flex-shrink: 0; border: 1px solid var(--input-border); border-radius: 6px; padding: 10px; margin: 8px 10px 10px; gap: 10px; background: var(--surface); max-height: 46vh; overflow-y: auto; }
-.editor-conversation .follow-up > label { font-size: 10px; color: var(--muted); gap: 5px; }
-.editor-conversation .follow-up textarea { background: transparent; border: 0; padding: 0; border-radius: 0; min-height: 64px; max-height: 160px; font-size: 12px; }
-.editor-conversation .follow-up textarea:focus-visible { outline-offset: 2px; }
-.editor-conversation .follow-up .form-note { font-size: 9px; line-height: 1.45; }
-.editor-conversation .task-actions { gap: 6px; }
-.editor-conversation .primary, .editor-conversation .secondary, .editor-conversation .stop-button { font-size: 11px; line-height: 16px; padding: 6px 9px; }
-.editor-conversation .follow-up .task-actions > .primary { margin-right: auto; }
-.editor-conversation .approval-request { padding: 12px; margin: 12px 0; }
+.editor-conversation .session-messages { flex: 1; overflow-y: auto; padding: 24px 16px 16px; overflow-wrap: anywhere; }
+.editor-conversation .message { max-width: 760px; margin: 0 auto 25px; }
+.editor-conversation .assistant-message { padding-top: 17px; border-top: 1px solid var(--border); }
+.editor-conversation .message-author { gap: 7px; color: var(--muted); font-size: 10px; flex-wrap: wrap; }
+.editor-conversation .message-author strong { color: var(--text); font-weight: 550; }
+.editor-conversation .message-author time { margin-left: auto; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; }
+.editor-conversation .avatar { width: 19px; height: 19px; border-radius: 5px; font-size: 9px; }
+.editor-conversation .hydra-avatar { background: #20543c; color: #e8fff2; font-family: Georgia, serif; font-size: 15px; }
+.editor-conversation .local-tag { border: 1px solid #3c674f; background: #173829; color: var(--cursor-green); border-radius: 3px; font-size: 8px; letter-spacing: .07em; }
+.editor-conversation .prompt-text { margin: 9px 0 0; color: var(--body-text); font-size: 12px; line-height: 1.72; }
+.editor-conversation .session-note, .editor-conversation .turn-model-settings { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.editor-conversation .session-error { margin-left: 0; }
+.editor-conversation .approval-request { max-width: 760px; margin: 12px auto; padding: 12px; border-radius: 5px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); background: color-mix(in srgb, var(--warning) 7%, var(--surface)); }
 .editor-conversation .approval-request pre { max-height: 240px; overflow: auto; font-size: 10px; }
+
+.editor-conversation .follow-up { flex-shrink: 0; display: flex; gap: 9px; margin: 0; padding: 11px 12px 12px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: color-mix(in srgb, var(--primary) 88%, #000); max-height: 47vh; overflow-y: auto; }
+.editor-conversation .follow-up > label { flex: 1; gap: 5px; color: var(--muted); font-size: 9px; letter-spacing: .08em; }
+.editor-conversation .follow-up textarea { min-height: 62px; max-height: 160px; padding: 8px 9px; border: 1px solid var(--input-border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px; }
+.editor-conversation .follow-up textarea:focus-visible { outline-offset: 1px; border-color: #4f9871; }
+.editor-conversation .follow-up .task-actions { align-items: center; gap: 6px; margin: 0; }
+.editor-conversation .primary, .editor-conversation .secondary, .editor-conversation .stop-button { padding: 6px 9px; font-size: 10px; line-height: 16px; }
+.editor-conversation .follow-up .task-actions > .primary { margin-right: auto; }
+.editor-conversation .follow-up .form-note { width: 100%; margin: 0; font-size: 9px; line-height: 1.45; }
+.editor-conversation .task-actions { gap: 6px; margin: 12px 0 0; }
+
 @media (max-width: 300px) {
-  .chat-task-picker label { display: none; }
+  .chat-brand > span:last-child, .chat-task-picker label { display: none; }
+  .chat-task-picker { grid-template-columns: auto minmax(0, 1fr); }
   .chat-create-options { grid-template-columns: 1fr; }
+  .chat-model { display: none; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-conversation *, .editor-conversation *::before, .editor-conversation *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+body.vscode-high-contrast .chat-toolbar, body.vscode-high-contrast-light .chat-toolbar { background: var(--primary); }
+body.vscode-high-contrast .chat-mark, body.vscode-high-contrast-light .chat-mark { background: var(--secondary); box-shadow: none; }
+body.vscode-high-contrast .provider-badge, body.vscode-high-contrast-light .provider-badge { border-color: var(--border); color: var(--text); }

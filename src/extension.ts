@@ -22,6 +22,7 @@ import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
 import { projectDelegationReconciliation } from './core/delegationReconciliation';
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
+import { DelegationIngressHost } from './core/delegationIngressHost';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
@@ -138,6 +139,7 @@ class Manager {
   private readonly delegations: DelegationStore;
   private readonly delegationDispatches: DelegationDispatchStore;
   private readonly delegationJournal: DelegationOrchestrationJournal;
+  private readonly delegationIngress: DelegationIngressHost;
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -162,6 +164,16 @@ class Manager {
     });
     this.delegationJournal = new DelegationOrchestrationJournal(path.join(this.storageDirectory, 'delegation'), async () => {
       if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation orchestration while this workspace is unavailable.');
+    });
+    this.delegationIngress = new DelegationIngressHost(() => this.tasks, this.delegations, this.delegationDispatches, this.delegationJournal, async child => {
+      this.assertDelegationIngressWritable();
+      await this.verifyWorktree(child);
+      const root = await realpath(child.worktree);
+      for (const document of vscode.workspace.textDocuments) {
+        if (!document.isDirty || document.uri.scheme !== 'file') continue;
+        const file = await realpath(document.uri.fsPath).catch(() => document.uri.fsPath);
+        if (isInside(root, file) || isInside(root, document.uri.fsPath)) throw new Error('Save or revert unsaved child editor buffers before supplying context.');
+      }
     });
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
       this.integrationOperations.set(op.taskId,op);
@@ -225,6 +237,14 @@ class Manager {
     command('hydra.getDelegationRun', async (parentId: string, runId: string) => {
       this.getTask(parentId);
       return structuredClone(await this.delegations.load(parentId, runId));
+    });
+    // Context supply waits for the explicit inbox action; a public command could be
+    // called programmatically without showing the request to the user.
+    command('hydra.receiveDelegationResult', async (childId: string, result: unknown) => {
+      this.assertDelegationIngressWritable();
+      const receipt = await this.delegationIngress.receiveResult(childId, result);
+      await this.publish();
+      return structuredClone(receipt);
     });
     // Read-only: this only projects already-durable local facts. It starts no process,
     // provider turn, scheduler action, upload, or archive import.
@@ -654,6 +674,9 @@ class Manager {
     if (this.disabled || this.closing || !vscode.workspace.isTrusted) {
       throw new Error('Hydra cannot update delegation enrollment while this workspace is unavailable.');
     }
+  }
+  private assertDelegationIngressWritable(): void {
+    if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot receive delegation ingress while this workspace is unavailable.');
   }
   private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {

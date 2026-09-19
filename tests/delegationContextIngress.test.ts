@@ -61,3 +61,26 @@ test('a changed request under the same key returns a bounded conflict refusal', 
   if (refused.status === 'refused') assert.equal(refused.refusal, 'conflict');
   assert.equal((await store.load(binding.parentId, binding.runId)).contextRequests.length, 1);
 });
+
+test('the first selected or refused decision is durable and is not recalculated after restart', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-context-ingress-'));
+  const request = prepareContextRequest(input(), binding);
+  const first = await ingressDelegationContextRequest(new DelegationOrchestrationJournal(directory), request, binding, observed);
+  const replay = await ingressDelegationContextRequest(new DelegationOrchestrationJournal(directory), request, binding, { 'parser-api': { ...observed['parser-api']!, revision: '0'.repeat(40) } });
+  assert.deepEqual(replay, first);
+  const projection = await new DelegationOrchestrationJournal(directory).load(binding.parentId, binding.runId);
+  assert.deepEqual(projection.contextOutcomes?.[request.requestKey], { version: 1, status: 'selected', selected: [{ id: source.id, path: source.path, revision: source.revision, sha256: source.sha256 }] });
+});
+
+test('concurrent observations of one request return the first durable outcome', async () => {
+  const store = await journal(), request = prepareContextRequest(input(), binding);
+  const [first, second] = await Promise.all([
+    ingressDelegationContextRequest(store, request, binding, observed),
+    ingressDelegationContextRequest(store, request, binding, {}),
+  ]);
+  assert.deepEqual(second, first);
+  assert.deepEqual((await store.load(binding.parentId, binding.runId)).contextOutcomes?.[request.requestKey],
+    first.status === 'selected'
+      ? { version: 1, status: 'selected', selected: first.selected }
+      : { version: 1, status: 'refused', refusal: first.refusal });
+});

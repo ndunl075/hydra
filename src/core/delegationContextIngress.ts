@@ -1,5 +1,5 @@
 import { type ContextRequestBinding, parseDelegationContextRequest, type DelegationContextRequest } from './delegationContextRequests';
-import { DelegationOrchestrationJournal } from './delegationOrchestrationJournal';
+import { DelegationOrchestrationJournal, type ContextIngressOutcome } from './delegationOrchestrationJournal';
 import { scopePath } from './delegationContext';
 
 /** A host-observed source identity. Content deliberately never crosses this ingress. */
@@ -22,6 +22,11 @@ function refusal(error: unknown): ContextIngressRefusal {
 }
 function references(request: DelegationContextRequest): ContextSourceReference[] {
   return request.requested.map(({ id, path, revision, sha256 }) => ({ id, path, revision, sha256 }));
+}
+function receipt(request: DelegationContextRequest, outcome: ContextIngressOutcome): ContextIngressReceipt {
+  return outcome.status === 'selected'
+    ? { version: 1, request, status: 'selected', selected: outcome.selected }
+    : { version: 1, request, status: 'refused', refusal: outcome.refusal };
 }
 function stale(request: DelegationContextRequest, observed: Readonly<Record<string, ObservedContextSource>>): boolean {
   return request.requested.some(source => {
@@ -71,11 +76,15 @@ export async function ingressDelegationContextRequest(
     }
     throw error;
   }
+  const previous = (await journal.load(persisted.parentId, persisted.runId)).contextOutcomes?.[persisted.requestKey];
+  if (previous) return receipt(persisted, previous);
+  let outcome: ContextIngressOutcome;
   if (Buffer.byteLength(JSON.stringify(persisted.requested), 'utf8') > maxDeliveryRequestBytes) {
-    return { version: 1, request: persisted, status: 'refused', refusal: 'size-limit' };
+    outcome = { version: 1, status: 'refused', refusal: 'size-limit' };
+  } else if (stale(persisted, observed)) {
+    outcome = { version: 1, status: 'refused', refusal: 'stale-source' };
+  } else {
+    outcome = { version: 1, status: 'selected', selected: references(persisted) };
   }
-  if (stale(persisted, observed)) {
-    return { version: 1, request: persisted, status: 'refused', refusal: 'stale-source' };
-  }
-  return { version: 1, request: persisted, status: 'selected', selected: references(persisted) };
+  return receipt(persisted, await journal.contextOutcome(persisted, binding, outcome));
 }

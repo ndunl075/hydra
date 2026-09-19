@@ -43,6 +43,23 @@ test('host selects only a real unchanged Git excerpt and rejects caller identity
   } finally { await rm(value.directory, { recursive: true, force: true }); }
 });
 
+test('child request recording creates a visible durable inbox receipt without reading or supplying a source', async () => {
+  let sourceChecks = 0;
+  const value = await fixture(content, async () => { sourceChecks++; });
+  try {
+    const request = value.request();
+    assert.deepEqual(await value.host.recordContextRequest(childId, request), request);
+    assert.deepEqual(await value.host.recordContextRequest(childId, request), request);
+    assert.deepEqual((await new DelegationOrchestrationJournal(path.join(value.directory, 'journal')).load(parentId, runId)).contextRequests, [request]);
+    assert.equal(sourceChecks, 0);
+    assert.equal((await value.journal.load(parentId, runId)).contextOutcomes, undefined);
+    await assert.rejects(value.host.recordContextRequest(childId, { ...request, parentId: '0'.repeat(12) }), /different delegated child|changed/);
+    const stale = prepareContextRequest({ version: 1, parentId, runId, childKey: 'child', requestKey: 'e'.repeat(24), requested: [{ id: value.source.id, path: value.source.path, revision: value.source.revision, sha256: 'f'.repeat(64), reason: 'Need it.' }] }, { parentId, runId, childKey: 'child', writeScope: ['src'], readScope: [value.source.path] });
+    await assert.rejects(value.host.recordContextRequest(childId, stale), /immutable source/);
+    assert.equal(sourceChecks, 0);
+  } finally { await rm(value.directory, { recursive: true, force: true }); }
+});
+
 test('host refuses a changed, missing, or substituted current source', async () => {
   for (const change of ['changed', 'missing', 'substituted'] as const) {
     const value = await fixture();

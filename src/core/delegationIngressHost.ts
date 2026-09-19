@@ -5,7 +5,7 @@ import { DelegationResultIngress } from './delegationResultIngress';
 import type { ParentReviewSource } from './delegationParentReview';
 import { DelegationStore } from './delegationStore';
 import { ingressDelegationContextRequest, type ContextIngressReceipt } from './delegationContextIngress';
-import { parseDelegationContextRequest } from './delegationContextRequests';
+import { parseDelegationContextRequest, type DelegationContextRequest } from './delegationContextRequests';
 import { DelegationOrchestrationJournal } from './delegationOrchestrationJournal';
 import { digest, scopePath, type ContextManifest } from './delegationContext';
 import { git, gitBytes } from './git';
@@ -83,6 +83,15 @@ export class DelegationIngressHost {
       if (!Buffer.from(content, 'utf8').equals(recorded) || !content.includes(source.content)) return undefined;
       return { path: relative, revision: source.revision, sha256: source.sha256 };
     } catch { return undefined; }
+  }
+  /** Records a child's bounded request for the selected parent to inspect. No source is read or delivered. */
+  async recordContextRequest(taskId: string, request: unknown): Promise<DelegationContextRequest> {
+    const child = this.child(taskId), manifest = await this.manifest(child), link = child.delegation!;
+    const sources = [...manifest.instructions, ...manifest.interfaces, ...manifest.evidence];
+    const binding = { parentId: link.parentId, runId: link.runId, childKey: link.childKey, writeScope: manifest.child.writeScope, readScope: sources.map(source => source.path) };
+    const parsed = parseDelegationContextRequest(request, binding);
+    if (parsed.requested.some(item => !sources.some(source => source.id === item.id && source.path === item.path && source.revision === item.revision && source.sha256 === item.sha256))) throw new Error('Requested context does not match an immutable source in the saved child manifest.');
+    return this.journal.appendContextRequest(parsed, binding);
   }
   async supplyContext(taskId: string, request: unknown): Promise<ContextIngressReceipt> {
     const child = this.child(taskId);

@@ -15,7 +15,8 @@ export type ContextIngressOutcome =
   | { version: 1; status: 'selected'; selected: ContextSourceReference[] }
   | { version: 1; status: 'refused'; refusal: ContextIngressRefusal };
 interface StoredContextOutcome { requestKey: string; requestSha256: string; outcome: ContextIngressOutcome; }
-interface StoredResult { binding: ResultReceiptBinding; receipt: DelegationResultReceipt; }
+interface StoredResult { binding: ResultReceiptBinding; receipt: DelegationResultReceipt; occurredAt?: string; }
+export interface DelegationResultDelivery { receipt: DelegationResultReceipt; occurredAt?: string; }
 export interface DelegationOrchestrationRecord { version: 1; parentId: string; runId: string; nextSequence: number; events: DelegationGraphEvent[]; contextRequests: StoredContext[]; contextOutcomes: StoredContextOutcome[]; results: StoredResult[]; }
 export interface DelegationOrchestrationProjection { events: DelegationGraphEvent[]; contextRequests: DelegationContextRequest[]; results: DelegationResultReceipt[]; contextOutcomes?: Record<string, ContextIngressOutcome>; }
 const maxBytes = 1024 * 1024, maxReceipts = 64;
@@ -43,7 +44,7 @@ function parseRecord(value: unknown, parentId: string, runId: string): Delegatio
     if (outcome.selected !== undefined || !['invalid-request', 'out-of-scope', 'size-limit', 'stale-source', 'conflict'].includes(outcome.refusal as string)) throw new Error('Invalid refused context outcome.');
     return { requestKey: request.receipt.requestKey, requestSha256: request.receipt.sha256, outcome: { version: 1 as const, status: 'refused' as const, refusal: outcome.refusal as ContextIngressRefusal } };
   });
-  const results = item.results.map(entry => { const x = exact(entry, ['binding','receipt']); const receipt = parseDelegationResultReceipt(x.receipt, x.binding as ResultReceiptBinding); if (receipt.parentId !== parentId || receipt.runId !== runId) throw new Error('Cross-run result receipt in journal.'); return { binding: clone(x.binding as ResultReceiptBinding), receipt }; });
+  const results = item.results.map(entry => { const x = exact(entry, ['binding','receipt','occurredAt']); const receipt = parseDelegationResultReceipt(x.receipt, x.binding as ResultReceiptBinding); if (receipt.parentId !== parentId || receipt.runId !== runId) throw new Error('Cross-run result receipt in journal.'); if (x.occurredAt !== undefined && (typeof x.occurredAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(x.occurredAt) || !Number.isFinite(Date.parse(x.occurredAt)) || new Date(Date.parse(x.occurredAt)).toISOString() !== x.occurredAt)) throw new Error('Invalid durable result delivery timestamp.'); return { binding: clone(x.binding as ResultReceiptBinding), receipt, ...(x.occurredAt === undefined ? {} : { occurredAt: x.occurredAt }) }; });
   const events = bounded.events.map(parseDelegationGraphEvent);
   if (new Set(events.map(event => event.id)).size !== events.length || new Set(contexts.map(entry => entry.receipt.requestKey)).size !== contexts.length || new Set(outcomes.map(entry => entry.requestKey)).size !== outcomes.length || new Set(results.map(entry => entry.receipt.sha256)).size !== results.length) throw new Error('Duplicate immutable delegation orchestration receipt.');
   if (events.some(event => event.sequence >= (item.nextSequence as number))) throw new Error('Invalid delegation event sequence history.'); return { version: 1, parentId, runId, nextSequence: item.nextSequence as number, events, contextRequests: contexts, contextOutcomes: outcomes, results };
@@ -96,8 +97,12 @@ export class DelegationOrchestrationJournal {
       return outcome;
     });
   }
-  async appendResult(value: unknown, binding: ResultReceiptBinding): Promise<DelegationResultReceipt> {
+  async appendResultDelivery(value: unknown, binding: ResultReceiptBinding): Promise<DelegationResultDelivery> {
     const receipt = parseDelegationResultReceipt(value, binding);
-    return this.mutate(receipt.parentId, receipt.runId, record => { const previous = record.results.find(item => item.receipt.childKey === receipt.childKey); if (previous) { if (previous.receipt.sha256 !== receipt.sha256) throw new Error('Conflicting child result receipt. Original record was retained.'); return previous.receipt; } record.results.push({ binding: clone(binding), receipt }); return receipt; });
+    const occurredAt = new Date().toISOString();
+    return this.mutate(receipt.parentId, receipt.runId, record => { const previous = record.results.find(item => item.receipt.childKey === receipt.childKey); if (previous) { if (previous.receipt.sha256 !== receipt.sha256) throw new Error('Conflicting child result receipt. Original record was retained.'); return { receipt: previous.receipt, ...(previous.occurredAt === undefined ? {} : { occurredAt: previous.occurredAt }) }; } record.results.push({ binding: clone(binding), receipt, occurredAt }); return { receipt, occurredAt }; });
+  }
+  async appendResult(value: unknown, binding: ResultReceiptBinding): Promise<DelegationResultReceipt> {
+    return (await this.appendResultDelivery(value, binding)).receipt;
   }
 }

@@ -12,6 +12,12 @@ import { git, gitBytes } from './git';
 import { repositoryRoot, isInside } from './worktrees';
 import type { Task } from './model';
 
+export interface DelegationIngressResult {
+  receipt: Awaited<ReturnType<DelegationResultIngress['receive']>>;
+  binding: Parameters<DelegationResultIngress['receive']>[1]['binding'];
+  occurredAt?: string;
+}
+
 /**
  * Host-only adapter for D1 ingress.  Callers provide an opaque request/result
  * payload and a child task ID; every authority-bearing field comes from saved
@@ -104,20 +110,25 @@ export class DelegationIngressHost {
     if (JSON.stringify([current.repository, current.worktree, current.branch, current.baseCommit, current.delegation]) !== identity) throw new Error('Delegated child identity changed during context observation.');
     return ingressDelegationContextRequest(this.journal, request, binding, observed);
   }
-  async receiveResult(taskId: string, result: unknown) {
+  async receiveResultWithBinding(taskId: string, result: unknown): Promise<DelegationIngressResult> {
     const child = this.child(taskId), manifest = await this.manifest(child), link = child.delegation!;
     const dispatch = (await this.dispatches.load(link.parentId, link.runId)).find(item => item.childKey === link.childKey);
     const history = await this.journal.load(link.parentId, link.runId);
-    const delivered = new Map(history.results.map(receipt => [receipt.childKey, receipt.sha256]));
+    const deliveredResults = new Map(history.results.map(receipt => [receipt.childKey, receipt.sha256]));
     const dependencies = this.dependencyKeys(child).map(childKey => {
-      const receiptSha256 = delivered.get(childKey);
+      const receiptSha256 = deliveredResults.get(childKey);
       if (!receiptSha256) throw new Error('A dependent child result has not been durably delivered.');
       return { childKey, receiptSha256 };
     });
-    return new DelegationResultIngress(this.journal).receive(result, {
+    const binding = { parentId: link.parentId, runId: link.runId, childKey: link.childKey, dispatchKey: link.dispatchKey, baseCommit: child.baseCommit, writeScope: manifest.child.writeScope, dependencies };
+    const delivered = await new DelegationResultIngress(this.journal).receiveWithDelivery(result, {
       child, dispatch,
-      binding: { parentId: link.parentId, runId: link.runId, childKey: link.childKey, dispatchKey: link.dispatchKey, baseCommit: child.baseCommit, writeScope: manifest.child.writeScope, dependencies },
+      binding,
     });
+    return { receipt: delivered.receipt, binding, ...(delivered.occurredAt === undefined ? {} : { occurredAt: delivered.occurredAt }) };
+  }
+  async receiveResult(taskId: string, result: unknown) {
+    return (await this.receiveResultWithBinding(taskId, result)).receipt;
   }
   /** Derives review inputs from durable host records; callers never supply hashes or bindings. */
   async parentReviewSource(taskId: string): Promise<ParentReviewSource> {

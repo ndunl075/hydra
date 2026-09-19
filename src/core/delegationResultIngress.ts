@@ -33,7 +33,7 @@ function assertRecordedDispatch(source: DelegationResultIngressSource): void {
 export class DelegationResultIngress {
   constructor(private readonly journal: DelegationOrchestrationJournal) {}
 
-  async receive(value: unknown, source: DelegationResultIngressSource): Promise<DelegationResultReceipt> {
+  async receiveWithDelivery(value: unknown, source: DelegationResultIngressSource) {
     assertRecordedDispatch(source);
     assertDelegatedVerificationGate(source.child);
     const receipt = prepareDelegationResult(value, source.binding);
@@ -48,6 +48,9 @@ export class DelegationResultIngress {
     }
     // appendResult is atomic and idempotent. This method does not alter the
     // child record, so a failed journal save leaves the recoverable source intact.
-    return this.journal.appendResult(receipt, source.binding);
+    return this.journal.appendResultDelivery(receipt, source.binding);
+  }
+  async receive(value: unknown, source: DelegationResultIngressSource): Promise<DelegationResultReceipt> {
+    return (await this.receiveWithDelivery(value, source)).receipt;
   }
 }

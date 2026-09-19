@@ -1,7 +1,7 @@
 import type { Task } from './model';
 import { parseDelegationGraphEvents, type DelegationGraphEvent } from './delegationGraphEvents';
 export interface DelegationGraphEdge { from: string; to: string; kind: 'assignment' | 'dependency'; state: 'queued' | 'running' | 'blocked' | 'completed' | 'interrupted'; }
-export interface RecordedDelegationGraphEdge { id: string; from: string; to: string; kind: 'assignment' | 'result-delivery'; provenance: DelegationGraphEvent['provenance']; state: 'moving' | 'paused' | 'stopped'; }
+export interface RecordedDelegationGraphEdge { id: string; from?: string; to: string; kind: 'assignment' | 'dispatch' | 'result-delivery'; provenance: DelegationGraphEvent['provenance']; state: 'moving' | 'paused' | 'stopped'; }
 /** Projects only durable task links; it never invents agent traffic or performs work. */
 export function delegationGraph(tasks: Task[]): DelegationGraphEdge[] {
   const byId = new Map(tasks.map(task => [task.id, task])); const edges: DelegationGraphEdge[] = [];
@@ -17,7 +17,14 @@ export function recordedDelegationGraphEdges(tasks: Task[], input: unknown): { e
     const child = byId.get(event.to.taskId);
     return child?.delegation?.parentId === event.parentId && child.delegation.runId === event.runId;
   }).map(event => (event.to as { kind: 'task'; taskId: string }).taskId));
-  const edges = events.flatMap(event => {
+  const edges = events.flatMap<RecordedDelegationGraphEdge>(event => {
+    if (event.kind === 'dispatch') {
+      if (event.to.kind !== 'task') return [];
+      const child = byId.get(event.to.taskId);
+      if (!child?.delegation || child.delegation.parentId !== event.parentId || child.delegation.runId !== event.runId) return [];
+      const terminal = child.state === 'discarded' || child.state === 'interrupted' || child.state === 'error' || !!child.reviewedCommit || child.schedule?.uncertain === true || child.schedule?.state === 'finished';
+      return [{ id: event.id, to: child.id, kind: 'dispatch' as const, provenance: event.provenance, state: terminal ? 'stopped' as const : approvalTargets.has(child.id) ? 'paused' as const : 'moving' as const }];
+    }
     if ((event.kind !== 'assignment' && event.kind !== 'result-delivery') || event.from.kind !== 'task' || event.to.kind !== 'task') return [];
     const from = byId.get(event.from.taskId), to = byId.get(event.to.taskId); if (!from || !to || from.repository !== to.repository) return [];
     // A valid event alone never authorizes a visual agent route: it must still

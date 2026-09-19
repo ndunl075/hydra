@@ -17,6 +17,7 @@
 .agent-map-connection { stroke: var(--map-provider); stroke-width: 1.5; opacity: .55; }
 .agent-map-delegation-link { stroke: var(--map-worktree); stroke-width: 1.25; stroke-dasharray: 4 5; opacity: .8; }.agent-map-delegation-blocked, .agent-map-delegation-interrupted { stroke: var(--warning); }.agent-map-delegation-completed { opacity: .4; }
 .agent-map-event-route { fill: none; stroke: var(--map-worktree); stroke-width: 2; opacity: .42; }.agent-map-event-paused { stroke: var(--warning); opacity: .8; stroke-dasharray: 3 4; }.agent-map-event-stopped { opacity: .22; }.agent-map-event-flow { fill: none; stroke: #f0c36a; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 2 13; animation: agent-map-handoff 1.15s linear infinite; filter: drop-shadow(0 0 3px #f0c36a88); }
+.agent-map-event-dispatch { stroke: var(--map-provider, var(--map-worktree)); }.agent-map-dispatch-label { fill: var(--muted); font-size: 9px; letter-spacing: .04em; }
 .agent-map-arrow { stroke: var(--map-provider); stroke-width: 1.5; }
 .agent-map-flow { stroke: var(--map-provider); stroke-width: 3; stroke-dasharray: 6 16; animation: agent-map-flow 1.8s linear infinite; }
 .agent-map-root { position: absolute; left: 27px; width: 148px; display: flex; flex-direction: column; align-items: center; gap: 7px; text-align: center; }
@@ -60,6 +61,9 @@
 .agent-map-plans li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 8px; font-size: 10px; }
 .agent-map-plans code { color: var(--map-worktree); }
 .agent-map-plans small { grid-column: 2; color: var(--muted); overflow-wrap: anywhere; }
+.delegation-orchestration { margin: 14px 18px; border: 1px solid var(--border); border-left: 3px solid var(--map-worktree, var(--vscode-focusBorder)); border-radius: 6px; background: var(--surface); }
+.delegation-orchestration > header { display: flex; align-items: start; justify-content: space-between; gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--border); }.delegation-orchestration h3 { margin: 3px 0 0; font-size: 13px; font-weight: 500; }.delegation-orchestration > header p { max-width: 265px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: right; }
+.delegation-orchestration-run { padding: 12px 14px; }.delegation-orchestration-run + .delegation-orchestration-run { border-top: 1px solid var(--border); }.delegation-orchestration-summary { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }.delegation-orchestration-summary span { color: var(--muted); }.delegation-orchestration-run > p { margin: 7px 0 10px; font-size: 11px; line-height: 1.45; }.delegation-orchestration-run ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }.delegation-orchestration-run li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 9px; border-radius: 4px; background: var(--rail); }.delegation-orchestration-run li > div { display: grid; min-width: 0; gap: 3px; }.delegation-orchestration-run code { color: var(--map-worktree, var(--vscode-focusBorder)); font-size: 10px; }.delegation-orchestration-run strong { font-size: 11px; font-weight: 500; }.delegation-orchestration-run small { color: var(--warning); font-size: 10px; line-height: 1.4; }
 .agent-map-legend > span:first-child { display: inline-flex; align-items: center; gap: 7px; }
 .agent-map-line-key { display: inline-block; width: 17px; border-top: 2px solid var(--map-worktree); }
 .agent-map-paused .agent-map-flow, .agent-map-paused .agent-map-event-flow { animation-play-state: paused; }
@@ -77,6 +81,7 @@ body.vscode-high-contrast .agent-map-connection, body.vscode-high-contrast .agen
   .agent-map-toggle { flex-wrap: wrap; gap: 4px 6px; }
   .agent-map-count { font-size: 9px; }
   .agent-map-canvas { padding-left: 12px; padding-right: 12px; }
+  .delegation-orchestration { margin: 10px; }.delegation-orchestration > header { display: grid; gap: 6px; }.delegation-orchestration > header p { max-width: none; text-align: left; }.delegation-orchestration-run li { align-items: start; flex-direction: column; }.delegation-orchestration-run li button { align-self: stretch; }
 }
 @media (max-height: 560px) {
   .agent-map-canvas { height: 160px; }

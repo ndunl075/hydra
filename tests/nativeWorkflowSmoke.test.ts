@@ -66,3 +66,17 @@ test('focused runtime markup keeps one selected child, pending context, blocked 
   assert.match(budget, /Usage unavailable/);
   assert.doesNotMatch(budget, /<button|<form/);
 });
+
+test('editor agent panel has the compact Cursor-style conversation hierarchy without changing native editor ownership', async () => {
+  const [editor, css] = await Promise.all([source('webview/EditorConversation.tsx'), source('webview/editor-conversation.css')]);
+  assert.match(editor, /className="chat-brand"/);
+  assert.match(editor, /className="chat-mark"/);
+  assert.match(editor, /className="chat-toolbar-actions"/);
+  assert.match(editor, /className="picker-kicker">CHAT/);
+  assert.match(editor, /className="provider-badge"/);
+  assert.match(editor, /Isolated worktree/);
+  assert.match(css, /\.chat-toolbar \{ min-height: 42px/);
+  assert.match(css, /\.editor-conversation \.follow-up \{[\s\S]*border-top: 1px solid var\(--border\)/);
+  assert.match(css, /body\.vscode-high-contrast/);
+  assert.match(css, /prefers-reduced-motion: reduce/);
+});

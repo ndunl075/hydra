@@ -129,7 +129,7 @@ export class ManagedCodex {
         const detail = JSON.stringify({ request: params, ...(item ? { item } : {}) }, null, 2);
         if (detail.length > 50000) throw new Error('Codex approval details exceed the display limit. No permission granted; use the provider terminal.');
         const approval: Approval = { id, kind: message.method.includes('fileChange') ? 'file' : params.networkApprovalContext ? 'network' : 'command', detail };
-        approvals.set(id, { rpcId: message.id, approval }); view.approvals = [...approvals.values()].map(value => value.approval); update();
+        approvals.set(id, { rpcId: message.id, approval }); view.approvals = [...approvals.values()].map(value => value.approval); update(); this.changed();
         return;
       }
       if (message.method === 'item/started') {

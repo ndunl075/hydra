@@ -42,6 +42,17 @@ Children can inspect relevant files with ordinary authorized tools and request m
 
 ## Results, review, and recovery
 
+### Parent suspension and resume contract
+
+| Durable parent state | Trigger | Scheduler/session effect | Next state |
+| --- | --- | --- | --- |
+| `running` / `waiting-for-approval` | Enrolled children begin | Build and persist a detached `waiting-for-children` candidate, swap it live, then stop the existing managed process. This releases the scheduler slot without deleting the recorded session. If stopping fails, persist and restore the prior active state. | `waiting-for-children` |
+| `waiting-for-children` | One or more result receipts arrive | Store each immutable receipt first. A reconciliation pass coalesces all receipts then persists one SHA-256 wakeup key before queueing one existing-session follow-up. | `queued` / `running` |
+| `waiting-for-children` | Any prerequisite fails, is interrupted, or is cancelled | Keep every sibling receipt in the journal and persist a blocking reason. | `blocked` |
+| `waiting-for-children` | Stop/cancellation | Do not queue a new wakeup. Existing receipts and the stored session remain inspectable. | `cancelled` |
+
+On restart, reload the journal and the parent schedule. A stored wakeup key suppresses redelivery; a persisted receipt without a key is reconciled once. The waiting transition always writes before the irreversible session release and compensates both durable and live state if release fails. Retrying a child writes its one-attempt receipt before invoking the scheduler. Replanning never clears that receipt. No polling, heartbeat, recursive child, provider launch, or integration promotion is part of this transition.
+
 Each child returns a concise result containing decisions, changed paths, exact commit/tree references, validation commands and outcomes, unresolved problems, and pointers to complete local evidence. Produce this in its normal completion; opening a task or handoff must not trigger another summarization call. Retain full available logs locally without automatically inserting them into parent context.
 
 The parent inspects actual changes, checks shared contracts, and uses existing prepared-review and candidate-integration gates. Individual child tests do not replace combined acceptance tests. A successful model turn or a “done” summary alone never completes the parent. Conflicts, stale receipts, missing evidence, and failing checks preserve recoverable work and block integration.

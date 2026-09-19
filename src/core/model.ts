@@ -31,6 +31,8 @@ export interface Task {
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
   delegationExecution?: DelegatedExecutionReceipt;
+  /** One automatic retry is charged to the original delegated child/run and never resets. */
+  delegationRetry?: { version: 1; parentId: string; runId: string; dispatchKey: string; attemptedAt: string };
     delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
     /** Durable retry marker for an assignment fact whose source transition committed first. */
     delegationJournalPending?: { version: 1; event: { version: 1; id: string; occurredAt: string; kind: 'assignment'; parentId: string; runId: string; from: { kind: 'task'; taskId: string }; to: { kind: 'task'; taskId: string }; provenance: { producer: 'host'; recordId: string } } };

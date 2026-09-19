@@ -453,7 +453,7 @@ class Manager {
     const parents = parentId ? [this.getTask(parentId)] : this.tasks.filter(task => task.state !== 'discarded');
     for (const parent of parents) {
       const runs = await this.delegations.list(parent.id);
-      const views = runs.flatMap(run => run.decisions.map(decision => ({ runId: run.runId, id: decision.proposal.id, rationale: decision.proposal.rationale, mode: decision.mode, children: decision.proposal.children.map(child => ({ key: child.key, goal: child.goal, provider: child.provider, writeScope: child.writeScope, dependencies: child.dependencies })) })));
+      const views = runs.flatMap(run => run.decisions.map(decision => ({ runId: run.runId, id: decision.proposal.id, rationale: decision.proposal.rationale, mode: decision.mode, children: decision.proposal.children.map(child => ({ key: child.key, goal: child.goal, provider: child.provider, writeScope: child.writeScope, dependencies: child.dependencies, brief: decision.manifests.find(manifest => manifest.child.key === child.key)?.prompt || '' })) })));
       if (views.length) this.delegationPlans.set(parent.id, views); else this.delegationPlans.delete(parent.id);
     }
   }

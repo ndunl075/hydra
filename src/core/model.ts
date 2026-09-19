@@ -14,6 +14,7 @@ import type { DelegationPlannerRun } from './delegationPlannerIngestion';
 import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
 import type { DelegatedExecutionReceipt } from './delegationRunner';
 import type { DelegationBudgetReservation, DelegationRunUsageProjection } from './delegationRunAccounting';
+import type { DelegationReconciliationProjection } from './delegationReconciliation';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -88,6 +89,7 @@ export interface Snapshot {
   commitReview?: PreparedReview;
   usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary>; delegationRuns?: Record<string, UsageSummary> };
   delegationRunAccounting?: Record<string, DelegationRunUsageProjection>;
+  delegationReconciliation?: Record<string, DelegationReconciliationProjection>;
   modelCatalogs?: Record<string, ModelCatalog>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;

@@ -164,7 +164,7 @@ class Manager {
       this.integrationOperations.set(op.taskId,op);
       if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
       void this.publish();
-    });
+    }, () => this.tasks);
     this.review = new ReviewDocuments(context);
     this.scheduler = new TaskScheduler({
       tasks: () => this.tasks,

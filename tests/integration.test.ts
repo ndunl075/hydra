@@ -6,6 +6,7 @@ import {git,createWorktree} from '../src/core/worktrees';
 import {Integrations} from '../src/core/integration';
 import {parseMessage,type Task} from '../src/core/model';
 import {validateIntegration} from '../src/core/integrationStore';
+import {delegationIntegrationGate} from '../src/core/delegationIntegrationGate';
 const guard=()=>{},check=[{executable:process.execPath,args:['-e','process.exit(0)']}];
 async function fixture(){
   const directory=path.resolve('.test-build/integration-fixtures');await mkdir(directory,{recursive:true});const root=await mkdtemp(path.join(directory,'integration-')),repository=path.join(root,'main');await mkdir(repository);
@@ -71,5 +72,28 @@ test('integration lock is shared across profile journals and malformed structure
     const task=await f.task('777777777777');let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(resolve=>release=resolve),ready=new Promise<void>(resolve=>entered=resolve);let calls=0;
     const first=f.integrations.prepare(task,check,async()=>{if(++calls===1){entered();await gate;}});await ready;await assert.rejects(new Integrations(path.join(f.root,'another-profile')).prepare(task,check,guard),/own|lock|already/i);release();assert.equal((await first).phase,'validated');
     assert.throws(()=>parseMessage({type:'prepareIntegration',id:task.id,checks:[]}),/command/i);assert.throws(()=>parseMessage({type:'prepareIntegration',id:task.id,checks:[{executable:'npm.cmd',args:['test & echo unsafe']}]}),/shell|character|shim/i);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('delegated children block candidate preparation until evidence is current and passing; combined checks still decide promotion',async()=>{
+  const f=await fixture();try{
+    const parent=await f.task('888888888888'),child=await f.task('999999999999');
+    child.delegation={parentId:parent.id,runId:'aaaaaaaaaaaa',childKey:'parser',dispatchKey:'a'.repeat(24),dependencies:[]};
+    const evidence=JSON.parse(await readFile(path.resolve('tests/fixtures/delegation-combined-acceptance/verification-evidence.json'),'utf8'));
+    const attach=(status:'passed'|'failed'|'interrupted'='passed',stale=false)=>{
+      const value=structuredClone(evidence);value.attempts[0].checkedCommit=stale?'b'.repeat(40):child.reviewedCommit!.commit;value.attempts[0].checkedTree=child.reviewedCommit!.tree;value.attempts[0].checks[0].status=status;value.attempts[0].checks[0].exitCode=status==='passed'?0:null;child.verificationEvidence=value;
+    };
+    const integrations=new Integrations(path.join(f.root,'delegated-journal'),()=>{},()=>[parent,child]);
+    await assert.rejects(integrations.prepare(parent,check,guard),/requires retained verification evidence/);
+    attach('passed',true);await assert.rejects(integrations.prepare(parent,check,guard),/stale/);
+    attach('failed');await assert.rejects(integrations.prepare(parent,check,guard),/did not pass/);
+    attach('interrupted');await assert.rejects(integrations.prepare(parent,check,guard),/interrupted/);
+    attach();child.state='interrupted';await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*interrupted/);child.state='idle';
+    child.state='running';await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*active/);child.state='idle';
+    child.schedule={state:'queued',dependencies:[],artifacts:[],request:{type:'startManaged'}};await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*queued/);child.schedule={state:'finished',dependencies:[],artifacts:[],uncertain:true};await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*uncertain/);child.schedule=undefined;
+    const failedCombined=await integrations.prepare(parent,[{executable:process.execPath,args:['-e','process.exit(3)']}],guard);assert.equal(failedCombined.phase,'failed');assert.equal(failedCombined.checks[0]!.status,'failed');assert.equal(await readFile(path.join(failedCombined.candidate,'task.txt'),'utf8'),'task\n');
+    const validated=await integrations.prepare(parent,check,guard);assert.equal(validated.phase,'validated');
+    child.state='discarded';await assert.rejects(integrations.promote(parent,validated,guard),/prerequisite.*discarded/);assert.equal(validated.phase,'validated');assert.equal(await readFile(path.join(validated.candidate,'task.txt'),'utf8'),'task\n');child.state='idle';
+    child.verificationEvidence=undefined;await assert.rejects(integrations.promote(parent,validated,guard),/requires retained verification evidence/);assert.equal(validated.phase,'validated');assert.throws(()=>delegationIntegrationGate(parent,[parent,child]),/requires retained verification evidence/);
+    attach();await git(f.repository,['commit','--allow-empty','-m','target moved']);await assert.rejects(integrations.promote(parent,validated,guard),/inputs changed/);assert.equal(validated.phase,'validated');
   }finally{await rm(f.root,{recursive:true,force:true});}
 });

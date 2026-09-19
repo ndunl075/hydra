@@ -198,7 +198,7 @@ function App() {
             <CapacityStatus capacity={snapshot.capacity} task={selected} busy={snapshot.busy} writerUncertain={snapshot.session?.writerUncertain} send={send} />
             <ResourceControls key={`resources-${selected.id}-${JSON.stringify(snapshot.resources?.[selected.id]?.config || {})}`} task={selected} saved={snapshot.resources?.[selected.id]} busy={snapshot.busy} send={send} />
             {selected.state === 'discarded' ? <DiscardControls task={selected} busy={taskBusy} /> : <>
-            <FocusedWorkspace task={selected} files={snapshot.files} session={snapshot.session} />
+            <FocusedWorkspace task={selected} files={snapshot.files} session={snapshot.session} reconciliation={selected.delegation ? snapshot.delegationReconciliation?.[`${selected.delegation.parentId}:${selected.delegation.runId}`] : undefined} />
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} send={send} />
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={taskBusy} send={send} />
             <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} delegationRun={snapshot.usage?.delegationRuns?.[selected.delegation?.parentId || selected.id]} send={send} />

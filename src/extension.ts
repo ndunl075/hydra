@@ -20,6 +20,7 @@ import { AppearanceSettings } from './extensionSettings';
 import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
+import { projectDelegationReconciliation } from './core/delegationReconciliation';
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
@@ -695,9 +696,10 @@ class Manager {
     if (generation !== this.snapshotGeneration) return;
     const delegationOrchestration: NonNullable<Snapshot['delegationOrchestration']> = {};
     const delegationRunAccounting: NonNullable<Snapshot['delegationRunAccounting']> = {};
+    const delegationReconciliation: NonNullable<Snapshot['delegationReconciliation']> = {};
     for (const parent of this.tasks.filter(item => !item.delegation)) {
       const runs = new Set(this.tasks.filter(item => item.delegation?.parentId === parent.id).map(item => item.delegation!.runId));
-      for (const runId of runs) { try { delegationOrchestration[`${parent.id}:${runId}`] = await this.delegationJournal.load(parent.id, runId); delegationRunAccounting[`${parent.id}:${runId}`] = projectDelegationRunUsage(parent, runId, this.tasks, id => this.managed.view(id)); } catch (failure) { error ||= this.describe(failure); } }
+      for (const runId of runs) { const key = `${parent.id}:${runId}`; try { delegationOrchestration[key] = await this.delegationJournal.load(parent.id, runId); delegationRunAccounting[key] = projectDelegationRunUsage(parent, runId, this.tasks, id => this.managed.view(id)); delegationReconciliation[key] = projectDelegationReconciliation(parent, runId, this.tasks, await this.delegationDispatches.load(parent.id, runId), delegationOrchestration[key]); } catch (failure) { error ||= this.describe(failure); delegationReconciliation[key] = projectDelegationReconciliation(parent, runId, this.tasks); } }
     }
     if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
@@ -714,6 +716,7 @@ class Manager {
       delegationPlans: Object.fromEntries(this.delegationPlans),
       delegationOrchestration,
       delegationRunAccounting,
+      delegationReconciliation,
       resources: this.resources.snapshot(),
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),

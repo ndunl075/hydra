@@ -1,0 +1,7 @@
+# Delegation parent review
+
+`DelegationParentReviewJournal` records an explicit `parent-human` approval or rejection after the host has loaded a child result receipt, its durable dispatch binding, reviewed commit/tree, and retained passing verification evidence. The source receipt is reparsed against that binding before its body or SHA-256 can be trusted. The immutable review receipt binds the parent/run/child identity, result SHA-256, verification-evidence SHA-256, reviewed commit/tree, decision, timestamp, and a concise reason. It does not accept a model completion or result summary as an approval input.
+
+The journal is append-only. Replaying the identical decision is a no-op; a different decision for the same result/evidence identity is refused. A newer reviewed commit/tree or verification record changes the binding, leaving earlier decisions available for audit but ineligible for combined acceptance. The store writes atomically under a per-run ownership lock. If that save fails, the source result and evidence are untouched and remain recoverable.
+
+`assertCurrentParentReviewApproved` is the narrow integration seam. The coordinator must invoke it for each current child before combined acceptance: a missing, stale, conflicting, or rejected receipt blocks integration. This contract does not run combined checks, modify a task, launch a provider, or promote an integration candidate.

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "attempts": [
+    {
+      "id": "111111111111111111111111",
+      "number": 1,
+      "checkedCommit": "REPLACE_COMMIT",
+      "checkedTree": "REPLACE_TREE",
+      "startedAt": "2026-01-01T00:00:00.000Z",
+      "finishedAt": "2026-01-01T00:00:01.000Z",
+      "findings": [],
+      "checks": [
+        {
+          "id": "unit",
+          "required": true,
+          "status": "passed",
+          "command": { "executable": "node", "args": ["--test"] },
+          "startedAt": "2026-01-01T00:00:00.000Z",
+          "finishedAt": "2026-01-01T00:00:01.000Z",
+          "exitCode": 0,
+          "artifacts": [{ "kind": "log", "path": "verification/unit.log", "label": "unit output" }]
+        }
+      ]
+    }
+  ]
+}

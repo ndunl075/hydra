@@ -21,6 +21,9 @@ import { requireDelegationMode, parseDelegationPreferences, type DelegationMode,
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
 import { dispatchAcceptedAutoDelegation } from './core/autoDelegationDispatch';
+import { prepareAutoDelegationParentWakeup, saveAutoDelegationParentWaiting } from './core/autoDelegationParentWakeup';
+import { admitAutoDelegation } from './core/autoDelegationAdmission';
+import { assessAutoDelegationResultReadiness } from './core/autoDelegationResultReadiness';
 import { projectDelegationReconciliation } from './core/delegationReconciliation';
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { DelegationIngressHost } from './core/delegationIngressHost';
@@ -152,6 +155,7 @@ class Manager {
   private readonly parentReviews: DelegationParentReviewJournal;
   private readonly delegationHandoffs: DelegationHandoffHost;
   private readonly autoDispatching = new Map<string, Promise<void>>();
+  private readonly autoWakeups = new Map<string, Promise<void>>();
   private approvalPauseReplay: Promise<void> = Promise.resolve();
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
@@ -220,10 +224,12 @@ class Manager {
       }),
       launch: (task, request) => this.handle({ ...request, id: task.id }, true)
     });
-    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error), {
+    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().then(async () => {
+      for (const parent of this.tasks.filter(task => !task.delegation && task.delegationPlanner?.state === 'accepted' && task.delegationPlanner.preferences.mode === 'auto')) await this.reconcileAutoParentWakeup(parent.id);
+    }).catch(error => this.report(error)); }, error => this.report(error), {
       sessionIdentified: (task, sessionId) => recordDelegatedSession(task, sessionId, () => this.persist()),
       prepared: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'prepared') return; task.delegationPlanner = bindDelegationPlannerTurn(task.delegationPlanner, turn); task.updatedAt = new Date().toISOString(); await this.persist(); },
-      completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); void this.dispatchAcceptedAutoRun(task).catch(error => this.report(error)); }
+      completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); await this.reconcileAutoParentWakeup(task.id); void this.dispatchAcceptedAutoRun(task).then(() => this.reconcileAutoParentWakeup(task.id)).catch(error => this.report(error)); }
     });
   }
   async initialize(): Promise<void> {
@@ -272,6 +278,7 @@ class Manager {
       // the exact receipt can be replayed without treating provider text as fact.
       try { await this.delegationHandoffs.delivered(delivered.receipt, delivered.binding, child, delivered.occurredAt); }
       finally { await this.publish(); }
+      await this.reconcileAutoParentWakeup(delivered.receipt.parentId);
       return structuredClone(delivered.receipt);
     });
     command('hydra.importDelegationEvaluationObservation', async () => {
@@ -542,6 +549,7 @@ class Manager {
     await this.scheduler.drain();
     for (const parent of this.tasks.filter(task => !task.delegation && task.delegationPlanner?.state === 'accepted' && task.delegationPlanner.preferences.mode === 'auto')) {
       await this.dispatchAcceptedAutoRun(parent).catch(error => this.report(error));
+      await this.reconcileAutoParentWakeup(parent.id).catch(error => this.report(error));
     }
   }
   async showFirstRun(): Promise<void> {
@@ -648,6 +656,48 @@ class Manager {
     this.autoDispatching.set(key, operation);
     try { await operation; } finally { if (this.autoDispatching.get(key) === operation) this.autoDispatching.delete(key); }
   }
+  private async reconcileAutoParentWakeup(parentId: string): Promise<void> {
+    const parent = this.tasks.find(task => task.id === parentId), receipt = parent?.delegationPlanner;
+    if (!parent || !receipt || receipt.state !== 'accepted' || receipt.preferences.mode !== 'auto' || this.disabled || this.closing || !vscode.workspace.isTrusted) return;
+    const key = `${parentId}:${receipt.runId}`, previous = this.autoWakeups.get(key);
+    if (previous) return previous;
+    const operation = (async () => {
+      const decisions = (await this.delegations.load(parentId, receipt.runId)).decisions;
+      const decision = decisions[0];
+      if (decisions.length !== 1 || !decision || decision.proposal.id !== receipt.proposalId || decision.proposal.runId !== receipt.runId || receipt.sha256 !== createHash('sha256').update(JSON.stringify(decision.proposal)).digest('hex')) throw new Error('Accepted Auto decision does not match its durable delegation run.');
+      const admission = admitAutoDelegation({ proposal: decision.proposal, policy: decision.mode === 'auto' ? receipt.policy : { ...receipt.policy, mode: decision.mode }, parent, preferences: receipt.preferences });
+      if (admission.status === 'solo') return;
+      if (admission.status !== 'eligible') throw new Error(`Accepted Auto decision is blocked: ${admission.rationale}`);
+      const expectedChildKeys = admission.proposal.children.map(child => child.key);
+      await saveAutoDelegationParentWaiting(parent, this.tasks, tasks => this.store.save(tasks), () => this.capacity.hold(parentId));
+      const children = this.tasks.filter(child => child.delegation?.parentId === parentId && child.delegation.runId === receipt.runId);
+      if (parent.schedule?.state !== 'waiting-for-children') return;
+      if (children.length !== expectedChildKeys.length || new Set(children.map(child => child.delegation!.childKey)).size !== expectedChildKeys.length || children.some(child => !expectedChildKeys.includes(child.delegation!.childKey))) return;
+      const records = await this.delegationJournal.loadResultRecords(parentId, receipt.runId);
+      const reviews = await this.parentReviews.load(parentId, receipt.runId);
+      const failed = children.some(child => child.state === 'error' || child.state === 'interrupted' || child.state === 'discarded' || ['blocked', 'cancelled', 'interrupted'].includes(child.schedule?.state || ''));
+      const rejected = records.some(record => {
+        const child = children.find(item => item.delegation?.childKey === record.receipt.childKey);
+        if (!child?.reviewedCommit || !child.verificationEvidence) return false;
+        const evidenceSha256 = createHash('sha256').update(JSON.stringify(child.verificationEvidence)).digest('hex');
+        return reviews.some(review => review.resultSha256 === record.receipt.sha256 && review.evidenceSha256 === evidenceSha256 && review.commit === child.reviewedCommit!.commit && review.tree === child.reviewedCommit!.tree && review.decision === 'rejected');
+      });
+      if (failed || rejected) {
+        const candidate = structuredClone(parent);
+        candidate.schedule!.state = 'blocked';
+        candidate.schedule!.reason = failed ? 'A delegated prerequisite failed or stopped. Review the saved child work.' : 'A current child result was rejected by parent review.';
+        await this.store.save(this.tasks.map(task => task.id === parent.id ? candidate : task));
+        Object.assign(parent, candidate);
+        await this.publish();
+        return;
+      }
+      const resume = prepareAutoDelegationParentWakeup(parent, receipt.runId, expectedChildKeys, children, records, reviews);
+      if (resume.status !== 'ready') return;
+      await this.scheduler.resumeWaitingParent(parent, resume.payload.content, resume.payload.wakeupKey);
+    })();
+    this.autoWakeups.set(key, operation);
+    try { await operation; } finally { if (this.autoWakeups.get(key) === operation) this.autoWakeups.delete(key); }
+  }
   private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
     await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
     await this.publish();
@@ -727,7 +777,11 @@ class Manager {
       const records = await this.delegationJournal.loadResultRecords(parent.id, link.runId);
       const matches = records.filter(record => record.binding.parentId === parent.id && record.binding.runId === link.runId && record.binding.childKey === link.childKey && record.binding.dispatchKey === link.dispatchKey);
       if (matches.length !== 1) throw new Error(`Delegated prerequisite ${link.childKey} blocks combined acceptance: one durable current child result receipt is required.`);
-      return { source: { child, binding: matches[0]!.binding, result: matches[0]!.receipt }, receipts: await this.parentReviews.load(parent.id, link.runId) };
+      const source = { child, binding: matches[0]!.binding, result: matches[0]!.receipt };
+      const receipts = await this.parentReviews.load(parent.id, link.runId);
+      const readiness = assessAutoDelegationResultReadiness({ parent, child, source, parentReviews: receipts });
+      if (!readiness.readyForIntegrationChecks) throw new Error(`Delegated prerequisite ${link.childKey} blocks combined acceptance: ${readiness.reason}`);
+      return { source, receipts };
     }));
     delegationIntegrationGate(parent, tasks, { parentReviews });
   }
@@ -1053,6 +1107,7 @@ class Manager {
       this.assertDelegationIngressWritable();
       const source = await this.delegationIngress.parentReviewSource(task.id);
       await this.parentReviews.append({ version: 1, parentId: source.child.delegation!.parentId, runId: source.child.delegation!.runId, childKey: source.child.delegation!.childKey, resultSha256: source.result.sha256, evidenceSha256: createHash('sha256').update(JSON.stringify(source.child.verificationEvidence)).digest('hex'), commit: source.child.reviewedCommit!.commit, tree: source.child.reviewedCommit!.tree, reviewer: 'parent-human', decision: message.decision, reviewedAt: new Date().toISOString(), reason: message.reason }, source);
+      await this.reconcileAutoParentWakeup(source.child.delegation!.parentId);
       await this.publish(); return;
     }
     if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');

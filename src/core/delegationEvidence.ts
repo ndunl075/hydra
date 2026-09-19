@@ -67,12 +67,15 @@ export function validateDelegatedVerificationEvidence(value: unknown): asserts v
   const evidence = value as DelegatedVerificationEvidence;
   if (!evidence || typeof evidence !== 'object' || evidence.version !== 1 || !Array.isArray(evidence.attempts) || evidence.attempts.length < 1 || evidence.attempts.length > 2) throw new Error('Invalid delegated verification evidence. Original data has been retained.');
   let previousFinishedAt: number | undefined;
+  let resultCommit: string | undefined, resultTree: string | undefined;
   const attemptIds = new Set<string>();
   const requiredCheckIds = new Set<string>();
   for (let index = 0; index < evidence.attempts.length; index++) {
     const attempt = evidence.attempts[index]!;
     if (!attempt || !/^[a-f0-9]{24}$/.test(attempt.id) || attemptIds.has(attempt.id) || attempt.number !== index + 1 || !oid(attempt.checkedCommit) || !oid(attempt.checkedTree) || !timestamp(attempt.startedAt) || !timestamp(attempt.finishedAt) || !Array.isArray(attempt.findings) || attempt.findings.length > 100 || !Array.isArray(attempt.checks) || attempt.checks.length < 1 || attempt.checks.length > 32) throw new Error('Invalid delegated verification attempt. Original data has been retained.');
     attemptIds.add(attempt.id);
+    if (resultCommit !== undefined && (attempt.checkedCommit !== resultCommit || attempt.checkedTree !== resultTree)) throw new Error('Delegated verification attempts cannot cross a reviewed-result boundary. Original data has been retained.');
+    resultCommit = attempt.checkedCommit; resultTree = attempt.checkedTree;
     const startedAt = Date.parse(attempt.startedAt), finishedAt = Date.parse(attempt.finishedAt);
     if (startedAt > finishedAt || (previousFinishedAt !== undefined && startedAt < previousFinishedAt)) throw new Error('Invalid delegated verification retry chronology. Original data has been retained.');
     previousFinishedAt = finishedAt;

@@ -9,6 +9,7 @@ import { parseModelSelection } from './modelSelection';
 import { validateDiscardReceipt } from './discard';
 import { validateDelegatedVerificationEvidence } from './delegationEvidence';
 import { parseDelegationPlannerRun } from './delegationPlannerIngestion';
+import { validateDelegatedExecution } from './delegationRunner';
 export class LocalStore {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -42,6 +43,7 @@ export class LocalStore {
       if (task.handoffSummary !== undefined) parseHandoffSummary(task.handoffSummary);
       if (task.contextLockedAt !== undefined && (typeof task.contextLockedAt !== 'string' || !Number.isFinite(Date.parse(task.contextLockedAt)))) throw new Error('Invalid task context lock.');
       if (task.schedule !== undefined) validateSchedule(task.schedule);
+      if (task.delegationExecution !== undefined) validateDelegatedExecution(task);
       if (task.delegation !== undefined) {
         const link = task.delegation;
         if (!link || typeof link !== 'object' || !/^[a-f0-9]{12}$/.test(link.parentId) || !/^[a-f0-9]{12}$/.test(link.runId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(link.childKey) || !/^[a-f0-9]{24}$/.test(link.dispatchKey) || !Array.isArray(link.dependencies) || link.dependencies.length > 8 || !link.dependencies.every(value => typeof value === 'string' && /^[a-f0-9]{12}$/.test(value)) || new Set(link.dependencies).size !== link.dependencies.length || link.parentId === task.id || link.dependencies.includes(task.id)) throw new Error('Invalid delegated child task link. Original data has been retained.');

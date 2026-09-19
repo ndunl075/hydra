@@ -177,3 +177,18 @@ test('Codex interrupt targets its active turn; fallback stops owned descendants;
     await assert.rejects(sessions.start(task, executable, 'wrong legacy provider'), /another provider/);
   } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('Codex awaits durable session observer before turn/start and stops on observer failure', async () => {
+  const f = await fixture(); let release!: () => void, entered!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const manager = new ManagedCodex(f.store, f.persist, () => {}, error => f.errors.push(error), undefined, {
+    sessionIdentified: async (task, id) => { assert.equal(id, threadId); assert.equal(task.sessionId, id); entered(); await blocked; throw Error('Session receipt failed'); }
+  });
+  try {
+    await manager.start(f.task, f.executable, 'must not submit'); await waiting;
+    const requests = (await readFile(path.join(f.root, 'codex-requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(requests.some(request => request.method === 'turn/start'), false);
+    release(); await manager.finished(f.task.id); assert.equal(f.task.state, 'error'); assert.match(f.task.error || '', /Session receipt failed/);
+    assert.equal((await readFile(path.join(f.root, 'codex-requests.jsonl'), 'utf8')).includes('turn/start'), false);
+  } finally { release(); await manager.shutdown(); await f.manager.shutdown(); await rm(f.root, { recursive: true, force: true }); }
+});

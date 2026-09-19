@@ -8,7 +8,7 @@ import { ClaudeMessages, claudeRecord, readClaudeEffective, readClaudeModels } f
 import { parseModelSelection } from './modelSelection';
 import type { Approval, SessionView, Task, Turn } from './model';
 
-export interface ManagedTurnObserver { prepared?: (task: Task, turn: Turn) => Promise<void>; completed?: (task: Task, turn: Turn) => Promise<void> }
+export interface ManagedTurnObserver { prepared?: (task: Task, turn: Turn) => Promise<void>; completed?: (task: Task, turn: Turn) => Promise<void>; sessionIdentified?: (task: Task, sessionId: string) => Promise<void> }
 
 export class ManagedClaude {
   private readonly views = new Map<string, SessionView>();
@@ -70,6 +70,8 @@ export class ManagedClaude {
     const seenRequests = new Set<string>();
     let failure: string | undefined, stopped = false, bytes = 0, nextId = 0, submitted = false, closing = false;
     let cleanup: Promise<void> | undefined;
+    let sessionSave: Promise<void> = Promise.resolve();
+    let sessionSaving = false;
     let saveTimer: ReturnType<typeof setTimeout> | undefined, closeTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveDone!: () => void;
     const done = new Promise<void>(resolve => { resolveDone = resolve; });
@@ -102,9 +104,9 @@ export class ManagedClaude {
     };
     const approve = (id: string, decision: 'accept' | 'decline') => {
       const entry = approvals.get(id);
-      if (!entry || !submitted || !protocol.initialized || protocol.resultReceived || stopped || closing || failure) throw new Error('This Claude approval is no longer pending.');
+      if (!entry || !submitted || !protocol.initialized || protocol.resultReceived || stopped || closing || failure || sessionSaving) throw new Error('This Claude approval is no longer pending or its session identity is still saving.');
       send({ type: 'control_response', response: { subtype: 'success', request_id: entry.requestId, response: decision === 'accept' ? { behavior: 'allow', updatedInput: entry.input, toolUseID: entry.toolUseId } : { behavior: 'deny', message: 'This request was declined in Hydra.', toolUseID: entry.toolUseId } } });
-      approvals.delete(id); view.approvals = [...approvals.values()].map(entry => entry.approval); update(); this.changed();
+      approvals.delete(id); view.approvals = sessionSaving ? [] : [...approvals.values()].map(entry => entry.approval); update(); this.changed();
     };
     this.active.set(task.id, { stop, done, approve });
     const messages = new ClaudeMessages(message => {
@@ -121,7 +123,7 @@ export class ManagedClaude {
       if (message.type === 'control_cancel_request') {
         if (typeof message.request_id !== 'string') throw new Error('Invalid Claude cancellation.');
         for (const [id, entry] of approvals) if (entry.requestId === message.request_id) approvals.delete(id);
-        view.approvals = [...approvals.values()].map(entry => entry.approval); update(); this.changed(); return;
+        view.approvals = sessionSaving ? [] : [...approvals.values()].map(entry => entry.approval); update(); this.changed(); return;
       }
       if (message.type === 'control_request') {
         const request = claudeRecord(message.request), requestId = message.request_id;
@@ -132,12 +134,16 @@ export class ManagedClaude {
         if (detail.length > 50000 || approvals.size >= 20) throw new Error('Claude approval exceeded display limits. No permission granted; use the official client.');
         const id = randomBytes(6).toString('hex'), approval: Approval = { id, kind: ['Bash', 'PowerShell'].includes(request.tool_name) ? 'command' : 'file', detail };
         approvals.set(id, { requestId, input, toolUseId: request.tool_use_id, approval });
-        view.approvals = [...approvals.values()].map(entry => entry.approval); log('approval-request', { requestId, approval }); update(); this.changed(); return;
+        view.approvals = sessionSaving ? [] : [...approvals.values()].map(entry => entry.approval); log('approval-request', { requestId, approval }); update(); this.changed(); return;
       }
       if (!submitted) throw new Error('Claude emitted a non-control event before settings were verified. No turn submitted.');
       log('stdout', JSON.stringify(message) + '\n');
       protocol.push(Buffer.from(JSON.stringify(message) + '\n'));
-      if (protocol.sessionId && task.sessionId !== protocol.sessionId) { task.sessionId = protocol.sessionId; task.sessionProvider = 'claude'; void this.persistTask().catch(fail); }
+      if (protocol.sessionId && task.sessionId !== protocol.sessionId) {
+        const sessionId = protocol.sessionId;
+        task.sessionId = sessionId; task.sessionProvider = 'claude'; sessionSaving = true;
+        sessionSave = this.persistTask().then(() => this.observer.sessionIdentified?.(task, sessionId)).catch(fail).finally(() => { sessionSaving = false; view.approvals = [...approvals.values()].map(entry => entry.approval); this.changed(); });
+      }
       if (message.type === 'system' && message.subtype === 'init' && selection && message.model !== turn.modelSettings?.effective?.model) throw new Error('Claude initialization changed the acknowledged model. Turn stopped; inspect provider settings.');
       if (protocol.resultReceived && !closing) {
         if (approvals.size) throw new Error('Claude completed while approval was still pending.');
@@ -162,6 +168,8 @@ export class ManagedClaude {
         await cleanup; approvals.clear(); view.approvals = [];
         log('stderr', stderr.end());
         if (!failure) try { messages.end(); protocol.end(); } catch (error) { failure = String(error); }
+        // A rapid result/exit cannot publish completion before the session receipt is durable.
+        await sessionSave;
         if (protocol.sessionId) { task.sessionId = protocol.sessionId; task.sessionProvider = 'claude'; }
         turn.status = stopped ? 'interrupted' : failure || code !== 0 || !protocol.resultReceived || turn.error ? 'error' : 'completed';
         if (turn.status !== 'completed') turn.error = failure || turn.error || (stopped ? 'Provider process stopped. The turn was not completed.' : `Provider exited ${code} without a valid successful result.`);

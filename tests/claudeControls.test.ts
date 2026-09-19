@@ -186,3 +186,17 @@ test('Claude cancellation removes pending approval and prevents later consent', 
     await assert.rejects(readFile(path.join(f.root, 'claude-decisions.jsonl')), { code: 'ENOENT' });
   } finally { await f.close(); }
 });
+
+test('Claude waits for the session observer before publishing rapid completion', async () => {
+  const f = await fixture(); let release!: () => void, entered!: () => void, completed = false;
+  const blocked = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const manager = new ManagedClaude(f.store, () => f.taskStore.save([f.task]), () => {}, () => {}, undefined, {
+    sessionIdentified: async (task, id) => { assert.equal(task.sessionId, id); entered(); await blocked; },
+    completed: async () => { completed = true; }
+  });
+  try {
+    await manager.start(f.task, f.executable, 'fixture'); await waiting;
+    await new Promise(resolve => setTimeout(resolve, 200)); assert.equal(completed, false); assert.equal(manager.has(f.task.id), true);
+    release(); await manager.finished(f.task.id); assert.equal(completed, true); assert.equal(f.task.state, 'idle');
+  } finally { release(); await manager.shutdown(); await f.close(); }
+});

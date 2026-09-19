@@ -108,6 +108,10 @@
         "command": "hydra.openConversation",
         "title": "Hydra: Open Agent Conversation",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "hydra.exportDelegationRunArchive",
+        "title": "Hydra: Export Delegated Run Archive"
       }
     ],
     "keybindings": [

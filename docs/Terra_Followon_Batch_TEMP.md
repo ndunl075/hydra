@@ -113,10 +113,10 @@ This batch completes practical host/UI seams around the existing delegation cont
 
 - **Branch/worktree:** `feat/delegation-evaluation-import` / `.preview/worktrees/delegation-evaluation-import`.
 - **Depends on:** 12–14.
-- **Goal:** import a user-supplied local observation bundle into the existing corpus/ledger after exact case, mode, base, provider/model/effort and artifact-hash checks. This does not run a benchmark or a provider.
-- **Owned paths:** new `src/core/delegationEvaluationImport.ts`, `tests/delegationEvaluationImport.test.ts`, `docs/Delegation_Evaluation_Import.md`.
+- **Goal:** import a user-supplied local observation bundle into the existing corpus/ledger after exact case, mode, base, provider/model/effort and artifact-hash checks. Persist the explicit delegated-run (12-hex) to ledger-observation (24-hex) binding and expose a read-only adapter that supplies only sealed `{ id, sha256 }` references to delegated-run export. This does not run a benchmark or a provider.
+- **Owned paths:** new `src/core/delegationEvaluationImport.ts`, `tests/delegationEvaluationImport.test.ts`, `docs/Delegation_Evaluation_Import.md`; narrow read-only export adapter wiring.
 - **References:** `delegationEvaluationCorpus.ts`, `delegationEvaluationLedger.ts`, `delegationEvaluationReport.ts`.
-- **Acceptance:** missing measurements remain partial; duplicate exact import no-op; conflict/stale pair refused; path traversal, symlink and oversized bundle refused; no credential/prompt/raw transcript retained. Focused: `.test-build/delegationEvaluationImport.test.cjs`.
+- **Acceptance:** missing measurements remain partial; duplicate exact import no-op; conflict/stale pair refused; persisted corpus/run binding survives restart; export adapter reports unavailable until an exact binding exists and never reads arbitrary files; path traversal, symlink and oversized bundle refused; no credential/prompt/raw transcript retained. Focused: `.test-build/delegationEvaluationImport.test.cjs`.
 
 ### Feature 32 — worktree archive eligibility and recovery preview
 

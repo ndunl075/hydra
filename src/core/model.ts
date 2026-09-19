@@ -16,6 +16,7 @@ import type { DelegationOrchestrationProjection } from './delegationOrchestratio
 import type { DelegatedExecutionReceipt } from './delegationRunner';
 import type { DelegationApprovalPauseRecord } from './delegationApprovalPause';
 import type { ParentReviewDecision } from './delegationParentReview';
+import type { SelectedTaskSetupPreview } from './setupPreviewProjection';
 import type { DelegationBudgetReservation, DelegationRunUsageProjection } from './delegationRunAccounting';
 import type { DelegationReconciliationProjection } from './delegationReconciliation';
 export type Provider = 'claude' | 'codex';
@@ -87,6 +88,7 @@ export interface Snapshot {
   /** Current selected child only; stale historical decisions are never presented as current. */
   parentReview?: { decision: ParentReviewDecision; reviewedAt: string; reason: string };
   resources?: Record<string, ResourceView>;
+  setupPreview?: SelectedTaskSetupPreview;
   tasks: Task[]; selectedId?: string; mode: 'editor' | 'agents'; repositories: string[];
   providers: ProviderInfo[]; files: TaskFile[]; busy: boolean; error?: string; draft?: Draft;
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];

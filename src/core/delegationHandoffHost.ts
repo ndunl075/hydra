@@ -1,5 +1,6 @@
 import type { DelegationDispatch } from './delegationDispatch';
 import { DelegationHandoffProducer, type DelegationHandoffChild } from './delegationHandoffProducer';
+import type { DelegationApprovalPauseRecord } from './delegationApprovalPause';
 import type { ResultReceiptBinding, DelegationResultReceipt } from './delegationResults';
 import type { Task } from './model';
 
@@ -23,5 +24,10 @@ export class DelegationHandoffHost {
 
   delivered(receipt: DelegationResultReceipt, binding: ResultReceiptBinding, child: Pick<Task, 'id' | 'delegation'>, occurredAt: string) {
     return this.producer.delivered(receipt, binding, this.source(child), occurredAt);
+  }
+
+  paused(child: Pick<Task, 'id' | 'delegation' | 'delegationApprovalPauses'>, pause: DelegationApprovalPauseRecord) {
+    if (!child.delegationApprovalPauses?.some(item => item.recordId === pause.recordId && JSON.stringify(item) === JSON.stringify(pause))) throw new Error('Approval pause graph event requires its exact saved task source.');
+    return this.producer.pausedAfterApproval(this.source(child), pause);
   }
 }

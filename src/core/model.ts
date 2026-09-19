@@ -14,6 +14,7 @@ import type { DelegationResultBoundary } from './delegationResultBoundary';
 import type { DelegationPlannerRun } from './delegationPlannerIngestion';
 import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
 import type { DelegatedExecutionReceipt } from './delegationRunner';
+import type { DelegationApprovalPauseRecord } from './delegationApprovalPause';
 import type { DelegationBudgetReservation, DelegationRunUsageProjection } from './delegationRunAccounting';
 import type { DelegationReconciliationProjection } from './delegationReconciliation';
 export type Provider = 'claude' | 'codex';
@@ -34,6 +35,8 @@ export interface Task {
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
   delegationExecution?: DelegatedExecutionReceipt;
+  /** Opaque, durable approval-pause sources for provenance-backed graph replay. */
+  delegationApprovalPauses?: DelegationApprovalPauseRecord[];
   /** One automatic retry is charged to the original delegated child/run and never resets. */
   delegationRetry?: { version: 1; parentId: string; runId: string; dispatchKey: string; attemptedAt: string };
   /** A sibling-local launch/turn budget-check fence; it carries no spend estimate. */

@@ -11,6 +11,7 @@ import { validateDelegatedVerificationEvidence } from './delegationEvidence';
 import { validateDelegationResultBoundaries } from './delegationResultBoundary';
 import { parseDelegationPlannerRun } from './delegationPlannerIngestion';
 import { validateDelegatedExecution } from './delegationRunner';
+import { validateDelegationApprovalPauses } from './delegationApprovalPause';
 export class LocalStore {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -54,8 +55,9 @@ export class LocalStore {
         if (task.delegationRetry !== undefined) { const retry = task.delegationRetry; if (!retry || retry.version !== 1 || retry.parentId !== link.parentId || retry.runId !== link.runId || retry.dispatchKey !== link.dispatchKey || typeof retry.attemptedAt !== 'string' || !Number.isFinite(Date.parse(retry.attemptedAt)) || Object.keys(retry).some(key => !['version', 'parentId', 'runId', 'dispatchKey', 'attemptedAt'].includes(key))) throw new Error('Invalid delegated retry receipt. Original data has been retained.'); }
         if (task.delegationBudgetReservation !== undefined) { const reservation = task.delegationBudgetReservation; if (!reservation || reservation.version !== 1 || reservation.parentId !== link.parentId || reservation.runId !== link.runId || reservation.dispatchKey !== link.dispatchKey || !['startManaged', 'followUp'].includes(reservation.request) || typeof reservation.acquiredAt !== 'string' || !Number.isFinite(Date.parse(reservation.acquiredAt)) || Object.keys(reservation).some(key => !['version', 'parentId', 'runId', 'dispatchKey', 'request', 'acquiredAt'].includes(key))) throw new Error('Invalid delegated budget reservation. Original data was retained.'); }
         if (task.verificationEvidence !== undefined) validateDelegatedVerificationEvidence(task.verificationEvidence);
+        validateDelegationApprovalPauses(task);
         validateDelegationResultBoundaries(task);
-      } else if (task.verificationEvidence !== undefined || task.delegationResultBoundaries !== undefined || task.delegationJournalPending !== undefined || task.delegationRetry !== undefined || task.delegationBudgetReservation !== undefined) throw new Error('Only delegated child tasks can retain delegation evidence. Original data has been retained.');
+      } else if (task.verificationEvidence !== undefined || task.delegationResultBoundaries !== undefined || task.delegationJournalPending !== undefined || task.delegationRetry !== undefined || task.delegationBudgetReservation !== undefined || task.delegationApprovalPauses !== undefined) throw new Error('Only delegated child tasks can retain delegation evidence. Original data has been retained.');
       if (task.delegationPlanner !== undefined) {
         const planner = parseDelegationPlannerRun(task.delegationPlanner);
         if (planner.policy.parentId !== task.id || planner.policy.provider !== task.provider || planner.policy.level !== 0 || !planner.policy.approvedBases.includes(task.baseCommit) || JSON.stringify(planner.policy.modelSelection || null) !== JSON.stringify(task.modelSelection || null)) throw new Error('Invalid parent planner receipt. Original data has been retained.');

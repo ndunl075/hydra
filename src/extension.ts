@@ -26,6 +26,7 @@ import { DelegationIngressHost } from './core/delegationIngressHost';
 import { DelegationParentReviewJournal } from './core/delegationParentReview';
 import { DelegationHandoffProducer } from './core/delegationHandoffProducer';
 import { DelegationHandoffHost } from './core/delegationHandoffHost';
+import { captureDelegationApprovalPauses } from './core/delegationApprovalPause';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
@@ -147,6 +148,7 @@ class Manager {
   private readonly delegationIngress: DelegationIngressHost;
   private readonly parentReviews: DelegationParentReviewJournal;
   private readonly delegationHandoffs: DelegationHandoffHost;
+  private approvalPauseReplay: Promise<void> = Promise.resolve();
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -503,6 +505,7 @@ class Manager {
           catch (error) { this.error = `Delegation assignment recovery is required before this child can launch: ${this.describe(error)}`; this.output.appendLine(this.describe(error)); }
         }
         await this.recoverDelegationDispatchHandoffs();
+        await this.replayDelegationApprovalPauses(this.tasks);
         await this.capacity.refresh();
         this.capacity.startWatching(error => { this.output.appendLine(this.describe(error)); void this.publish(); });
         for (const task of this.tasks) {
@@ -666,7 +669,14 @@ class Manager {
         if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;
       }
     }
-    await this.store.save(this.tasks); await this.settleCapacity(); await this.publish();
+    for (const task of this.tasks) {
+      const view = task.delegation ? this.managed.view(task.id) : undefined;
+      if (view?.approvals?.length) captureDelegationApprovalPauses(task, view.approvals, view.turns.at(-1)?.id);
+    }
+    const pauseSources = structuredClone(this.tasks.filter(task => task.delegationApprovalPauses?.length));
+    await this.store.save(this.tasks);
+    await this.replayDelegationApprovalPauses(pauseSources);
+    await this.settleCapacity(); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
   }
   /** Durable evidence commit deliberately excludes capacity and publish work. */
@@ -734,6 +744,17 @@ class Manager {
         this.output.appendLine(this.describe(error));
       }
     }
+  }
+  /** The task save precedes every graph append; failed appends retry from the saved opaque source. */
+  private replayDelegationApprovalPauses(savedTasks: readonly Task[]): Promise<void> {
+    const replay = this.approvalPauseReplay.then(async () => {
+      for (const child of savedTasks) for (const pause of child.delegationApprovalPauses || []) {
+        try { await this.delegationHandoffs.paused(child, pause); }
+        catch (error) { this.error = `Delegation approval-pause graph recovery is pending: ${this.describe(error)}`; this.output.appendLine(this.describe(error)); }
+      }
+    });
+    this.approvalPauseReplay = replay.catch(() => {});
+    return replay;
   }
   private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
@@ -1162,7 +1183,7 @@ class Manager {
       if (this.busy && task.state === 'running') throw new Error('This process is still being prepared. Stop it once startup finishes.');
       return;
     }
-    if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }
+    if (message.type === 'approve') { if (task.delegation) await this.persist(); this.managed.approve(task.id, message.approvalId, message.decision); return; }
     if(message.type==='cancelIntegration'){
       if(this.integrationAbort?.taskId!==task.id||this.integrationAbort.operationId!==message.operationId)throw new Error('This integration has no active checks to cancel.');
       this.integrationAbort.controller.abort();return;

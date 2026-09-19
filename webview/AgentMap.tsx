@@ -12,7 +12,9 @@ function taskStatus(task: Task, awaitingApproval: boolean) {
   if (task.state === 'external') return 'Terminal · unobserved';
   if (awaitingApproval) return 'Approval needed';
   if (task.schedule?.uncertain) return 'Reconcile writer';
+  if (task.schedule?.state === 'enrolled') return 'Delegated · queued';
   if (task.schedule && ['queued', 'starting', 'blocked'].includes(task.schedule.state)) return task.schedule.state === 'queued' ? 'Queued' : task.schedule.state === 'starting' ? 'Starting' : 'Blocked';
+  if (task.reviewedCommit && task.state === 'idle') return 'Validated · not integrated';
   return { running: 'Running', idle: 'Idle', interrupted: 'Interrupted', error: 'Error', discarded: 'Discarded' }[task.state];
 }
 

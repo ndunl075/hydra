@@ -38,7 +38,8 @@ else {
     } else if (message.method === 'turn/start') {
       const params = message.params;
       if (params.threadId !== threadId || params.input[0].text_elements.length || params.cwd !== process.cwd() || params.sandboxPolicy.type !== 'workspaceWrite' || params.sandboxPolicy.writableRoots[0] !== process.cwd() || params.sandboxPolicy.networkAccess !== false) throw new Error('Invalid scoped turn');
-      prompt = params.input[0].text;
+      const submittedPrompt = params.input[0].text;
+      prompt = submittedPrompt.includes('HYDRA_DELEGATION_V1:') ? submittedPrompt.split('\n\nHydra planning receipt: ')[0] : submittedPrompt;
       reply({ turn: { id: turnId, status: 'inProgress', items: [], error: null } });
       notify('turn/started', { threadId, turn: { id: turnId, status: 'inProgress' } });
       if (prompt === 'reroute') notify('model/rerouted', { threadId, turnId, fromModel: params.model || 'fixture-model', toModel: 'fixture-fallback', reason: 'rateLimit' });

@@ -24,6 +24,8 @@ import { projectDelegationReconciliation } from './core/delegationReconciliation
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { DelegationIngressHost } from './core/delegationIngressHost';
 import { DelegationParentReviewJournal } from './core/delegationParentReview';
+import { DelegationHandoffProducer } from './core/delegationHandoffProducer';
+import { DelegationHandoffHost } from './core/delegationHandoffHost';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
@@ -142,6 +144,7 @@ class Manager {
   private readonly delegationJournal: DelegationOrchestrationJournal;
   private readonly delegationIngress: DelegationIngressHost;
   private readonly parentReviews: DelegationParentReviewJournal;
+  private readonly delegationHandoffs: DelegationHandoffHost;
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -168,6 +171,7 @@ class Manager {
       if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation orchestration while this workspace is unavailable.');
     });
     this.parentReviews = new DelegationParentReviewJournal(path.join(this.storageDirectory, 'delegation'), async () => this.assertDelegationIngressWritable());
+    this.delegationHandoffs = new DelegationHandoffHost(new DelegationHandoffProducer(this.delegationJournal));
     this.delegationIngress = new DelegationIngressHost(() => this.tasks, this.delegations, this.delegationDispatches, this.delegationJournal, async child => {
       this.assertDelegationIngressWritable();
       await this.verifyWorktree(child);
@@ -245,9 +249,14 @@ class Manager {
     // called programmatically without showing the request to the user.
     command('hydra.receiveDelegationResult', async (childId: string, result: unknown) => {
       this.assertDelegationIngressWritable();
-      const receipt = await this.delegationIngress.receiveResult(childId, result);
-      await this.publish();
-      return structuredClone(receipt);
+      const child = this.getTask(childId);
+      const delivered = await this.delegationIngress.receiveResultWithBinding(childId, result);
+      if (!delivered.occurredAt) throw new Error('This legacy result receipt has no durable delivery timestamp and cannot create a graph event.');
+      // The journal receipt commits first. A graph append failure is surfaced so
+      // the exact receipt can be replayed without treating provider text as fact.
+      try { await this.delegationHandoffs.delivered(delivered.receipt, delivered.binding, child, delivered.occurredAt); }
+      finally { await this.publish(); }
+      return structuredClone(delivered.receipt);
     });
     // Read-only: this only projects already-durable local facts. It starts no process,
     // provider turn, scheduler action, upload, or archive import.
@@ -288,7 +297,7 @@ class Manager {
             await this.store.save(candidate);
             this.tasks = candidate;
             // This is the only Feature 07 producer: it records the already durable child creation.
-            for (const child of pending) { try { await this.delegationJournal.appendEvent(child.delegationJournalPending!.event); const cleared = structuredClone(this.tasks); const target = cleared.find(item => item.id === child.id)!; target.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; } catch (error) { this.error = `Delegation assignment journal is pending recovery: ${this.describe(error)}`; } }
+            for (const child of pending) { try { await this.delegationJournal.appendEvent(child.delegationJournalPending!.event); const dispatch = dispatches.find(item => item.dispatchKey === child.delegation!.dispatchKey); if (!dispatch) throw new Error('Saved delegated child has no durable dispatch receipt.'); await this.delegationHandoffs.dispatched(dispatch, child); const cleared = structuredClone(this.tasks); const target = cleared.find(item => item.id === child.id)!; target.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; } catch (error) { this.error = `Delegation assignment or dispatch graph recovery is pending: ${this.describe(error)}`; } }
           } catch (error) {
             throw error;
           }
@@ -463,6 +472,7 @@ class Manager {
           try { await this.delegationJournal.appendEvent(task.delegationJournalPending.event); const cleared = structuredClone(this.tasks); cleared.find(item => item.id === task.id)!.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; }
           catch (error) { this.error = `Delegation assignment recovery is required before this child can launch: ${this.describe(error)}`; this.output.appendLine(this.describe(error)); }
         }
+        await this.recoverDelegationDispatchHandoffs();
         await this.capacity.refresh();
         this.capacity.startWatching(error => { this.output.appendLine(this.describe(error)); void this.publish(); });
         for (const task of this.tasks) {
@@ -680,6 +690,20 @@ class Manager {
   }
   private assertDelegationIngressWritable(): void {
     if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot receive delegation ingress while this workspace is unavailable.');
+  }
+  /** Replays only materialized durable dispatches; navigation and task state are never sources. */
+  private async recoverDelegationDispatchHandoffs(): Promise<void> {
+    for (const child of this.tasks.filter(task => task.delegation)) {
+      const link = child.delegation!;
+      try {
+        const dispatch = (await this.delegationDispatches.load(link.parentId, link.runId)).find(item => item.dispatchKey === link.dispatchKey);
+        if (!dispatch || dispatch.status !== 'materialized') continue;
+        await this.delegationHandoffs.dispatched(dispatch, child);
+      } catch (error) {
+        this.error = `Delegation dispatch graph recovery is pending: ${this.describe(error)}`;
+        this.output.appendLine(this.describe(error));
+      }
+    }
   }
   private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {

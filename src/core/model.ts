@@ -12,6 +12,7 @@ import { requireDelegationMode, type DelegationPreferences, type DelegationMode 
 import type { DelegatedVerificationEvidence } from './delegationEvidence';
 import type { DelegationPlannerRun } from './delegationPlannerIngestion';
 import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
+import type { DelegatedExecutionReceipt } from './delegationRunner';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -29,6 +30,7 @@ export interface Task {
   handoffSummary?: TaskHandoffSummary;
   modelSelection?: ModelSelection;
   schedule?: TaskSchedule;
+  delegationExecution?: DelegatedExecutionReceipt;
     delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
     /** Durable retry marker for an assignment fact whose source transition committed first. */
     delegationJournalPending?: { version: 1; event: { version: 1; id: string; occurredAt: string; kind: 'assignment'; parentId: string; runId: string; from: { kind: 'task'; taskId: string }; to: { kind: 'task'; taskId: string }; provenance: { producer: 'host'; recordId: string } } };

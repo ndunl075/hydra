@@ -1,6 +1,7 @@
 import { ProfileCapacity } from './core/profileCapacity';
 import { TaskResources } from './core/resources';
 import { TaskScheduler, configureSchedule, pendingSchedule } from './core/scheduler';
+import { recordDelegatedSession, validateDelegatedExecution } from './core/delegationRunner';
 import { prepareScheduledTask } from './core/schedulerGit';
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
@@ -186,6 +187,7 @@ class Manager {
       launch: (task, request) => this.handle({ ...request, id: task.id }, true)
     });
     this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error), {
+      sessionIdentified: (task, sessionId) => recordDelegatedSession(task, sessionId, () => this.persist()),
       prepared: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'prepared') return; task.delegationPlanner = bindDelegationPlannerTurn(task.delegationPlanner, turn); task.updatedAt = new Date().toISOString(); await this.persist(); },
       completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); }
     });
@@ -1152,11 +1154,16 @@ class Manager {
         task.providerVersion = diagnostic.version;
         if (task.delegationPlanner && ['prepared', 'submitted'].includes(task.delegationPlanner.state)) throw new Error('The prior normal-turn planner receipt is still recoverable. Reload and reconcile it before another managed turn.');
         const runId = randomBytes(6).toString('hex');
-        const planner = createDelegationPlannerRun(this.plannerPolicy(task, runId), this.delegationPreferences(), runId);
+        // Delegated children receive their bounded manifest, never another parent planner.
+        const planner = task.delegation ? undefined : createDelegationPlannerRun(this.plannerPolicy(task, runId), this.delegationPreferences(), runId);
+        if (task.delegation) {
+          validateDelegatedExecution(task);
+          if (!scheduledLaunch || !task.sessionId && task.delegationExecution!.status !== 'starting') throw new Error('Delegated dispatch requires a durable scheduler reservation.');
+        }
         task.delegationPlanner = planner; task.updatedAt = new Date().toISOString();
         // This task-store write is intentionally before Managed* can spawn or submit a provider turn.
         await this.persist();
-        const normalPrompt = `${message.type === 'followUp' ? message.prompt : task.prompt}${plannerPromptSuffix(planner)}`;
+        const normalPrompt = `${message.type === 'followUp' ? message.prompt : task.prompt}${planner ? plannerPromptSuffix(planner) : ''}`;
         await this.managed.start(task, info.executable, normalPrompt, async () => {
           await this.capacity.check(task.id, this.profileLimit()); await this.resources.check(task.id);
           if (controller.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because workspace or provider configuration changed.');

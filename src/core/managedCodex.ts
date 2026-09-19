@@ -51,6 +51,7 @@ export class ManagedCodex {
         await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
       }
       await this.observer.prepared?.(task, structuredClone(turn));
+      if (task.delegation) await beforeTurn();
     } catch (error) { turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`; task.state = 'error'; task.error = turn.error; throw error; }
     const launch = processLaunch(executable, ['app-server', '--listen', 'stdio://']);
     const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -64,6 +65,7 @@ export class ManagedCodex {
     const done = new Promise<void>(resolve => { resolveDone = resolve; });
     const alive = () => child.pid && child.exitCode === null && child.signalCode === null;
     let cleanup: Promise<void> | undefined;
+    let sessionSave: Promise<void> = Promise.resolve();
     const kill = () => cleanup ||= (async () => { if (alive()) try { await this.terminate(child.pid!); } catch (error) { view.writerUncertain = true; this.changed(); this.report(error); failure ||= 'Owned process cleanup failed. Stop surviving children and reconcile explicitly.'; child.kill(); } })();
     const fail = (error: unknown) => {
       if (failure) return;
@@ -160,6 +162,8 @@ export class ManagedCodex {
         for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Codex process exited.')); } pending.clear();
         log('stdout', stdout.end()); log('stderr', stderr.end());
         if (!failure) try { messages.end(); } catch (error) { failure = String(error); }
+        // Stop/exit cannot release ownership ahead of an in-flight session receipt.
+        await sessionSave.catch(error => { failure ||= String(error); });
         view.approvals = []; approvals.clear();
         if (stopped) { turn.status = 'interrupted'; turn.error = 'Codex turn interrupted. Check the worktree before resuming.'; }
         else if (failure || !protocol?.completed || code !== 0) { turn.status = 'error'; turn.error = failure || `Codex exited ${code} without a clean completed turn.`; }
@@ -189,7 +193,9 @@ export class ManagedCodex {
       const options = { cwd: task.worktree, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(selection ? { model: selection.model, config: { model_reasoning_effort: selection.effort } } : {}) } satisfies ThreadStartParams;
       const response = task.sessionId ? await request('thread/resume', { ...options, threadId: providerId(task.sessionId) } satisfies ThreadResumeParams) : await request('thread/start', options);
       const threadId = validateCodexThread(response, task.worktree, task.sessionId);
-      task.sessionId = threadId; task.sessionProvider = 'codex'; await this.persistTask();
+      task.sessionId = threadId; task.sessionProvider = 'codex';
+      sessionSave = this.persistTask().then(() => this.observer.sessionIdentified?.(task, threadId));
+      await sessionSave;
       if (selection || record(response).model !== undefined) {
         turn.modelSettings = { ...turn.modelSettings, effective: parseEffectiveModel(response) };
         await this.store.save(task.id, view);

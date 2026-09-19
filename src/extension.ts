@@ -247,6 +247,14 @@ class Manager {
       this.getTask(parentId);
       return structuredClone(await this.delegations.load(parentId, runId));
     });
+    // A child may record a request, but recording cannot read or supply source content.
+    // The selected parent's inbox remains the only context-supply action.
+    command('hydra.recordDelegationContextRequest', async (childId: string, request: unknown) => {
+      this.assertDelegationIngressWritable();
+      const receipt = await this.delegationIngress.recordContextRequest(childId, request);
+      await this.publish();
+      return structuredClone(receipt);
+    });
     // Context supply waits for the explicit inbox action; a public command could be
     // called programmatically without showing the request to the user.
     command('hydra.receiveDelegationResult', async (childId: string, result: unknown) => {

@@ -231,3 +231,7 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 .focused-check { margin-top: 7px; padding: 7px; border-left: 2px solid var(--border); background: var(--rail); }.focused-check.check-passed { border-left-color: var(--green); }
 .focused-check ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px; }.focused-check li { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; color: var(--muted); font-size: 10px; }.focused-check code { overflow-wrap: anywhere; white-space: normal; }
 @media (max-width: 660px) { .focused-workspace { margin-left: 14px; margin-right: 14px; }.focused-workspace dl { grid-template-columns: 1fr 1fr; }.focused-attempt > summary { align-items: flex-start; flex-direction: column; } }
+.reconciliation { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 9px; color: var(--muted); font-size: 11px; }
+.reconciliation header { display: flex; justify-content: space-between; gap: 8px; color: var(--text); }
+.reconciliation p { margin: 6px 0; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .reconciliation, .focused-workspace { transition: none; animation: none; } }

@@ -21,6 +21,8 @@ import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
+import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
+import { DelegatedVerificationActionGate, interruptLatestDelegatedVerification, persistDelegatedVerification } from './core/delegationVerificationTransaction';
 import { hostDelegationPolicy } from './core/delegationHost';
 import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
@@ -114,6 +116,8 @@ class Manager {
   private readonly discardReviews = new Map<string, DiscardReview>();
   private pendingDiscard?: Promise<void>;
   private pendingDelegationSave?: Promise<void>;
+  private pendingDelegationVerification?: { controller: AbortController; done: Promise<unknown> };
+  private readonly delegationVerificationActions = new DelegatedVerificationActionGate();
   private pendingCommit?: Promise<ReviewedCommit>;
   private readonly integrations: Integrations;
   private readonly integrationOperations = new Map<string, IntegrationOperation>();
@@ -247,6 +251,29 @@ class Manager {
         const expected = createDelegatedChildren(parent, decisions, dispatches);
         return await this.saveDelegatedEnrollment(parent, expected, runId, cancelDelegatedEnrollment);
       } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+    });
+    command('hydra.runDelegatedVerification', async (id: string, checks: unknown) => {
+      if (this.busy || this.closing) throw new Error('Another task operation is in progress.');
+      this.busy = true;
+      const active = this.delegationVerificationActions.start(async signal => {
+        const task = this.getTask(id);
+        const parsed = parseDelegatedVerificationChecks(checks);
+        await this.guardDelegatedVerification(task);
+        let evidence = await recordDelegatedVerification(this.storageDirectory, { task, checks: parsed, signal });
+        // Shutdown owns this signal. It can retain completed logs but never a
+        // passing latest attempt that raced the shutdown boundary.
+        if (signal.aborted || this.closing) evidence = interruptLatestDelegatedVerification(evidence);
+        if (!this.closing) await this.guardDelegatedVerification(task);
+        const persisted = await persistDelegatedVerification(task, evidence, () => this.persistVerificationEvidence(), new Date().toISOString(), signal);
+        return structuredClone(persisted);
+      });
+      this.pendingDelegationVerification = active;
+      try { return await active.done; }
+      finally {
+        if (this.pendingDelegationVerification?.done === active.done) this.pendingDelegationVerification = undefined;
+        this.busy = false; await this.publish();
+        if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error));
+      }
     });
     command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
       const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;
@@ -508,6 +535,19 @@ class Manager {
     }
     await this.store.save(this.tasks); await this.settleCapacity(); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
+  }
+  /** Durable evidence commit deliberately excludes capacity and publish work. */
+  private async persistVerificationEvidence(): Promise<void> {
+    await this.pendingDiscard?.catch(() => {});
+    while (this.pendingDelegationSave) await this.pendingDelegationSave.catch(() => {});
+    if (this.closing && (this.disabled || !vscode.workspace.isTrusted)) throw new Error('Hydra cannot retain verification evidence while this workspace is unavailable.');
+    await this.store.save(this.tasks);
+  }
+  private async guardDelegatedVerification(task: Task): Promise<void> {
+    if (!task.delegation) throw new Error('Only delegated child tasks can run delegated verification.');
+    if (!task.reviewedCommit) throw new Error('Commit and record a reviewed child tree before verification.');
+    if (this.integrationAbort?.taskId === task.id) throw new Error('Wait for the active integration operation before delegated verification.');
+    await this.guardCommitReview(task);
   }
   /**
    * Keep a delegation schedule detached until its disk record is durable. The
@@ -1139,6 +1179,7 @@ class Manager {
     await this.pendingCommit?.catch(() => {});
     await this.pendingDiscard?.catch(() => {});
     await this.pendingDelegationSave?.catch(() => {});
+    await this.delegationVerificationActions.abortAndWait();
     await this.pendingBudgetSave?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.scheduler.idle();

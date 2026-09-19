@@ -10,6 +10,7 @@ import { prepareCommitReview, commitReviewed } from '../src/core/reviewCommit';
 import { parseMessage, type Task } from '../src/core/model';
 import { ManagedSessions } from '../src/core/managedSessions';
 import { SessionStore } from '../src/core/sessionStore';
+import { reserveDelegationBudget, releaseDelegationBudget } from '../src/core/delegationRunAccounting';
 
 const now = new Date().toISOString();
 function task(n: number): Task { return { id: n.toString(16).padStart(12, '0'), title: `Task ${n}`, prompt: 'Implement this', repository: path.resolve('fixture'), worktree: path.resolve(`fixture-${n}`), branch: `agent/task-${n}`, baseCommit: 'a'.repeat(40), integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: now, updatedAt: now }; }
@@ -118,6 +119,24 @@ test('schedule storage and messages reject malformed identities and follow-up re
   assert.throws(() => validateSchedule({ ...s, request: { type: 'launch' }, dependencies: ['bad'] }), /Invalid/);
   assert.throws(() => parseMessage({ type: 'configureSchedule', id: task(1).id, dependencies: [42] }), /Invalid/);
   assert.deepEqual(parseMessage({ type: 'configureSchedule', id: task(1).id, dependencies: [] }), { type: 'configureSchedule', id: task(1).id, dependencies: [], startFromDependency: undefined });
+});
+
+test('failed delegated budget-hold retry restores its reservation state so a sibling can proceed', async () => {
+  const first = task(1), second = task(2), parentId = 'aaaaaaaaaaaa', runId = 'bbbbbbbbbbbb';
+  for (const [item, childKey] of [[first, 'first'], [second, 'second']] as const) {
+    item.delegation = { parentId, runId, childKey, dispatchKey: item.id.repeat(2), dependencies: [] };
+  }
+  first.schedule = { state: 'blocked', dependencies: [], artifacts: [], request: { type: 'startManaged' }, budgetHold: true, reason: 'Budget hold' };
+  second.schedule = { state: 'queued', dependencies: [], artifacts: [], request: { type: 'startManaged' } };
+  const tasks = [first, second];
+  const scheduler = new TaskScheduler({ tasks: () => tasks, capacity: () => 2, liveCount: () => 0, enabled: () => false,
+    persist: async () => { throw Error('disk full'); }, prepare: async item => ({ commit: item.baseCommit, artifacts: [] }), launch: async () => assert.fail('retry must not launch after failed persistence'),
+    guardBudget: (item, request) => reserveDelegationBudget(item, tasks, request.type as 'startManaged' | 'followUp'), releaseBudgetGuard: item => { releaseDelegationBudget(item); }
+  });
+  await assert.rejects(scheduler.retryBudgetHold(first), /disk full/);
+  assert.equal(first.delegationBudgetReservation, undefined);
+  assert.equal(first.schedule?.state, 'blocked'); assert.equal(first.schedule?.budgetHold, true);
+  assert.doesNotThrow(() => reserveDelegationBudget(second, tasks, 'startManaged'));
 });
 
 test('post-launch save failure retains writer ownership and legacy active tasks reserve recovery capacity', async () => {

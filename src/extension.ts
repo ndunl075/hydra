@@ -40,6 +40,7 @@ import { SessionStore } from './core/sessionStore';
 import { ConversationDrafts } from './core/conversationDrafts';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
 import { delegationRunUsage, usageSnapshot } from './core/usage';
+import { projectDelegationRunUsage, releaseDelegationBudget, reserveDelegationBudget } from './core/delegationRunAccounting';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
 import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
@@ -173,6 +174,10 @@ class Manager {
       enabled: () => this.schedulerReady && !this.busy && !this.closing && !this.disabled && !this.handoff && vscode.workspace.isTrusted,
       persist: () => this.persist(),
       budget: task => this.checkBudget(task),
+      guardBudget: (task, request) => {
+        if (request.type === 'startManaged' || request.type === 'followUp') reserveDelegationBudget(task, this.tasks, request.type);
+      },
+      releaseBudgetGuard: task => { releaseDelegationBudget(task); },
       reserve: async (task, request) => {
         this.capacityStarting.add(task.id);
         return this.capacity.tryAcquire(task.id, request.type === 'launch' || request.type === 'terminal' ? 'terminal' : 'managed', this.profileLimit());
@@ -689,9 +694,10 @@ class Manager {
     }
     if (generation !== this.snapshotGeneration) return;
     const delegationOrchestration: NonNullable<Snapshot['delegationOrchestration']> = {};
+    const delegationRunAccounting: NonNullable<Snapshot['delegationRunAccounting']> = {};
     for (const parent of this.tasks.filter(item => !item.delegation)) {
       const runs = new Set(this.tasks.filter(item => item.delegation?.parentId === parent.id).map(item => item.delegation!.runId));
-      for (const runId of runs) { try { delegationOrchestration[`${parent.id}:${runId}`] = await this.delegationJournal.load(parent.id, runId); } catch (failure) { error ||= this.describe(failure); } }
+      for (const runId of runs) { try { delegationOrchestration[`${parent.id}:${runId}`] = await this.delegationJournal.load(parent.id, runId); delegationRunAccounting[`${parent.id}:${runId}`] = projectDelegationRunUsage(parent, runId, this.tasks, id => this.managed.view(id)); } catch (failure) { error ||= this.describe(failure); } }
     }
     if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
@@ -707,6 +713,7 @@ class Manager {
       delegation: this.delegationPreferences(),
       delegationPlans: Object.fromEntries(this.delegationPlans),
       delegationOrchestration,
+      delegationRunAccounting,
       resources: this.resources.snapshot(),
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),

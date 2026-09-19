@@ -13,6 +13,7 @@ import type { DelegatedVerificationEvidence } from './delegationEvidence';
 import type { DelegationPlannerRun } from './delegationPlannerIngestion';
 import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
 import type { DelegatedExecutionReceipt } from './delegationRunner';
+import type { DelegationBudgetReservation, DelegationRunUsageProjection } from './delegationRunAccounting';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -33,6 +34,8 @@ export interface Task {
   delegationExecution?: DelegatedExecutionReceipt;
   /** One automatic retry is charged to the original delegated child/run and never resets. */
   delegationRetry?: { version: 1; parentId: string; runId: string; dispatchKey: string; attemptedAt: string };
+  /** A sibling-local launch/turn budget-check fence; it carries no spend estimate. */
+  delegationBudgetReservation?: DelegationBudgetReservation;
     delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
     /** Durable retry marker for an assignment fact whose source transition committed first. */
     delegationJournalPending?: { version: 1; event: { version: 1; id: string; occurredAt: string; kind: 'assignment'; parentId: string; runId: string; from: { kind: 'task'; taskId: string }; to: { kind: 'task'; taskId: string }; provenance: { producer: 'host'; recordId: string } } };
@@ -84,6 +87,7 @@ export interface Snapshot {
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
   usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary>; delegationRuns?: Record<string, UsageSummary> };
+  delegationRunAccounting?: Record<string, DelegationRunUsageProjection>;
   modelCatalogs?: Record<string, ModelCatalog>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;

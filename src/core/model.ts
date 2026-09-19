@@ -103,6 +103,8 @@ export interface Snapshot {
     delegationOrchestration?: Record<string, DelegationOrchestrationProjection>;
 }
 export type ClientMessage =
+  | { type: 'supplyDelegationContext'; id: string; requestKey: string }
+  | { type: 'reviewDelegationResult'; id: string; decision: 'approved' | 'rejected'; reason: string }
   | { type: 'saveResources'; id: string; config: ResourceConfig }
   | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
   | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' }
@@ -145,6 +147,13 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'supplyDelegationContext' || type === 'reviewDelegationResult') {
+    const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    if (type === 'supplyDelegationContext') { const requestKey = string('requestKey'); if (!/^[a-f0-9]{24}$/.test(requestKey)) throw new Error('Invalid context request.'); return { type, id, requestKey }; }
+    const decision = string('decision'); if (decision !== 'approved' && decision !== 'rejected') throw new Error('Invalid parent review decision.');
+    const reason = string('reason', 1200); if (!reason.trim()) throw new Error('Enter a concise parent review reason.');
+    return { type, id, decision, reason };
+  }
   if (type === 'setDelegationMode') {
     return { type, mode: requireDelegationMode(string('mode')) };
   }

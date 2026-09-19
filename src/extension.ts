@@ -23,6 +23,7 @@ import { DelegationDispatchStore } from './core/delegationDispatch';
 import { projectDelegationReconciliation } from './core/delegationReconciliation';
 import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
 import { DelegationIngressHost } from './core/delegationIngressHost';
+import { DelegationParentReviewJournal } from './core/delegationParentReview';
 import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
 import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
 import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
@@ -140,6 +141,7 @@ class Manager {
   private readonly delegationDispatches: DelegationDispatchStore;
   private readonly delegationJournal: DelegationOrchestrationJournal;
   private readonly delegationIngress: DelegationIngressHost;
+  private readonly parentReviews: DelegationParentReviewJournal;
   private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -165,6 +167,7 @@ class Manager {
     this.delegationJournal = new DelegationOrchestrationJournal(path.join(this.storageDirectory, 'delegation'), async () => {
       if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation orchestration while this workspace is unavailable.');
     });
+    this.parentReviews = new DelegationParentReviewJournal(path.join(this.storageDirectory, 'delegation'), async () => this.assertDelegationIngressWritable());
     this.delegationIngress = new DelegationIngressHost(() => this.tasks, this.delegations, this.delegationDispatches, this.delegationJournal, async child => {
       this.assertDelegationIngressWritable();
       await this.verifyWorktree(child);
@@ -903,6 +906,19 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
+    if (message.type === 'supplyDelegationContext') {
+      this.assertDelegationIngressWritable();
+      const history = task.delegation ? await this.delegationJournal.load(task.delegation.parentId, task.delegation.runId) : undefined;
+      const request = history?.contextRequests.find(item => item.requestKey === message.requestKey);
+      if (!request) throw new Error('Selected context request is unavailable. Refresh the focused workspace.');
+      await this.delegationIngress.supplyContext(task.id, request); await this.publish(); return;
+    }
+    if (message.type === 'reviewDelegationResult') {
+      this.assertDelegationIngressWritable();
+      const source = await this.delegationIngress.parentReviewSource(task.id);
+      await this.parentReviews.append({ version: 1, parentId: source.child.delegation!.parentId, runId: source.child.delegation!.runId, childKey: source.child.delegation!.childKey, resultSha256: source.result.sha256, evidenceSha256: createHash('sha256').update(JSON.stringify(source.child.verificationEvidence)).digest('hex'), commit: source.child.reviewedCommit!.commit, tree: source.child.reviewedCommit!.tree, reviewer: 'parent-human', decision: message.decision, reviewedAt: new Date().toISOString(), reason: message.reason }, source);
+      await this.publish(); return;
+    }
     if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
     if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }

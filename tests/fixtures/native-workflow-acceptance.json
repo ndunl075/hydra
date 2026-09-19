@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "feature": "native-workflow-accessibility-and-completion-record",
+  "status": "human-visual-accessibility-acceptance-pending",
+  "scope": {
+    "host": "local VS Code/Hydra fixture only",
+    "providerTurn": false,
+    "login": false,
+    "install": false
+  },
+  "automatedAssertions": [
+    { "id": "editor-agents-preservation", "status": "defined", "evidence": "tests/smoke.ts" },
+    { "id": "selected-agent-workspace", "status": "defined", "evidence": "webview/FocusedWorkspace.tsx" },
+    { "id": "context-result-budget-inspection", "status": "defined", "evidence": "webview/DelegationContextInbox.tsx, webview/DelegationResultInspection.tsx, webview/DelegationRunBudgetView.tsx" },
+    { "id": "keyboard-focus", "status": "defined", "evidence": "webview/AgentMap.tsx, webview/agent-map.css" },
+    { "id": "high-contrast-and-reduced-motion", "status": "defined", "evidence": "webview/agent-map.css, webview/delegation-*.css" }
+  ],
+  "humanAcceptance": {
+    "status": "pending",
+    "required": [
+      "Visual review in a native Hydra window",
+      "Keyboard-only navigation and focus visibility review",
+      "High-contrast review",
+      "Reduced-motion review"
+    ]
+  }
+}

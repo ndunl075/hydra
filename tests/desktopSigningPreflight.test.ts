@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const testDirectory = typeof __dirname === 'string' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(testDirectory, '..');
 const script = path.join(root, 'scripts', 'desktop-signing-preflight.mjs');
+const windowsTest = process.platform === 'win32' ? test : test.skip;
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const signer = { subject: 'CN=Hydra Test Signing, O=Nico Dunlap', thumbprint: 'A'.repeat(40) };
 
@@ -66,7 +67,7 @@ test('desktop signing preflight fails before signature inspection when an artifa
   } finally { await fs.rm(current.directory, { recursive: true, force: true }); }
 });
 
-test('the command refuses an unsigned local artifact without changing it', async () => {
+windowsTest('the command refuses an unsigned local artifact without changing it', async () => {
   const current = await fixture();
   try {
     const before = await fs.readFile(path.join(current.directory, 'HydraSetup.exe'));

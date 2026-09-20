@@ -7,6 +7,7 @@ import path from 'node:path';
 
 const root = path.resolve(__dirname, '..');
 const script = path.join(root, 'scripts', 'verify-release-evidence.ps1');
+const windowsTest = process.platform === 'win32' ? test : test.skip;
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
 async function fixture() {
@@ -35,7 +36,7 @@ function preflight(manifestPath: string) {
   return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-ManifestPath', manifestPath, '-WhatIf'], { encoding: 'utf8' });
 }
 
-test('release evidence preflight verifies local hashes without changing evidence files', async () => {
+windowsTest('release evidence preflight verifies local hashes without changing evidence files', async () => {
   const current = await fixture();
   try {
     const before = await fs.readFile(path.join(current.directory, 'installer.bin'));
@@ -46,7 +47,7 @@ test('release evidence preflight verifies local hashes without changing evidence
   } finally { await fs.rm(current.directory, { recursive: true, force: true }); }
 });
 
-test('release evidence preflight fails closed for missing signing, pending manual gates, and mismatched shortcut evidence', async () => {
+windowsTest('release evidence preflight fails closed for missing signing, pending manual gates, and mismatched shortcut evidence', async () => {
   const current = await fixture();
   try {
     current.manifest.gates.signing = 'missing';
@@ -71,7 +72,7 @@ test('release evidence preflight fails closed for missing signing, pending manua
   } finally { await fs.rm(current.directory, { recursive: true, force: true }); }
 });
 
-test('release evidence preflight rejects a junction or link that escapes the manifest directory', async t => {
+windowsTest('release evidence preflight rejects a junction or link that escapes the manifest directory', async t => {
   const current = await fixture();
   const outside = await fs.mkdtemp(path.join(path.dirname(current.directory), 'release-evidence-outside-'));
   try {

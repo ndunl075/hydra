@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import type { ClientRequest, IncomingMessage } from 'node:http';
@@ -15,6 +15,8 @@ const body = Buffer.from('verified Hydra installer fixture');
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const update = { artifactBytes: body.length, artifact: { fileName: 'HydraSetup.exe', sha256: digest(body) } } as VerifiedDesktopUpdate;
 const origin = 'https://updates.example.com';
+const stage = (options: Omit<Parameters<typeof stageDesktopUpdateArtifact>[0], 'operationId'>) =>
+  stageDesktopUpdateArtifact({ ...options, operationId: randomUUID() });
 
 function transport(statusCode: number, chunks: Buffer[], headers: Record<string, string> = {}, expectedUrl = `${origin}/artifacts/sha256/${digest(body)}/HydraSetup.exe`) {
   return ((url: URL, options: { signal?: AbortSignal }, callback: (response: IncomingMessage) => void) => {
@@ -59,13 +61,13 @@ test('derives only the immutable hash route from installed origin', () => {
 });
 
 test('stages exact bytes and refuses pre-existing cache on another operation', async () => fixture(async directory => {
-  const staged = await stageDesktopUpdateArtifact({ userDataDirectory: directory, origin, update, requestFactory: transport(200, [body], { 'content-length': String(body.length) }) });
+  const staged = await stage({ userDataDirectory: directory, origin, update, requestFactory: transport(200, [body], { 'content-length': String(body.length) }) });
   assert.deepEqual(await readFile(staged.artifactPath), body);
   assert.equal(staged.sha256, digest(body));
   assert.deepEqual(await verifyStagedDesktopUpdateArtifact(directory, staged.operationId, update), staged);
   await writeFile(staged.artifactPath, Buffer.alloc(body.length, 0x41));
   await assert.rejects(verifyStagedDesktopUpdateArtifact(directory, staged.operationId, update), /cached artifact differs/);
-  await assert.rejects(stageDesktopUpdateArtifact({ userDataDirectory: directory, origin, update, requestFactory: transport(200, [body]) }), /EEXIST/);
+  await assert.rejects(stage({ userDataDirectory: directory, origin, update, requestFactory: transport(200, [body]) }), /EEXIST/);
 }));
 
 for (const [name, status, chunks, headers, reason] of [
@@ -76,7 +78,7 @@ for (const [name, status, chunks, headers, reason] of [
   ['changed bytes', 200, [Buffer.alloc(body.length, 0x41)], {}, /hash differs/]
 ] as const) {
   test(`refuses ${name} and removes partial staging`, async () => fixture(async directory => {
-    await assert.rejects(stageDesktopUpdateArtifact({ userDataDirectory: directory, origin, update, requestFactory: transport(status, [...chunks], headers) }), reason);
+    await assert.rejects(stage({ userDataDirectory: directory, origin, update, requestFactory: transport(status, [...chunks], headers) }), reason);
     assert.deepEqual(await readdir(directory), []);
   }));
 }
@@ -84,7 +86,7 @@ for (const [name, status, chunks, headers, reason] of [
 test('pre-cancelled operation does not touch staging', async () => fixture(async directory => {
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(stageDesktopUpdateArtifact({ userDataDirectory: directory, origin, update, signal: controller.signal, requestFactory: transport(200, [body]) }), /cancelled/);
+  await assert.rejects(stage({ userDataDirectory: directory, origin, update, signal: controller.signal, requestFactory: transport(200, [body]) }), /cancelled/);
   assert.deepEqual(await readdir(directory), []);
 }));
 
@@ -97,12 +99,18 @@ test('cancellation after request creation removes the private operation', async 
     options.signal?.addEventListener('abort', () => req.emit('error', new Error('cancelled')));
     return req as unknown as ClientRequest;
   }) as typeof httpsRequest;
-  await assert.rejects(stageDesktopUpdateArtifact({ userDataDirectory: directory, origin, update, signal: controller.signal, requestFactory: waiting }), /cancelled/);
+  await assert.rejects(stage({ userDataDirectory: directory, origin, update, signal: controller.signal, requestFactory: waiting }), /cancelled/);
   assert.deepEqual(await readdir(directory), []);
 }));
 
 test('reparse-point user data refuses before download', async () => fixture(async directory => {
   const link = join(directory, 'link');
   await symlink(directory, link, process.platform === 'win32' ? 'junction' : 'dir');
-  await assert.rejects(stageDesktopUpdateArtifact({ userDataDirectory: link, origin, update, requestFactory: transport(200, [body]) }), /real directory|resolves elsewhere/);
+  await assert.rejects(stage({ userDataDirectory: link, origin, update, requestFactory: transport(200, [body]) }), /real directory|resolves elsewhere/);
+}));
+
+test('invalid journal operation ID refuses before staging', async () => fixture(async directory => {
+  await assert.rejects(stageDesktopUpdateArtifact({ userDataDirectory: directory, origin, update,
+    operationId: '../other', requestFactory: transport(200, [body]) }), /operation ID/);
+  assert.deepEqual(await readdir(directory), []);
 }));

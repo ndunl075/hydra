@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createWriteStream, constants } from 'node:fs';
 import { mkdir, lstat, open, readdir, realpath, rm, rmdir, stat, statfs } from 'node:fs/promises';
 import { request, type RequestOptions } from 'node:https';
@@ -107,6 +107,8 @@ export interface DesktopUpdateStageOptions {
   /** Immutable installed trust origin, never a feed or renderer value. */
   origin: string;
   update: VerifiedDesktopUpdate;
+  /** UUID already committed by the main-owned update operation journal. */
+  operationId: string;
   signal?: AbortSignal;
   /** Test seam; production uses Node HTTPS with ordinary TLS validation. */
   requestFactory?: typeof request;
@@ -153,6 +155,7 @@ export async function verifyStagedDesktopUpdateArtifact(userDataDirectory: strin
  */
 export async function stageDesktopUpdateArtifact(options: DesktopUpdateStageOptions): Promise<StagedDesktopUpdate> {
   const url = desktopUpdateArtifactUrl(options.origin, options.update);
+  if (!operationIdPattern.test(options.operationId)) refuse('staged operation ID is invalid.');
   if (options.signal?.aborted) refuse('download was cancelled.');
   if (typeof options.userDataDirectory !== 'string' || !isAbsolute(options.userDataDirectory)) refuse('user-data path is invalid.');
   const userData = resolve(options.userDataDirectory);
@@ -164,7 +167,7 @@ export async function stageDesktopUpdateArtifact(options: DesktopUpdateStageOpti
   if ((await readdir(root)).length !== 0) refuse('another staged operation exists.');
   const free = await statfs(root);
   if (Number(free.bavail) * Number(free.bsize) < options.update.artifactBytes + 16 * 1024 * 1024) refuse('insufficient staging disk space.');
-  const operationId = randomUUID();
+  const operationId = options.operationId;
   const operationDirectory = join(root, operationId);
   await privateDirectory(operationDirectory);
   const artifactPath = join(operationDirectory, 'HydraSetup.exe');

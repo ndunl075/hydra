@@ -9,12 +9,18 @@ if (-not $visualStudio) { throw 'Visual Studio C++ x64 tools are required for th
 $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvars64.bat'
 $source = Join-Path $repository 'native'
 $compile = '"' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc "' + (Join-Path $source 'desktop-update-verifier.cpp') + '" "' + (Join-Path $source 'desktop-update-verifier-fixture.cpp') + '" /Fe:desktop-update-verifier-fixture.exe'
+$compilePolicy = '"' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /DHYDRA_UPDATE_VERIFIER_FIXTURE "' + (Join-Path $source 'desktop-update-verifier.cpp') + '" "' + (Join-Path $source 'desktop-update-verifier-policy-fixture.cpp') + '" /Fe:desktop-update-verifier-policy-fixture.exe'
 Push-Location $output
 try {
   & cmd.exe /c $compile
   if ($LASTEXITCODE -ne 0) { throw 'Native verifier fixture did not compile.' }
+  & cmd.exe /c $compilePolicy
+  if ($LASTEXITCODE -ne 0) { throw 'Native verifier policy fixture did not compile.' }
 } finally { Pop-Location }
 $helper = Join-Path $output 'desktop-update-verifier-fixture.exe'
+$policy = Join-Path $output 'desktop-update-verifier-policy-fixture.exe'
+& $policy
+if ($LASTEXITCODE -ne 0) { throw 'Native verifier policy fixture failed.' }
 
 $candidates = @(
   (Join-Path ${env:ProgramFiles(x86)} 'Microsoft/Edge/Application/msedge.exe'),

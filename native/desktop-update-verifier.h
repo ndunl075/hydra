@@ -4,6 +4,10 @@
 #include <windows.h>
 #include <array>
 #include <string>
+#ifdef HYDRA_UPDATE_VERIFIER_FIXTURE
+#include <wincrypt.h>
+#include <wintrust.h>
+#endif
 
 namespace hydra_update {
 
@@ -24,6 +28,14 @@ struct VerificationResult {
 VerificationResult verify_signed_installer(HANDLE file, const wchar_t* absolute_path,
   const std::array<unsigned char, 32>& signed_sha256, unsigned long long signed_bytes,
   const ExpectedSigner& allowed_signer);
+
+#ifdef HYDRA_UPDATE_VERIFIER_FIXTURE
+using FixtureTrustCall = decltype(&WinVerifyTrust);
+using FixtureSignerCheck = bool (*)(HANDLE, const ExpectedSigner&, std::wstring&);
+VerificationResult fixture_verify_trust(HANDLE file, const wchar_t* absolute_path,
+  const ExpectedSigner& allowed_signer, FixtureTrustCall trust_call, FixtureSignerCheck signer_check);
+bool fixture_leaf_certificate_policy(PCCERT_CONTEXT certificate, std::wstring& reason);
+#endif
 
 } // namespace hydra_update
 #endif

@@ -33,7 +33,7 @@ Each row is a separate reviewed feature PR. Fixture trust roots can support the 
 | 1 | Installed update configuration and consistent Hydra PE/product/installer/module release identity | Absent owner values fail closed; all version identities agree. |
 | 2 | Signed envelope verifier around the existing parser | Tampering, duplicate keys, wrong key/target/channel, expiry, replay, downgrade, and stable prerelease refuse. |
 | 3 | Bounded HTTPS fetch and private staging | Redirect, oversize/truncation, cancellation, disk/path/reparse failure, and changed cached bytes refuse. |
-| 4 | Native signature verifier and install helper | Signed fixture passes; unsigned, wrong signer, revoked, tampered, unverifiable, and replacement-race fixtures refuse under the declared timestamp/revocation policy. |
+| 4 | Native signature verifier and install helper | Signed fixture passes; unsigned, wrong signer, revoked, tampered, unverifiable, and replacement-race fixtures refuse under the declared timestamp/revocation policy. The verifier's conservative leaf-time/EKU and WinTrust cleanup policy has fixture coverage; the packaged helper still refuses every invocation. Controlled revoked/timestamped release artifacts and authenticated main/helper handoff remain pending. |
 | 5 | Inno update mode and downgrade guard | Disposable selected/unselected shortcut cycles retain choices; no forced close, reboot, launch, or downgrade. |
 | 6 | Main-process update service, UI, shutdown veto, and durable recovery | Install requires verified user-authorized state; dirty work/active agent/corrupt journal refuse. |
 | 7 | Controlled signing and atomic publication | Final signed-byte provenance and independent preflight pass; secrets stay out of logs. |

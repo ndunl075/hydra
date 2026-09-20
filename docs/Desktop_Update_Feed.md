@@ -2,7 +2,9 @@
 
 `parseDesktopUpdateFeed(manifest, current)` is a version-`1`, in-memory parser for an explicitly supplied Hydra update manifest. It accepts no URL, endpoint, credential, filesystem path, download directive, installer flag, or restart instruction. It never fetches metadata, writes state, downloads an artifact, verifies a Windows certificate, starts an updater, installs a build, or changes the current channel.
 
-The parser is intentionally a preparation contract, not an automatic-update implementation. Hydra's desktop build currently removes Code - OSS `updateUrl`, and the installer remains unsigned. A later native update-channel decision must separately design authenticated feed transport, certificate verification against downloaded bytes, download storage, install/restart behavior, recovery, and native upgrade/rollback acceptance.
+The parser is intentionally a preparation contract, not an automatic-update implementation. Hydra's desktop build currently removes Code - OSS `updateUrl`, and the installer remains unsigned. The native update-channel implementation must separately provide authenticated feed transport, certificate verification against downloaded bytes, download storage, install/restart behavior, recovery, and native upgrade/rollback acceptance.
+
+That native decision is recorded in [Windows update channel decision](Desktop_Update_Channel_ADR.md). Its signed envelope, installed trust configuration, helper, and release gates are future implementation work; this parser alone does not enable updates.
 
 ## Manifest
 

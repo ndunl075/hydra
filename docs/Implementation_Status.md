@@ -62,7 +62,7 @@ The supported fixture-only `npm.cmd run test:smoke` has **not passed** against t
 | Paired Auto/Solo evaluation and rollout | Pending | Product owner freezes the corpus, acceptance commands, budget, sample size, and quality tolerance; run and review the evidence before any separate default-rollout PR. |
 | Standalone desktop and human review | Pending | Release owner builds a fresh standalone Hydra runtime, runs `desktop:verify` and `desktop:smoke`, then records A12 keyboard, visual, contrast, and reduced-motion observations. |
 | Distinct-version installer upgrade | Pending | Release owner refreshes provenance if needed and performs the A10 disposable-Windows upgrade run without touching a developer profile. |
-| Signing, distribution, and automatic updates | Pending | Release owner provides the signing identity and distribution destination; Astra first resolves the updater/channel architecture, then a separate reviewed signed-update implementation and rollback test may proceed. |
+| Signing, distribution, and automatic updates | Architecture decided; implementation and release acceptance pending | [Astra's Windows update-channel decision](Desktop_Update_Channel_ADR.md) fixes the trust, staging, install, and recovery boundaries. Release owner provides the signing identity, distribution origin, key custody, and tested signed artifacts; separate reviewed implementation and disposable upgrade/refusal PRs follow. |
 
 ## Acceptance record
 

@@ -72,7 +72,8 @@ export function brandedElectronApp(text) {
 }
 export const hydraMainUpdateModules = Object.freeze([
   'atomicFile.ts', 'desktopUpdateFeed.ts', 'desktopSignedUpdate.ts',
-  'desktopUpdateJournal.ts', 'desktopUpdateStaging.ts', 'desktopUpdateOperation.ts'
+  'desktopUpdateJournal.ts', 'desktopUpdateStaging.ts', 'desktopUpdateOperation.ts',
+  'desktopUpdateCheck.ts'
 ]);
 export async function stageHydraMainUpdatePrimitives(destination) {
   await fs.mkdir(destination, { recursive: true });

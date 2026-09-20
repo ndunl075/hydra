@@ -58,6 +58,18 @@ export function brandedElectronMain(text) {
     'await this.initServices(environmentMainService, userDataProfilesMainService, configurationService, stateMainService, productService);\n\t\t\t\ttry { initializeHydraUpdateTrust(productService); } catch { console.error("Hydra updates disabled: invalid installed trust."); }');
   return text;
 }
+export function brandedElectronApp(text) {
+  if (text.includes('HydraUpdateService')) throw new Error('Pinned Electron app changed: Hydra update service already exists.');
+  const replaceOnce = (before, after) => {
+    if (text.split(before).length !== 2) throw new Error(`Pinned Electron app changed: ${before}`);
+    text = text.replace(before, after);
+  };
+  replaceOnce("import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';",
+    "import { HydraUpdateService } from './hydraUpdateService.js';");
+  replaceOnce('services.set(IUpdateService, new SyncDescriptor(Win32UpdateService));',
+    'services.set(IUpdateService, new SyncDescriptor(HydraUpdateService));');
+  return text;
+}
 export const hydraMainUpdateModules = Object.freeze([
   'atomicFile.ts', 'desktopUpdateFeed.ts', 'desktopSignedUpdate.ts',
   'desktopUpdateJournal.ts', 'desktopUpdateStaging.ts', 'desktopUpdateOperation.ts'
@@ -210,6 +222,9 @@ export async function prepare() {
     await fs.copyFile(path.join(root, 'desktop', 'main', 'hydraUpdateTrust.ts'), path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdateTrust.ts'));
     await fs.writeFile(path.join(source, electronMainPath), brandedElectronMain(await git(['show', `${pin.commit}:${electronMainPath}`])));
     await stageHydraMainUpdatePrimitives(path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdate'));
+    const electronAppPath = 'src/vs/code/electron-main/app.ts';
+    await fs.copyFile(path.join(root, 'desktop', 'main', 'hydraUpdateService.ts'), path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdateService.ts'));
+    await fs.writeFile(path.join(source, electronAppPath), brandedElectronApp(await git(['show', `${pin.commit}:${electronAppPath}`])));
   const themeStartupPath = 'src/vs/workbench/services/themes/browser/workbenchThemeService.ts';
   await fs.writeFile(path.join(source, themeStartupPath), brandedThemeStartup(await git(['show', `${pin.commit}:${themeStartupPath}`])));
   const nativeThemePath = 'src/vs/platform/theme/electron-main/themeMainServiceImpl.ts';

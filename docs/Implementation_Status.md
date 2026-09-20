@@ -66,7 +66,7 @@ The supported fixture-only `npm.cmd run test:smoke` has **not passed** against t
 
 ## Acceptance record
 
-Distinct-version installer upgrade acceptance is prepared locally with pinned prior-run/artifact/file provenance, selected/unselected shortcut cases, current runtime hash checks and user-data preservation. PowerShell syntax and local runner refusal passed. Its disposable Windows CI execution remains pending; see [Windows_Installer.md](Windows_Installer.md). This is separate from the already accepted same-version lifecycle checks below.
+Distinct-version installer upgrade acceptance is prepared with pinned prior-run/artifact/file provenance, selected/unselected shortcut cases, current runtime checks and user-data preservation. [Disposable Windows run 35484346848](https://github.com/ndunl075/hydra/actions/runs/35484346848) passed standalone build/smoke, installer generation and same-version lifecycle, then failed the distinct-version gate when it compared installer-modified `product.json` to the pre-installer build byte-for-byte. The pinned Inno task adds `target: "user"` to that file. The gate now checks that exact transformation and compares installed bytes to the staged installer input; a new disposable Windows run must pass before distinct-version acceptance can be claimed. See [Windows_Installer.md](Windows_Installer.md). This is separate from the already accepted same-version lifecycle checks below.
 
 Combined runtime revision `1410251`, merged into main as `9b26fa1` after separate feature PRs, recorded on 17 September 2026. Each merge preserved its tested tree and feature ancestry.
 

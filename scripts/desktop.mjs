@@ -276,10 +276,18 @@ export async function verify() {
   if (manifest.publisher !== 'nico-dunlap' || manifest.name !== 'hydra-agent-manager') throw new Error('Built-in Hydra extension is missing.');
   const release = await readJson(path.join(root, 'package.json'));
   if (product.hydraVersion !== release.version || manifest.version !== release.version) throw new Error('Desktop product and bundled module versions differ from the Hydra release.');
+  const nativeHelperPath = path.join(output, 'tools', 'HydraUpdateVerify.exe');
+  const nativeHelper = await fs.readFile(nativeHelperPath);
+  if (nativeHelper.length < 1024 || nativeHelper.subarray(0, 2).toString() !== 'MZ') throw new Error('Disabled native update helper is missing or invalid.');
+  for (const name of await fs.readdir(path.join(output, 'tools'))) {
+    if (/fixture/i.test(name)) throw new Error('Native fixture executable leaked into the desktop package.');
+  }
   if (process.platform === 'win32') {
     const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'desktop-pe-version.ps1'), '-ExecutablePath', path.join(output, 'Hydra.exe')], { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 });
     const pe = JSON.parse(stdout);
     if (pe.ProductName !== 'Hydra' || pe.ProductVersion !== release.version || pe.CompanyName !== 'Nico Dunlap') throw new Error('Hydra executable PE release identity does not match the product and bundled module.');
+    const helperVersion = JSON.parse((await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'desktop-pe-version.ps1'), '-ExecutablePath', nativeHelperPath], { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 })).stdout);
+    if (helperVersion.ProductName !== 'Hydra' || helperVersion.ProductVersion !== release.version || helperVersion.CompanyName !== 'Nico Dunlap') throw new Error('Native update helper PE release identity differs.');
   }
   await fs.access(path.join(bundled, 'dist', 'extension.cjs'));
   await fs.access(path.join(bundled, 'themes', 'hydra-light.json'));
@@ -296,11 +304,15 @@ export async function build() {
   await npm(['ci'], source);
   await npm(['run', 'gulp', '--', 'vscode-win32-x64'], source);
   await contained(output);
+  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'desktop-native-helper-build.ps1'), '-OutputPath', path.join(output, 'tools', 'HydraUpdateVerify.exe')], root);
   // Stamp after upstream packaging and before signing; Code - OSS otherwise
   // retains its 1.113.0 PE ProductVersion even when product.json is Hydra.
   const rcedit = promisify(createRequire(path.join(source, 'package.json'))('rcedit'));
   const release = await readJson(path.join(root, 'package.json'));
   await rcedit(path.join(output, 'Hydra.exe'), windowsExecutableVersion(release.version));
+  const helperVersion = windowsExecutableVersion(release.version);
+  helperVersion['version-string'].OriginalFilename = 'HydraUpdateVerify.exe';
+  await rcedit(path.join(output, 'tools', 'HydraUpdateVerify.exe'), helperVersion);
   await stageHydra(path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager'));
   await verify();
 }
@@ -325,7 +337,7 @@ export async function installer() {
   // The standalone app task does not stage installer-specific updater tools.
   // Use the pinned task, including Hydra's icon, before compiling [Files].
   await npm(['run', 'gulp', '--', 'vscode-win32-x64-inno-updater'], source);
-  for (const name of ['inno_updater.exe','vcruntime140.dll']) {
+  for (const name of ['inno_updater.exe','vcruntime140.dll','HydraUpdateVerify.exe']) {
     const tool=await fs.readFile(path.join(output,'tools',name));
     if(tool.length<1024||tool.subarray(0,2).toString()!=='MZ')throw new Error(`Required installer tool is missing or invalid: ${name}`);
   }

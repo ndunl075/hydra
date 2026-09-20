@@ -39,6 +39,11 @@ function Invoke-Installer([string]$label, [string[]]$taskArgs) {
   $process = Start-Process -FilePath $installer -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
   if ($process.ExitCode -ne 0) { throw "Installer $label failed: $($process.ExitCode)" }
   if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe'))) { throw 'Installed executable missing.' }
+  $nativeHelper = Join-Path $installRoot 'tools\HydraUpdateVerify.exe'
+  if (-not (Test-Path -LiteralPath $nativeHelper)) { throw 'Disabled native update helper missing from installer.' }
+  if (Get-ChildItem -LiteralPath (Join-Path $installRoot 'tools') -Filter '*fixture*.exe' -File) { throw 'Native fixture executable leaked into installer.' }
+  $helperProbe = Start-Process -FilePath $nativeHelper -ArgumentList '12345678-1234-4234-8234-123456789abc' -WindowStyle Hidden -Wait -PassThru
+  if ($helperProbe.ExitCode -ne 2) { throw 'Installed native update helper accepted an unauthenticated operation.' }
   $product = Get-Content -LiteralPath (Join-Path $installRoot 'resources\app\product.json') -Raw | ConvertFrom-Json
   if ($product.nameShort -ne 'Hydra' -or $product.dataFolderName -ne '.hydra') { throw 'Installed product identity changed.' }
   $registry = Get-ItemProperty -LiteralPath $uninstallKey
@@ -62,7 +67,7 @@ function Remove-TestInstallation([string]$label) {
     $process = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $testRoot ($label + '-uninstall.log')) + '"')) -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Uninstall failed: $($process.ExitCode)" }
   }
-  if ((Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe')) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $uninstallKey)) { throw 'Uninstall left the executable, shortcut, or registration behind.' }
+  if ((Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe')) -or (Test-Path -LiteralPath (Join-Path $installRoot 'tools\HydraUpdateVerify.exe')) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $uninstallKey)) { throw 'Uninstall left the executable, helper, shortcut, or registration behind.' }
   Assert-DataPreserved
 }
 try {
@@ -84,6 +89,6 @@ try {
   New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
   Get-ChildItem -LiteralPath $testRoot -Filter '*.log' | Copy-Item -Destination $logRoot
 }
-if ((Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe')) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $uninstallKey)) { throw 'Uninstall left the executable, desktop shortcut, or registration behind.' }
+if ((Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe')) -or (Test-Path -LiteralPath (Join-Path $installRoot 'tools\HydraUpdateVerify.exe')) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $uninstallKey)) { throw 'Uninstall left the executable, helper, desktop shortcut, or registration behind.' }
 Assert-DataPreserved
 Write-Output 'PASS: fresh default-unchecked and selected shortcut installs, equal-version refusal, and uninstall preserve Hydra/VS Code/Cursor data and projects.'

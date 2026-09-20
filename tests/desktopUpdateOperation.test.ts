@@ -45,7 +45,10 @@ test('durable UUID names the staged file and downloading is saved before transpo
   const operation = await journal.start(update);
   let called = false;
   const staged = await downloadDesktopUpdateOperation({ journal, userDataDirectory: directory, origin, update,
-    operationId: operation.id, requestFactory: transport(body, 200, () => {
+    operationId: operation.id, onDownloadStart: () => {
+      const durable = JSON.parse(readFileSync(join(directory, 'hydra-update-state', 'desktop-update-operations.json'), 'utf8'));
+      assert.equal(durable.operations.at(-1).phase, 'downloading');
+    }, requestFactory: transport(body, 200, () => {
       called = true;
       const durable = JSON.parse(readFileSync(join(directory, 'hydra-update-state', 'desktop-update-operations.json'), 'utf8'));
       assert.equal(durable.operations.at(-1).phase, 'downloading');

@@ -14,6 +14,8 @@ export interface DesktopUpdateDownloadOptions {
   operationId: string;
   signal?: AbortSignal;
   requestFactory?: typeof request;
+  /** Called only after the downloading phase is durably saved. */
+  onDownloadStart?: () => void;
 }
 
 /**
@@ -30,6 +32,7 @@ export async function downloadDesktopUpdateOperation(options: DesktopUpdateDownl
   }
   await options.journal.advance(current.id, 'available', 'downloading');
   try {
+    options.onDownloadStart?.();
     return await stageDesktopUpdateArtifact({
       userDataDirectory: options.userDataDirectory, origin: options.origin, update: options.update,
       operationId: current.id, signal: options.signal, requestFactory: options.requestFactory

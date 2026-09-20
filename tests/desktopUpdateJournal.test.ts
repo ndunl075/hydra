@@ -9,6 +9,7 @@ import type { VerifiedDesktopUpdate } from '../src/core/desktopSignedUpdate';
 import type { InstalledDesktopUpdateTrust } from '../src/core/desktopSignedUpdate';
 import type { DesktopUpdateCurrent } from '../src/core/desktopUpdateFeed';
 import { checkDesktopUpdateCandidate } from '../src/core/desktopUpdateCheck';
+import { confirmedDesktopUpdateDownload } from '../src/core/desktopUpdateDownloadConsent';
 
 const candidate = (sequence = 7): VerifiedDesktopUpdate => ({
   sequence, payloadSha256: 'a'.repeat(64), availableVersion: '0.23.0',
@@ -77,6 +78,51 @@ test('metadata expiring during fetch is rejected at commit time', async () => wi
       return signedEnvelope();
     } }), /validity window/);
   assert.deepEqual(await journal.load(), []);
+}));
+
+test('native cancellation keeps the signed candidate available without staging', async () => withJournal(async (journal, directory) => {
+  const operation = await journal.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  let downloads = 0;
+  const result = await confirmedDesktopUpdateDownload({ journal, operationId: operation.id, current: signedCurrent,
+    trust: signedTrust, clock: () => signedNow, origin: 'https://updates.example.com', userDataDirectory: directory,
+    confirm: async update => { assert.equal(update.availableVersion, '0.23.0'); return false; },
+    downloadOperation: async () => { downloads++; throw new Error('unexpected download'); } });
+  assert.deepEqual(result, { status: 'cancelled' });
+  assert.equal(downloads, 0);
+  assert.equal((await journal.load())[0]!.phase, 'available');
+}));
+
+test('candidate expiring during native confirmation cannot start a download', async () => withJournal(async (journal, directory) => {
+  const operation = await journal.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  let clock = signedNow;
+  let downloads = 0;
+  await assert.rejects(confirmedDesktopUpdateDownload({ journal, operationId: operation.id, current: signedCurrent,
+    trust: signedTrust, clock: () => clock, origin: 'https://updates.example.com', userDataDirectory: directory,
+    confirm: async () => { clock = Date.parse('2026-09-21T00:00:00.000Z'); return true; },
+    downloadOperation: async () => { downloads++; throw new Error('unexpected download'); } }), /validity window/);
+  assert.equal(downloads, 0);
+  assert.equal((await journal.load())[0]!.phase, 'available');
+}));
+
+test('confirmed download passes only the journal-bound signed candidate to staging', async () => withJournal(async (journal, directory) => {
+  const operation = await journal.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  let downloads = 0;
+  let started = 0;
+  const result = await confirmedDesktopUpdateDownload({ journal, operationId: operation.id, current: signedCurrent,
+    trust: signedTrust, clock: () => signedNow, origin: 'https://updates.example.com', userDataDirectory: directory,
+    confirm: async () => true,
+    onDownloadStart: () => { started++; },
+    downloadOperation: async options => {
+      downloads++;
+      options.onDownloadStart?.();
+      assert.equal(options.operationId, operation.id);
+      assert.equal(options.update.payloadSha256, operation.payloadSha256);
+      assert.equal(options.origin, 'https://updates.example.com');
+      return { operationId: operation.id, artifactPath: join(directory, 'fixture'), sha256: options.update.artifact.sha256, bytes: options.update.artifactBytes };
+    } });
+  assert.equal(result.status, 'staged');
+  assert.equal(downloads, 1);
+  assert.equal(started, 1);
 }));
 
 test('persists the exact signed candidate and reauthenticates after restart', async () => withJournal(async (journal, directory) => {

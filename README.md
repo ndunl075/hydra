@@ -4,7 +4,7 @@
 
 # Hydra
 
-Hydra is a desktop coding workspace built for working with multiple AI coding agents at once. It combines a familiar code editor with an agent manager, so you can give different tasks to agents like Claude Code or Codex, keep their work separated, watch what they are doing, review their changes, and manage everything from one place instead of juggling terminals, chats, and duplicate project folders.
+Hydra is an IDE built to orchestrate multiple AI coding agents in parallel, giving each agent its own isolated task while you monitor, review, and control everything from one workspace.
 
 The 0.18.0 candidate adds a shared reservation limit for managed sessions, provider terminals and setup writers across participating windows in one local profile. Defaults remain two; uncertain writers retain their slots until explicit recovery. See [profile capacity](docs/Profile_Capacity.md) for the boundary and acceptance gates.
 

@@ -8,6 +8,7 @@ Hydra is its own Windows IDE, as clarified by Nico on 17 September 2026. Its wor
 - **Create a desktop shortcut** is unchecked on a fresh install. Reinstall remembers task selection; explicit opt-out removes Hydra's prior shortcut. The visible wizard offers launch afterward.
 - Disposable Windows CI passed default-off, opt-in, remembered choice, explicit opt-out, uninstall cleanup, and preservation of Hydra preferences/extensions, VS Code/Cursor preferences and unrelated projects at final combined revision `1410251`. These are same-version reinstall tests.
 - Distinct-version upgrades, the visible wizard and launch-after-install require separate acceptance. The artifact is unsigned; code signing, release distribution and automatic updates are not configured. Installer tests must not run against a developer's personal installation.
+- The [Windows update-channel decision](Desktop_Update_Channel_ADR.md) defines the future signed stable channel, native verification, consent, and recovery boundaries. It does not activate an updater or replace the pending release gates.
 
 ## First launch
 

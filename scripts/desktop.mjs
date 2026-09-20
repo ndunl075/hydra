@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { stageWatermarks, verifyWatermarks } from './desktop-watermark.mjs';
 const execute = promisify(execFile);
@@ -61,6 +62,15 @@ export function installerVersionSource(text, version) {
     text = text.replace(before, after);
   }
   return text;
+}
+export function windowsExecutableVersion(version) {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match || match.slice(1, 4).some(part => Number(part) > 65535)) throw new Error('Hydra version is invalid for a Windows executable.');
+  return {
+    'file-version': match.slice(1, 4).join('.'),
+    'product-version': match.slice(1, 4).join('.'),
+    'version-string': { ProductName: 'Hydra', ProductVersion: version, FileVersion: version, CompanyName: 'Nico Dunlap', OriginalFilename: 'Hydra.exe' }
+  };
 }
 async function git(args) { return (await execute('git', args, { cwd: source, windowsHide: true, maxBuffer: 16 * 1024 * 1024 })).stdout.trim(); }
 async function contained(directory) {
@@ -160,6 +170,13 @@ export async function verify() {
   const bundled = path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager');
   const manifest = await readJson(path.join(bundled, 'package.json'));
   if (manifest.publisher !== 'nico-dunlap' || manifest.name !== 'hydra-agent-manager') throw new Error('Built-in Hydra extension is missing.');
+  const release = await readJson(path.join(root, 'package.json'));
+  if (product.hydraVersion !== release.version || manifest.version !== release.version) throw new Error('Desktop product and bundled module versions differ from the Hydra release.');
+  if (process.platform === 'win32') {
+    const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'desktop-pe-version.ps1'), '-ExecutablePath', path.join(output, 'Hydra.exe')], { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 });
+    const pe = JSON.parse(stdout);
+    if (pe.ProductName !== 'Hydra' || pe.ProductVersion !== release.version || pe.CompanyName !== 'Nico Dunlap') throw new Error('Hydra executable PE release identity does not match the product and bundled module.');
+  }
   await fs.access(path.join(bundled, 'dist', 'extension.cjs'));
   await fs.access(path.join(bundled, 'themes', 'hydra-light.json'));
   await verifyWatermarks(path.join(output, 'resources', 'app', 'out', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
@@ -175,6 +192,11 @@ export async function build() {
   await npm(['ci'], source);
   await npm(['run', 'gulp', '--', 'vscode-win32-x64'], source);
   await contained(output);
+  // Stamp after upstream packaging and before signing; Code - OSS otherwise
+  // retains its 1.113.0 PE ProductVersion even when product.json is Hydra.
+  const rcedit = promisify(createRequire(path.join(source, 'package.json'))('rcedit'));
+  const release = await readJson(path.join(root, 'package.json'));
+  await rcedit(path.join(output, 'Hydra.exe'), windowsExecutableVersion(release.version));
   await stageHydra(path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager'));
   await verify();
 }

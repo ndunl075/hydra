@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
-import { brandedProduct, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
 
 test('nested editor compiles its own API declarations without loading the parent extension API', async () => {
   const parent = path.join(root, '.test-build');
@@ -80,6 +80,15 @@ test('installer versions follow Hydra while preserving the editor API version an
   assert.throws(() => installerVersionSource(original, '70000.0.0'), /invalid/);
   assert.throws(() => installerVersionSource(original, '1.2.3";process.exit()'), /invalid/);
   assert.throws(() => installerVersionSource(original.replace('Version: pkg.version,', 'Version: changed,'), '1.2.3'), /contract changed/);
+});
+test('Windows executable metadata uses the Hydra release instead of the editor API version', async () => {
+  const release = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
+  const metadata = windowsExecutableVersion(release);
+  assert.equal(metadata['version-string'].ProductName, 'Hydra');
+  assert.equal(metadata['version-string'].ProductVersion, release);
+  assert.equal(metadata['file-version'], release.split('-')[0]);
+  assert.equal(metadata['product-version'], release.split('-')[0]);
+  assert.throws(() => windowsExecutableVersion('65536.0.0'), /invalid/);
 });
 test('Hydra startup honors explicit appearance instead of forcing system detection for new users; upstream drift refuses', () => {
   for (const name of ['isNewUser', 'isNewUser3']) {

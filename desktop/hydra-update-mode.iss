@@ -111,10 +111,17 @@ begin
       Result := 'The existing Hydra installation record is incomplete.';
       Exit;
     end;
-    if (DisplayName <> '{#NameLong}') or (RegisteredDir = '') or
-      (CompareText(RemoveBackslashUnlessRoot(ExpandFileName(RegisteredDir)), DestDir) <> 0) or
-      not FileExists(AddBackslash(RegisteredDir) + '{#ExeBasename}.exe') then begin
-      Result := 'The existing Hydra installation identity or destination differs.';
+    if DisplayName <> '{#NameVersion}' then begin
+      Result := 'The existing Hydra installation display identity differs.';
+      Exit;
+    end;
+    if (RegisteredDir = '') or
+      (CompareText(RemoveBackslashUnlessRoot(ExpandFileName(RegisteredDir)), DestDir) <> 0) then begin
+      Result := 'The existing Hydra installation destination differs.';
+      Exit;
+    end;
+    if not FileExists(AddBackslash(RegisteredDir) + '{#ExeBasename}.exe') then begin
+      Result := 'The registered Hydra executable is missing.';
       Exit;
     end;
     if not HydraStableVersion(DisplayVersion) or not StrToVersion(DisplayVersion, Existing) then begin

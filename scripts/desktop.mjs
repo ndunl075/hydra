@@ -198,6 +198,7 @@ export async function prepare() {
   const original = JSON.parse(await git(['show', `${pin.commit}:product.json`]));
   await fs.writeFile(path.join(source, 'product.json'), JSON.stringify(brandedProduct(original, manifest.version), null, 2) + '\n');
   const installer = await git(['show', `${pin.commit}:build/win32/code.iss`]);
+  await fs.copyFile(path.join(root, 'desktop', 'hydra-update-mode.iss'), path.join(source, 'build', 'win32', 'hydra-update-mode.iss'));
   await fs.writeFile(path.join(source, 'build', 'win32', 'code.iss'), brandedInstaller(installer));
   const electron = await git(['show', `${pin.commit}:build/lib/electron.ts`]);
   if (!electron.includes("companyName: 'Microsoft Corporation'")) throw new Error('Pinned executable publisher metadata changed.');

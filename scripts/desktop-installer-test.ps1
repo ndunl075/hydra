@@ -45,30 +45,45 @@ function Invoke-Installer([string]$label, [string[]]$taskArgs) {
   if ($registry.DisplayVersion -ne $product.hydraVersion) { throw 'Installer version does not match the bundled Hydra version.' }
   Assert-DataPreserved
 }
+function Assert-EqualVersionRefused([string]$label) {
+  $executable = Join-Path $installRoot 'Hydra.exe'
+  $beforeHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
+  $beforeVersion = (Get-ItemProperty -LiteralPath $uninstallKey).DisplayVersion
+  $beforeShortcut = Test-Path -LiteralPath $desktopShortcut
+  $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/NORESTARTAPPLICATIONS', ('/DIR="' + $installRoot + '"'), ('/LOG="' + (Join-Path $testRoot ($label + '.log')) + '"'))
+  $process = Start-Process -FilePath $installer -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+  if ($process.ExitCode -eq 0) { throw 'Equal-version reinstall was accepted.' }
+  if ((Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash -ne $beforeHash -or (Get-ItemProperty -LiteralPath $uninstallKey).DisplayVersion -ne $beforeVersion -or (Test-Path -LiteralPath $desktopShortcut) -ne $beforeShortcut) { throw 'Equal-version refusal changed the installation.' }
+  Assert-DataPreserved
+}
+function Remove-TestInstallation([string]$label) {
+  $uninstaller = Join-Path $installRoot 'unins000.exe'
+  if (Test-Path -LiteralPath $uninstaller) {
+    $process = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $testRoot ($label + '-uninstall.log')) + '"')) -WindowStyle Hidden -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "Uninstall failed: $($process.ExitCode)" }
+  }
+  if ((Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe')) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $uninstallKey)) { throw 'Uninstall left the executable, shortcut, or registration behind.' }
+  Assert-DataPreserved
+}
 try {
-  # Keep the default shortcut task state; suppress optional launch/associations/PATH.
+  # Fresh installs exercise the checkbox; equal-version reinstall is now refused.
   Invoke-Installer 'default-unchecked' @('/MERGETASKS="!runcode,!associatewithfiles,!addtopath"')
   if (Test-Path -LiteralPath $desktopShortcut) { throw 'Default installation created a desktop shortcut.' }
+  Assert-EqualVersionRefused 'default-equal-refusal'
+  Remove-TestInstallation 'default'
   Invoke-Installer 'enable-shortcut' @('/TASKS="desktopicon"')
   if (-not (Test-Path -LiteralPath $desktopShortcut)) { throw 'Selected desktop shortcut is missing.' }
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($desktopShortcut)
   if ($shortcut.TargetPath -ne (Join-Path $installRoot 'Hydra.exe')) { throw 'Desktop shortcut targets another application.' }
-  Invoke-Installer 'preserve-shortcut' @('/MERGETASKS="!runcode,!associatewithfiles,!addtopath"')
-  if (-not (Test-Path -LiteralPath $desktopShortcut)) { throw 'Reinstall lost the previous shortcut preference.' }
-  Invoke-Installer 'disable-shortcut' @('/TASKS=""')
-  if (Test-Path -LiteralPath $desktopShortcut) { throw 'Explicit shortcut opt-out was ignored on reinstall.' }
-  Invoke-Installer 'enable-before-uninstall' @('/TASKS="desktopicon"')
+  Assert-EqualVersionRefused 'selected-equal-refusal'
+  Remove-TestInstallation 'selected'
 } finally {
-  $uninstaller = Join-Path $installRoot 'unins000.exe'
-  if (Test-Path -LiteralPath $uninstaller) {
-    $process = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $testRoot 'uninstall.log') + '"')) -WindowStyle Hidden -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "Uninstall failed: $($process.ExitCode)" }
-  }
+  Remove-TestInstallation 'cleanup'
   $logRoot = Join-Path $env:GITHUB_WORKSPACE '.desktop\installer-test-logs'
   New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
   Get-ChildItem -LiteralPath $testRoot -Filter '*.log' | Copy-Item -Destination $logRoot
 }
 if ((Test-Path -LiteralPath (Join-Path $installRoot 'Hydra.exe')) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $uninstallKey)) { throw 'Uninstall left the executable, desktop shortcut, or registration behind.' }
 Assert-DataPreserved
-Write-Output 'PASS: default unchecked, enabled, remembered and disabled desktop shortcut; reinstall and uninstall preserve Hydra/VS Code/Cursor preferences, extensions and projects.'
+Write-Output 'PASS: fresh default-unchecked and selected shortcut installs, equal-version refusal, and uninstall preserve Hydra/VS Code/Cursor data and projects.'

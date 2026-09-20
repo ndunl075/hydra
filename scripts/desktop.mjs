@@ -55,6 +55,10 @@ export function isolatedEditorTypes(upstream, declaration, typeRoots) {
     paths: { ...upstream.compilerOptions?.paths, vscode: [declaration] } } };
 }
 export function brandedInstaller(text) {
+  const replaceOnce = (before, after) => {
+    if (text.split(before).length !== 2) throw new Error(`Pinned installer changed: ${before}`);
+    text = text.replace(before, after);
+  };
   const replacements = new Map([
     ['AppPublisher=Microsoft Corporation', 'AppPublisher=Nico Dunlap'],
     ['AppPublisherURL=https://code.visualstudio.com/', 'AppPublisherURL=https://github.com/ndunl075/hydra'],
@@ -63,14 +67,43 @@ export function brandedInstaller(text) {
     ['OutputBaseFilename=VSCodeSetup', 'OutputBaseFilename=HydraSetup']
   ]);
   for (const [before, after] of replacements) {
-    if (text.split(before).length !== 2) throw new Error(`Pinned installer changed: ${before}`);
-    text = text.replace(before, after);
+    replaceOnce(before, after);
   }
+  replaceOnce('CloseApplications=force', 'CloseApplications=no\nRestartApplications=no');
+  replaceOnce('[Code]\nfunction IsBackgroundUpdate(): Boolean;', '[Code]\n#include "hydra-update-mode.iss"\nfunction IsBackgroundUpdate(): Boolean;');
+  replaceOnce('  Result := True;\n\n  #if "user" == InstallTarget',
+    `  Result := True;
+  if (HydraUpdateSwitchState() < 0) or HydraHasSwitch('/UPDATE') or not HydraUpdateArgumentsValid() then begin
+    Result := False;
+    Exit;
+  end;
+
+  #if "user" == InstallTarget`);
+  replaceOnce('function PrepareToInstall(var NeedsRestart: Boolean): String;\nbegin\n  if IsNotBackgroundUpdate() then',
+    `function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := HydraCheckInstall();
+  if Result <> '' then Exit;
+  if IsHydraUpdate() then begin
+    if CheckForMutexes('{#AppMutex},{#TunnelMutex},{#TunnelServiceMutex}') then
+      Result := 'Stop all Hydra application and tunnel processes before updating.';
+    Exit;
+  end;
+  if IsNotBackgroundUpdate() then`);
+  replaceOnce('Result := not (IsBackgroundUpdate() and FileExists(Path));',
+    'Result := not ((IsBackgroundUpdate() or IsHydraUpdate()) and FileExists(Path));');
+  replaceOnce('function ShouldRunAfterUpdate(): Boolean;\nbegin\n  if IsBackgroundUpdate() then',
+    'function ShouldRunAfterUpdate(): Boolean;\nbegin\n  if IsHydraUpdate() then\n    Result := False\n  else if IsBackgroundUpdate() then');
+  replaceOnce('function WizardNotSilent(): Boolean;\nbegin\n  Result := not WizardSilent();',
+    'function WizardNotSilent(): Boolean;\nbegin\n  Result := not WizardSilent() and not IsHydraUpdate();');
+  replaceOnce('    end else begin\n      if IsVersionedUpdate() then begin',
+    '    end else if not IsHydraUpdate() then begin\n      if IsVersionedUpdate() then begin');
+  replaceOnce('    if ShouldRestartTunnelService then', '    if ShouldRestartTunnelService and not IsHydraUpdate() then');
   if (!/Name: "desktopicon";[^\r\n]*Flags: unchecked/.test(text) || !/Tasks: desktopicon/.test(text)) throw new Error('Installer desktop-shortcut checkbox contract changed.');
   const deleteSection = '[InstallDelete]';
   if (text.split(deleteSection).length !== 2) throw new Error('Pinned installer delete section changed.');
-  // Explicitly opting out on reinstall removes the previously installed shortcut.
-  // Background updates retain it through the upstream shortcut-update predicate.
+  // A future explicit repair may opt out of the shortcut; update mode leaves
+  // existing task choices and shortcuts untouched.
   text = text.replace(deleteSection, `${deleteSection}\nType: files; Name: "{autodesktop}\\{#NameLong}.lnk"; Tasks: not desktopicon; Check: ShouldUpdateShortcut(ExpandConstant('{autodesktop}\\{#NameLong}.lnk'))`);
   text = text.replace('If you would like to install VS Code for all users in this system, download the System Installer instead from https://code.visualstudio.com.', 'Hydra currently provides a per-user installer. Restart setup without administrator privileges to install it for your account.');
   return text;
@@ -165,6 +198,7 @@ export async function prepare() {
   const original = JSON.parse(await git(['show', `${pin.commit}:product.json`]));
   await fs.writeFile(path.join(source, 'product.json'), JSON.stringify(brandedProduct(original, manifest.version), null, 2) + '\n');
   const installer = await git(['show', `${pin.commit}:build/win32/code.iss`]);
+  await fs.copyFile(path.join(root, 'desktop', 'hydra-update-mode.iss'), path.join(source, 'build', 'win32', 'hydra-update-mode.iss'));
   await fs.writeFile(path.join(source, 'build', 'win32', 'code.iss'), brandedInstaller(installer));
   const electron = await git(['show', `${pin.commit}:build/lib/electron.ts`]);
   if (!electron.includes("companyName: 'Microsoft Corporation'")) throw new Error('Pinned executable publisher metadata changed.');
@@ -243,6 +277,7 @@ export async function installer() {
   if (product.hydraVersion !== manifest.version || bundled.version !== manifest.version) throw new Error('Build the current Hydra runtime before packaging its installer.');
   const sourcePath = 'build/gulpfile.vscode.win32.ts';
   await fs.writeFile(path.join(source, sourcePath), installerVersionSource(await git(['show', `${pin.commit}:${sourcePath}`]), manifest.version));
+  await fs.copyFile(path.join(root, 'desktop', 'hydra-update-mode.iss'), path.join(source, 'build', 'win32', 'hydra-update-mode.iss'));
   await fs.writeFile(path.join(source, 'build', 'win32', 'code.iss'), brandedInstaller(await git(['show', `${pin.commit}:build/win32/code.iss`])));
   // The standalone app task does not stage installer-specific updater tools.
   // Use the pinned task, including Hydra's icon, before compiling [Files].

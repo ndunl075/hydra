@@ -81,13 +81,32 @@ test('installed update trust stays disabled without owner values and rejects inc
   ]) assert.throws(() => installedUpdateTrust(changed), /invalid/);
 });
 test('installer branding preserves optional unchecked desktop shortcut and rejects upstream drift', () => {
-  const original = '[InstallDelete]\nAppPublisher=Microsoft Corporation\nAppPublisherURL=https://code.visualstudio.com/\nAppSupportURL=https://code.visualstudio.com/\nAppUpdatesURL=https://code.visualstudio.com/\nOutputBaseFilename=VSCodeSetup\nName: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked\nName: "{autodesktop}\\Hydra"; Tasks: desktopicon\n';
+  const original = [
+    '[Setup]', 'CloseApplications=force', '[InstallDelete]',
+    'AppPublisher=Microsoft Corporation', 'AppPublisherURL=https://code.visualstudio.com/',
+    'AppSupportURL=https://code.visualstudio.com/', 'AppUpdatesURL=https://code.visualstudio.com/',
+    'OutputBaseFilename=VSCodeSetup',
+    'Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked',
+    'Name: "{autodesktop}\\Hydra"; Tasks: desktopicon',
+    '[Code]', 'function IsBackgroundUpdate(): Boolean;',
+    'function InitializeSetup(): Boolean;', 'begin', '  Result := True;', '', '  #if "user" == InstallTarget',
+    'function WizardNotSilent(): Boolean;', 'begin', '  Result := not WizardSilent();',
+    'function PrepareToInstall(var NeedsRestart: Boolean): String;', 'begin', '  if IsNotBackgroundUpdate() then',
+    'Result := not (IsBackgroundUpdate() and FileExists(Path));',
+    'function ShouldRunAfterUpdate(): Boolean;', 'begin', '  if IsBackgroundUpdate() then',
+    '    end else begin', '      if IsVersionedUpdate() then begin',
+    '    if ShouldRestartTunnelService then'
+  ].join('\n');
   const result = brandedInstaller(original);
   assert.match(result, /AppPublisher=Nico Dunlap/);
   assert.match(result, /OutputBaseFilename=HydraSetup/);
   assert.match(result, /Name: "desktopicon";[^\n]*Flags: unchecked/);
   assert.match(result, /Tasks: desktopicon/);
   assert.match(result, /Name: "\{autodesktop\}\\\{#NameLong\}\.lnk"; Tasks: not desktopicon; Check: ShouldUpdateShortcut/);
+  assert.match(result, /CloseApplications=no\nRestartApplications=no/);
+  assert.match(result, /#include "hydra-update-mode\.iss"/);
+  assert.match(result, /Result := HydraCheckInstall\(\);/);
+  assert.match(result, /if IsHydraUpdate\(\) then\n    Result := False/);
   assert.throws(() => brandedInstaller(original.replace('Flags: unchecked', 'Flags: checkedonce')), /checkbox contract/);
   assert.throws(() => brandedInstaller(original.replace('VSCodeSetup', 'ChangedSetup')), /Pinned installer changed/);
 });

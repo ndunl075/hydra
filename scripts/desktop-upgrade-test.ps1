@@ -76,6 +76,17 @@ function Invoke-UpgradeInstaller([string]$executable, [string]$label, [string[]]
   $process = Start-Process -FilePath $executable -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
   if ($process.ExitCode -ne 0) { throw "Upgrade installer $label failed: $($process.ExitCode)" }
 }
+function Assert-InstallerRefused([string]$executable, [string]$label, [string[]]$extra) {
+  $installedExe = Join-Path $installRoot 'Hydra.exe'
+  $beforeHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash
+  $beforeVersion = (Get-ItemProperty -LiteralPath $uninstallKey).DisplayVersion
+  $beforeShortcut = Test-Path -LiteralPath $desktopShortcut
+  $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/NORESTARTAPPLICATIONS', ('/DIR="' + $installRoot + '"'), ('/LOG="' + (Join-Path $testRoot ($label + '.log')) + '"')) + $extra
+  $process = Start-Process -FilePath $executable -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+  if ($process.ExitCode -eq 0) { throw "Unsafe installer $label was accepted." }
+  if ((Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash -ne $beforeHash -or (Get-ItemProperty -LiteralPath $uninstallKey).DisplayVersion -ne $beforeVersion -or (Test-Path -LiteralPath $desktopShortcut) -ne $beforeShortcut) { throw "Installer refusal $label changed installation state." }
+  Assert-DataPreserved
+}
 function Remove-TestInstallation([string]$label) {
   $uninstaller = Join-Path $installRoot 'unins000.exe'
   if (Test-Path -LiteralPath $uninstaller) {
@@ -92,9 +103,18 @@ try {
     Invoke-UpgradeInstaller $prior ($label + '-prior') $priorTasks
     Assert-Identity $baseline.version $false
     if ((Test-Path -LiteralPath $desktopShortcut) -ne $enabled) { throw 'Prior installer shortcut choice was not established.' }
-    Invoke-UpgradeInstaller $current ($label + '-upgrade') @('/MERGETASKS="!runcode,!associatewithfiles,!addtopath"')
+    Assert-InstallerRefused $current ($label + '-task-override') @('/HYDRAUPDATE=1', '/TASKS="desktopicon"')
+    Assert-InstallerRefused $current ($label + '-force-close') @('/HYDRAUPDATE=1', '/CLOSEAPPLICATIONS')
+    Assert-InstallerRefused $current ($label + '-upstream-update') @('/UPDATE=unsafe')
+    Invoke-UpgradeInstaller $current ($label + '-upgrade') @('/HYDRAUPDATE=1')
     Assert-Identity $manifest.version $true
     if ((Test-Path -LiteralPath $desktopShortcut) -ne $enabled) { throw 'Distinct-version upgrade changed remembered shortcut preference.' }
+    Assert-InstallerRefused $current ($label + '-equal') @('/HYDRAUPDATE=1')
+    # Historical installers cannot acquire a guard retroactively. A synthetic
+    # newer registration proves this installer's downgrade refusal only.
+    Set-ItemProperty -LiteralPath $uninstallKey -Name DisplayVersion -Value '99.0.0'
+    try { Assert-InstallerRefused $current ($label + '-synthetic-downgrade') @() }
+    finally { Set-ItemProperty -LiteralPath $uninstallKey -Name DisplayVersion -Value $manifest.version }
     if ($enabled) { $shell = New-Object -ComObject WScript.Shell; if ($shell.CreateShortcut($desktopShortcut).TargetPath -ne (Join-Path $installRoot 'Hydra.exe')) { throw 'Upgraded shortcut targets another executable.' } }
     Remove-TestInstallation $label
   }

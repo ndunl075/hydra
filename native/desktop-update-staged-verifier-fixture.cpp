@@ -25,7 +25,7 @@ template <size_t N> bool parse_hex(const wchar_t* text, std::array<unsigned char
 
 // Test executable only. Never package this caller-provided path/trust interface.
 int wmain(int count, wchar_t** arguments) {
-  if (count != 8 || std::wcscmp(arguments[1], L"--fixture") != 0) return 64;
+  if ((count != 8 && count != 9) || std::wcscmp(arguments[1], L"--fixture") != 0) return 64;
   std::array<unsigned char, 32> digest{};
   hydra_update::ExpectedSigner signer{};
   if (!parse_hex(arguments[4], digest) || !parse_hex(arguments[7], signer.thumbprint)) return 64;
@@ -34,8 +34,11 @@ int wmain(int count, wchar_t** arguments) {
   const unsigned long long bytes = std::wcstoull(arguments[5], &end, 10);
   if (!end || *end) return 64;
   hydra_update::StagedFileLease lease;
-  const auto result = hydra_update::verify_staged_installer(arguments[2], arguments[3],
-    digest, bytes, signer, lease);
+  const auto result = count == 9
+    ? hydra_update::verify_staged_hydra_installer(arguments[2], arguments[3],
+        digest, bytes, signer, arguments[8], lease)
+    : hydra_update::verify_staged_installer(arguments[2], arguments[3],
+        digest, bytes, signer, lease);
   std::wcout << (result.accepted ? L"accepted" : L"refused") << L";status="
              << static_cast<unsigned long>(result.trust_status) << L";reason=" << result.reason << L'\n';
   if (result.accepted && (lease.file == INVALID_HANDLE_VALUE || lease.directories.empty())) return 3;

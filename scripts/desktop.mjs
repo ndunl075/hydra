@@ -58,6 +58,16 @@ export function brandedElectronMain(text) {
     'await this.initServices(environmentMainService, userDataProfilesMainService, configurationService, stateMainService, productService);\n\t\t\t\ttry { initializeHydraUpdateTrust(productService); } catch { console.error("Hydra updates disabled: invalid installed trust."); }');
   return text;
 }
+export const hydraMainUpdateModules = Object.freeze([
+  'atomicFile.ts', 'desktopUpdateFeed.ts', 'desktopSignedUpdate.ts',
+  'desktopUpdateJournal.ts', 'desktopUpdateStaging.ts', 'desktopUpdateOperation.ts'
+]);
+export async function stageHydraMainUpdatePrimitives(destination) {
+  await fs.mkdir(destination, { recursive: true });
+  for (const name of hydraMainUpdateModules) {
+    await fs.copyFile(path.join(root, 'src', 'core', name), path.join(destination, name));
+  }
+}
 export function isolatedEditorTypes(upstream, declaration, typeRoots) {
   // A nested checkout otherwise finds Hydra's older @types/vscode through
   // ancestor node_modules, even with typeRoots set. Resolve imports to the
@@ -199,6 +209,7 @@ export async function prepare() {
     const electronMainPath = 'src/vs/code/electron-main/main.ts';
     await fs.copyFile(path.join(root, 'desktop', 'main', 'hydraUpdateTrust.ts'), path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdateTrust.ts'));
     await fs.writeFile(path.join(source, electronMainPath), brandedElectronMain(await git(['show', `${pin.commit}:${electronMainPath}`])));
+    await stageHydraMainUpdatePrimitives(path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdate'));
   const themeStartupPath = 'src/vs/workbench/services/themes/browser/workbenchThemeService.ts';
   await fs.writeFile(path.join(source, themeStartupPath), brandedThemeStartup(await git(['show', `${pin.commit}:${themeStartupPath}`])));
   const nativeThemePath = 'src/vs/platform/theme/electron-main/themeMainServiceImpl.ts';

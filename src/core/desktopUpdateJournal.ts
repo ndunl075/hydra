@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
-import { replaceAtomic } from './atomicFile';
-import type { VerifiedDesktopUpdate } from './desktopSignedUpdate';
+import { replaceAtomic } from './atomicFile.js';
+import type { VerifiedDesktopUpdate } from './desktopSignedUpdate.js';
 
 export type DesktopUpdatePhase = 'available' | 'downloading' | 'verified' | 'awaitingRestart' | 'installing' | 'installed' | 'healthy' | 'refused' | 'failed';
 export interface DesktopUpdateOperation {

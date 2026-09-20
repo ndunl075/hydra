@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { parseDesktopUpdateFeed, type DesktopAvailableUpdate, type DesktopUpdateCurrent, type DesktopUpdateManifest } from './desktopUpdateFeed';
+import { parseDesktopUpdateFeed, type DesktopAvailableUpdate, type DesktopUpdateCurrent, type DesktopUpdateManifest } from './desktopUpdateFeed.js';
 
 export interface InstalledDesktopUpdateTrust {
   keyId: string;

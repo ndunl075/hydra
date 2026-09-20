@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { isIP } from 'node:net';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
-import type { VerifiedDesktopUpdate } from './desktopSignedUpdate';
+import type { VerifiedDesktopUpdate } from './desktopSignedUpdate.js';
 
 const maxArtifactBytes = 1024 * 1024 * 1024;
 const downloadTimeoutMs = 10 * 60 * 1000;

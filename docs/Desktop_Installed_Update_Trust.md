@@ -1,0 +1,7 @@
+# Installed desktop update trust
+
+`desktop/product.json` contains the channel's installed trust record. The current Hydra build embeds `schemaVersion: 1`, product `Hydra`, stable Windows x64 user-install target, and `status: "disabled"`. It contains no distribution origin, metadata public key, or approved Authenticode signer. No update service is connected and this record cannot trigger a download or install.
+
+When the release owner provides the channel inputs, an activation PR must change the record to `status: "enabled"` with an exact canonical HTTPS origin, an Ed25519 metadata `keyId` and PEM public key, and one to three exact Authenticode signer subjects and uppercase SHA-1 thumbprints. The parser rejects missing fields, HTTP or local-IP origins, wrong target/channel/product, invalid keys, duplicate signers, and extra fields. `desktop:build` validates the source record before packaging; `desktop:verify` checks that the installed product record is valid and identical to the reviewed source configuration. Settings, extensions, and feed data cannot supply these values.
+
+This is a build-time trust boundary, not update-channel activation. Native main-process fetching, durable sequence tracking, Authenticode verification, private staging, consent, recovery, and signed upgrade/refusal acceptance remain separate reviewed slices. A future runtime service must consume the installed record through its own strict validation and refuse `disabled` or malformed trust before any network or install operation.

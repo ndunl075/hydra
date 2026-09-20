@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { generateKeyPairSync } from 'node:crypto';
 import ts from 'typescript';
-import { brandedProduct, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
 
 test('nested editor compiles its own API declarations without loading the parent extension API', async () => {
   const parent = path.join(root, '.test-build');
@@ -54,11 +55,30 @@ test('standalone identity isolates Hydra from VS Code/Code OSS and retains upstr
   assert.equal(product.enableTelemetry, false);
   assert.equal(product.extensionsGallery, undefined);
   assert.equal(product.updateUrl, undefined);
+  assert.equal(installedUpdateTrust(product.hydraUpdateTrust).status, 'disabled');
   assert.deepEqual(product.builtInExtensions, []);
   const ids = [product.win32x64AppId, product.win32x64UserAppId, product.win32arm64AppId, product.win32arm64UserAppId];
   assert.equal(new Set(ids).size, 4);
   for (const id of ids) assert.match(id, /^\{\{[0-9A-F-]{36}\}$/);
   assert.equal(original.nameShort, 'Code - OSS');
+});
+test('installed update trust stays disabled without owner values and rejects incomplete activation', () => {
+  const disabled = { schemaVersion: 1, status: 'disabled', product: 'Hydra', channel: 'stable', target: { platform: 'win32', architecture: 'x64', installTarget: 'user' } };
+  assert.equal(installedUpdateTrust(disabled).status, 'disabled');
+  assert.throws(() => installedUpdateTrust({ ...disabled, origin: 'https://updates.example.com' }), /invalid/);
+  assert.throws(() => installedUpdateTrust({ ...disabled, status: 'enabled' }), /invalid/);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const enabled = { ...disabled, status: 'enabled', origin: 'https://updates.example.com', keyId: 'stable-2026', publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }), authenticodeSigners: [{ subject: 'CN=Hydra Release', thumbprint: 'A'.repeat(40) }] };
+  assert.equal(installedUpdateTrust(enabled).status, 'enabled');
+  for (const changed of [
+    { ...enabled, origin: 'http://updates.example.com' },
+    { ...enabled, origin: 'https://127.0.0.1' },
+    { ...enabled, keyId: 'bad key' },
+    { ...enabled, publicKeyPem: 'not a key' },
+    { ...enabled, publicKeyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }) },
+    { ...enabled, authenticodeSigners: [enabled.authenticodeSigners[0], enabled.authenticodeSigners[0]] },
+    { ...enabled, target: { ...enabled.target, installTarget: 'system' } }
+  ]) assert.throws(() => installedUpdateTrust(changed), /invalid/);
 });
 test('installer branding preserves optional unchecked desktop shortcut and rejects upstream drift', () => {
   const original = '[InstallDelete]\nAppPublisher=Microsoft Corporation\nAppPublisherURL=https://code.visualstudio.com/\nAppSupportURL=https://code.visualstudio.com/\nAppUpdatesURL=https://code.visualstudio.com/\nOutputBaseFilename=VSCodeSetup\nName: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked\nName: "{autodesktop}\\Hydra"; Tasks: desktopicon\n';

@@ -23,5 +23,12 @@
   "urlProtocol": "hydra",
   "reportIssueUrl": "https://github.com/ndunl075/hydra/issues/new",
   "enableTelemetry": false,
+  "hydraUpdateTrust": {
+    "schemaVersion": 1,
+    "status": "disabled",
+    "product": "Hydra",
+    "channel": "stable",
+    "target": { "platform": "win32", "architecture": "x64", "installTarget": "user" }
+  },
   "builtInExtensions": []
 }

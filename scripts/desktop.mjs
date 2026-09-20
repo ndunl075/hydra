@@ -3,7 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createPublicKey } from 'node:crypto';
+import { isIP } from 'node:net';
 import { promisify } from 'node:util';
+import { isDeepStrictEqual } from 'node:util';
 import { stageWatermarks, verifyWatermarks } from './desktop-watermark.mjs';
 const execute = promisify(execFile);
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,8 +17,30 @@ const readJson = async file => JSON.parse(await fs.readFile(file, 'utf8'));
 const pin = await readJson(path.join(root, 'desktop', 'upstream.json'));
 const brand = await readJson(path.join(root, 'desktop', 'product.json'));
 
+export function installedUpdateTrust(value) {
+  const refuse = () => { throw new Error('Installed desktop update trust configuration is invalid.'); };
+  const exact = (object, keys) => object && typeof object === 'object' && !Array.isArray(object) && Object.getPrototypeOf(object) === Object.prototype && Object.keys(object).length === keys.length && keys.every(key => Object.hasOwn(object, key));
+  const base = ['schemaVersion', 'status', 'product', 'channel', 'target'];
+  if (!exact(value, value?.status === 'disabled' ? base : [...base, 'origin', 'keyId', 'publicKeyPem', 'authenticodeSigners'])) refuse();
+  if (value.schemaVersion !== 1 || value.product !== 'Hydra' || value.channel !== 'stable' || !exact(value.target, ['platform', 'architecture', 'installTarget']) || value.target.platform !== 'win32' || value.target.architecture !== 'x64' || value.target.installTarget !== 'user') refuse();
+  if (value.status === 'disabled') return value;
+  if (value.status !== 'enabled') refuse();
+  if (typeof value.origin !== 'string' || value.origin.length > 255) refuse();
+  let origin;
+  try { origin = new URL(value.origin); } catch { refuse(); }
+  if (origin.protocol !== 'https:' || origin.origin !== value.origin || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || isIP(origin.hostname) || !origin.hostname.includes('.') || origin.hostname.endsWith('.localhost')) refuse();
+  if (typeof value.keyId !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(value.keyId) || typeof value.publicKeyPem !== 'string' || value.publicKeyPem.length > 4096) refuse();
+  try {
+    const key = createPublicKey(value.publicKeyPem);
+    if (key.asymmetricKeyType !== 'ed25519' || key.export({ type: 'spki', format: 'pem' }) !== value.publicKeyPem) refuse();
+  } catch { refuse(); }
+  if (!Array.isArray(value.authenticodeSigners) || value.authenticodeSigners.length < 1 || value.authenticodeSigners.length > 3 || value.authenticodeSigners.some(signer => !exact(signer, ['subject', 'thumbprint']) || typeof signer.subject !== 'string' || signer.subject.length < 3 || signer.subject.length > 512 || signer.subject.trim() !== signer.subject || /[\x00-\x1f]/.test(signer.subject) || typeof signer.thumbprint !== 'string' || !/^[A-F0-9]{40}$/.test(signer.thumbprint)) || new Set(value.authenticodeSigners.map(signer => signer.thumbprint)).size !== value.authenticodeSigners.length) refuse();
+  return value;
+}
+
 export function brandedProduct(upstream, version) {
   // Keep upstream MIT notices and shape; replace the application's identity.
+  installedUpdateTrust(brand.hydraUpdateTrust);
   const result = { ...upstream, ...brand, hydraVersion: version };
   delete result.extensionsGallery;
   delete result.updateUrl;
@@ -167,6 +192,8 @@ export async function verify() {
   if (exe.subarray(0, 2).toString() !== 'MZ') throw new Error('Hydra Windows executable is missing or invalid.');
   const product = await readJson(path.join(output, 'resources', 'app', 'product.json'));
   if (product.nameShort !== 'Hydra' || product.dataFolderName !== '.hydra' || product.win32AppUserModelId !== 'Hydra.IDE' || product.extensionsGallery) throw new Error('Desktop identity/profile isolation failed.');
+  installedUpdateTrust(product.hydraUpdateTrust);
+  if (!isDeepStrictEqual(product.hydraUpdateTrust, brand.hydraUpdateTrust)) throw new Error('Installed desktop update trust differs from the reviewed release configuration.');
   const bundled = path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager');
   const manifest = await readJson(path.join(bundled, 'package.json'));
   if (manifest.publisher !== 'nico-dunlap' || manifest.name !== 'hydra-agent-manager') throw new Error('Built-in Hydra extension is missing.');

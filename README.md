@@ -4,7 +4,7 @@
 
 # Hydra
 
-A Windows-first standalone IDE for switching between ordinary editing and an agent manager. Hydra's own editor is built from pinned Code - OSS source with Hydra branding and separate user data; the agent workflow is a built-in module. The Windows installer and first-run onboarding are still in development. The product and acceptance gates are in [the project spec](docs/Agent_Manager_Project_Spec.md), [standalone build guide](docs/Standalone_Build.md), and [desktop delivery requirements](docs/Desktop_Delivery.md).
+Hydra is a desktop coding workspace built for working with multiple AI coding agents at once. It combines a familiar code editor with an agent manager, so you can give different tasks to agents like Claude Code or Codex, keep their work separated, watch what they are doing, review their changes, and manage everything from one place instead of juggling terminals, chats, and duplicate project folders.
 
 The 0.18.0 candidate adds a shared reservation limit for managed sessions, provider terminals and setup writers across participating windows in one local profile. Defaults remain two; uncertain writers retain their slots until explicit recovery. See [profile capacity](docs/Profile_Capacity.md) for the boundary and acceptance gates.
 

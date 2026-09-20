@@ -91,6 +91,9 @@ jobs:
       - name: Verify native operation path and replacement locks
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-locked-path-test.ps1
+      - name: Verify signed staged installer through held native lease
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-staged-verifier-test.ps1
       - run: npm.cmd run desktop:build
         env:
           # Upstream ripgrep uses GitHub's release API; avoid shared-runner anonymous limits.

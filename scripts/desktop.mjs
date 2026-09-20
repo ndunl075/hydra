@@ -156,6 +156,22 @@ export function installerVersionSource(text, version) {
   }
   return text;
 }
+export function installerInventorySource(text, inventoryScript, upstreamCommit) {
+  if (typeof upstreamCommit !== 'string' || !/^[a-f0-9]{40}$/.test(upstreamCommit))
+    throw new Error('Pinned upstream inventory commit is invalid.');
+  const anchor = "fs.writeFileSync(productJsonPath, JSON.stringify(productJson, undefined, '\\t'));";
+  if (text.split(anchor).length !== 2 || text.includes('HydraInstalledInventory.json'))
+    throw new Error('Pinned installer inventory hook changed.');
+  const hook = `${anchor}
+		if (arch === 'x64' && target === 'user') {
+			cp.execFileSync(process.execPath, [${JSON.stringify(inventoryScript)}, 'generate',
+				'--source', sourcePath, '--product', productJsonPath, '--inno', issPath,
+				'--inventory', path.join(outputPath, 'HydraInstalledInventory.json'),
+				'--version', String(productJson.hydraVersion),
+				'--source-commit', process.env.HYDRA_SOURCE_COMMIT || '', '--upstream-commit', ${JSON.stringify(upstreamCommit)}], { stdio: 'inherit' });
+		}`;
+  return text.replace(anchor, hook);
+}
 export function windowsExecutableVersion(version) {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.exec(version);
   if (!match || match.slice(1, 4).some(part => Number(part) > 65535)) throw new Error('Hydra version is invalid for a Windows executable.');
@@ -331,7 +347,9 @@ export async function installer() {
   const bundled = await readJson(path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager', 'package.json'));
   if (product.hydraVersion !== manifest.version || bundled.version !== manifest.version) throw new Error('Build the current Hydra runtime before packaging its installer.');
   const sourcePath = 'build/gulpfile.vscode.win32.ts';
-  await fs.writeFile(path.join(source, sourcePath), installerVersionSource(await git(['show', `${pin.commit}:${sourcePath}`]), manifest.version));
+  await fs.writeFile(path.join(source, sourcePath), installerInventorySource(
+    installerVersionSource(await git(['show', `${pin.commit}:${sourcePath}`]), manifest.version),
+    path.join(root, 'scripts', 'desktop-installed-inventory.mjs'), pin.commit));
   await fs.copyFile(path.join(root, 'desktop', 'hydra-update-mode.iss'), path.join(source, 'build', 'win32', 'hydra-update-mode.iss'));
   await fs.writeFile(path.join(source, 'build', 'win32', 'code.iss'), brandedInstaller(await git(['show', `${pin.commit}:build/win32/code.iss`])));
   // The standalone app task does not stage installer-specific updater tools.
@@ -341,8 +359,16 @@ export async function installer() {
     const tool=await fs.readFile(path.join(output,'tools',name));
     if(tool.length<1024||tool.subarray(0,2).toString()!=='MZ')throw new Error(`Required installer tool is missing or invalid: ${name}`);
   }
-  await npm(['run', 'gulp', '--', 'vscode-win32-x64-user-setup'], source);
+  const sourceCommit = (await execute('git', ['rev-parse', 'HEAD'], { cwd: root, windowsHide: true })).stdout.trim();
+  if (!/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error('Hydra source commit is invalid.');
+  await npm(['run', 'gulp', '--', 'vscode-win32-x64-user-setup'], source, { HYDRA_SOURCE_COMMIT: sourceCommit });
   const setup = path.join(source, '.build', 'win32-x64', 'user-setup', 'HydraSetup.exe');
+  const setupDirectory = path.dirname(setup);
+  await run(process.execPath, [path.join(root, 'scripts', 'desktop-installed-inventory.mjs'), 'verify-inputs',
+    '--source', output, '--product', path.join(setupDirectory, 'product.json'),
+    '--inno', path.join(source, 'build', 'win32', 'code.iss'),
+    '--inventory', path.join(setupDirectory, 'HydraInstalledInventory.json'),
+    '--version', manifest.version, '--source-commit', sourceCommit, '--upstream-commit', pin.commit], root);
   const bytes = await fs.readFile(setup);
   if (bytes.length < 1024 || bytes.subarray(0, 2).toString() !== 'MZ') throw new Error('Installer executable is missing or invalid.');
   console.log(`Generated unsigned Hydra ${manifest.version} user installer: ${setup}`);

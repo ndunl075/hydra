@@ -39,6 +39,7 @@
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node scripts/test.mjs",
+    "test:installed-inventory": "node --test tests/desktopInstalledInventory.test.mjs",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --out hydra-core-0.21.0.vsix",
     "vscode:prepublish": "npm run check && npm run build",
     "test:smoke": "node scripts/smoke.mjs"

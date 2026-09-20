@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { prepareSupersededDelegatedResultArchive, validateDelegationResultBoundaries } from '../src/core/delegationResultBoundary';
 import { delegationIntegrationGate } from '../src/core/delegationIntegrationGate';
@@ -10,7 +11,7 @@ import { LocalStore } from '../src/core/store';
 
 const oldCommit = 'a'.repeat(40), oldTree = 'b'.repeat(40), currentCommit = 'c'.repeat(40), currentTree = 'd'.repeat(40), base = 'e'.repeat(40);
 const evidence = (): DelegatedVerificationEvidence => ({ version: 1, attempts: [{ id: '1'.repeat(24), number: 1, checkedCommit: oldCommit, checkedTree: oldTree, startedAt: '2026-01-01T00:00:00.000Z', finishedAt: '2026-01-01T00:01:00.000Z', findings: [], checks: [{ id: 'unit', required: true, status: 'passed', command: { executable: 'node', args: ['--test'] }, startedAt: '2026-01-01T00:00:00.000Z', finishedAt: '2026-01-01T00:01:00.000Z', exitCode: 0, artifacts: [{ kind: 'log', path: 'evidence/unit.log', label: 'unit output' }] }] }] });
-const child = (): Task => ({ id: '111111111111', title: 'Child', prompt: 'Verify', repository: 'C:\\repo', worktree: 'C:\\repo\\child', branch: 'child', baseCommit: base, integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', delegation: { parentId: '222222222222', runId: '333333333333', childKey: 'child', dispatchKey: '4'.repeat(24), dependencies: [] }, reviewedCommit: { commit: currentCommit, tree: currentTree, baseCommit: base, reviewedAt: '2026-01-01T00:02:00.000Z' }, verificationEvidence: evidence() });
+const child = (): Task => ({ id: '111111111111', title: 'Child', prompt: 'Verify', repository: path.join(tmpdir(), 'hydra-fixture-repo'), worktree: path.join(tmpdir(), 'hydra-fixture-repo', 'child'), branch: 'child', baseCommit: base, integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', delegation: { parentId: '222222222222', runId: '333333333333', childKey: 'child', dispatchKey: '4'.repeat(24), dependencies: [] }, reviewedCommit: { commit: currentCommit, tree: currentTree, baseCommit: base, reviewedAt: '2026-01-01T00:02:00.000Z' }, verificationEvidence: evidence() });
 const apply = (task: Task, candidate: ReturnType<typeof prepareSupersededDelegatedResultArchive>) => Object.assign(task, candidate);
 
 test('pure preparation creates a validated detached boundary without changing the live task', () => {

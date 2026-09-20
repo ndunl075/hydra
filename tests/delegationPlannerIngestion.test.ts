@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const parentId = '111111111111', runId = '222222222222', turnId = '333333333333', base = 'a'.repeat(40);
-const task = (): Task => ({ id: parentId, title: 'Parent', prompt: 'Implement feature', repository: 'C:\\repo', worktree: 'C:\\repo\\child', branch: 'agent/parent-111111111111', baseCommit: base, integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+const task = (): Task => ({ id: parentId, title: 'Parent', prompt: 'Implement feature', repository: path.join(tmpdir(), 'hydra-fixture-repo'), worktree: path.join(tmpdir(), 'hydra-fixture-repo', 'child'), branch: 'agent/parent-111111111111', baseCommit: base, integrationTarget: 'main', provider: 'codex', interface: 'managed-cli', state: 'idle', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
 const policy = () => ({ parentId, runId, mode: 'auto' as const, level: 0 as const, maxChildren: 2, provider: 'codex' as const, models: [], approvedBases: [base], writeScope: ['src/'], otherOwners: [], context: { userIntent: 'Implement feature', qualityTarget: 'Pass tests', constraints: ['Keep scope'], instructions: [], interfaces: [], evidence: [], maxTurns: 1, timeoutMs: 300000 } });
 const preferences = { mode: 'auto' as const, maxChildren: 2, status: 'preparation' as const };
 const proposal = (id = '444444444444') => ({ version: 1, id, parentId, runId, decision: 'solo', rationale: 'One small localized change.', children: [] });

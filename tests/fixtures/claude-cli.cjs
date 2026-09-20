@@ -28,6 +28,7 @@ if (!args.length) {
   const start = prompt => {
     if (prompted) throw new Error('Duplicate fixture turn'); prompted = true;
     fs.appendFileSync('requests.jsonl', JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\n');
+    if (prompt.includes('HYDRA_DELEGATION_V1:')) prompt = prompt.split('\n\nHydra planning receipt: ')[0];
     emit({ type: 'system', subtype: 'init', session_id: sessionId, cwd: process.cwd(), model: scenario.initModel || applied.model, permissionMode: 'default', claude_code_version: '2.1.270' });
     if (prompt === 'malformed') { console.log('not-json'); setInterval(() => {}, 1000); return; }
     emit({ type: 'stream_event', event: { delta: { type: 'text_delta', text: 'Streaming ü' } } });

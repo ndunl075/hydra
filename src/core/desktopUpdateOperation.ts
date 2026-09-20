@@ -1,7 +1,7 @@
 import type { request } from 'node:https';
-import type { VerifiedDesktopUpdate } from './desktopSignedUpdate';
-import { DesktopUpdateJournal } from './desktopUpdateJournal';
-import { stageDesktopUpdateArtifact, type StagedDesktopUpdate } from './desktopUpdateStaging';
+import type { VerifiedDesktopUpdate } from './desktopSignedUpdate.js';
+import { DesktopUpdateJournal } from './desktopUpdateJournal.js';
+import { stageDesktopUpdateArtifact, type StagedDesktopUpdate } from './desktopUpdateStaging.js';
 
 export interface DesktopUpdateDownloadOptions {
   /** Already authenticated by the installed main-process metadata key. */

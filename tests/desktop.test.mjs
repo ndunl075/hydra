@@ -3,8 +3,30 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { brandedProduct, brandedElectronMain, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedElectronMain, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+
+test('copied Electron-main update primitives compile under pinned NodeNext rules', async () => {
+  const parent = path.join(root, '.test-build');
+  await fs.mkdir(parent, { recursive: true });
+  const fixture = await fs.mkdtemp(path.join(parent, 'hydra-main-update-'));
+  try {
+    await stageHydraMainUpdatePrimitives(fixture);
+    assert.deepEqual((await fs.readdir(fixture)).sort(), [...hydraMainUpdateModules].sort());
+    const nodeTypes = path.dirname(createRequire(import.meta.url).resolve('@types/node/package.json'));
+    const options = { target: ts.ScriptTarget.ES2024, module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext, strict: true, noImplicitReturns: true,
+      noUnusedLocals: true, noUncheckedSideEffectImports: true, noEmit: true,
+      skipLibCheck: true, typeRoots: [path.dirname(nodeTypes)], types: ['node'] };
+    const program = ts.createProgram(hydraMainUpdateModules.map(name => path.join(fixture, name)), options);
+    const errors = ts.getPreEmitDiagnostics(program);
+    assert.equal(errors.length, 0, ts.formatDiagnostics(errors, { getCanonicalFileName: file => file, getCurrentDirectory: () => fixture, getNewLine: () => '\n' }));
+  } finally {
+    if (!fixture.startsWith(parent + path.sep)) throw new Error('Unsafe main update test cleanup.');
+    await fs.rm(fixture, { recursive: true, force: true });
+  }
+});
 
 test('pinned Electron main initializes installed Hydra trust and refuses source drift', () => {
   const source = "import { CodeApplication } from './app.js';\nawait this.initServices(environmentMainService, userDataProfilesMainService, configurationService, stateMainService, productService);";

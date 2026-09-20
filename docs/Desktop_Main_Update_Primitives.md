@@ -1,0 +1,5 @@
+# Electron main update primitives
+
+`desktop:prepare` now copies an explicit allowlist of six Hydra update modules into the pinned Code - OSS Electron main tree: atomic file replacement, feed parsing, Ed25519 envelope verification, the durable operation journal, HTTPS staging, and the journal-bound download coordinator. Their relative imports use `.js` specifiers required by the fork's NodeNext TypeScript configuration. A local test compiles the copied files with the fork's strict module, unused-local, and return checks; the disposable desktop build compiles the generated fork as well.
+
+These files are not yet registered as an update service. `desktop/product.json` still disables the channel and omits upstream `updateUrl`. The next feature must create a Hydra-only `IUpdateService` adapter in Electron main, derive trust and the profile path there, authenticate metadata, and persist availability before reporting it. Download must be an explicit, main-confirmed request, and installation must remain unavailable until native helper and consent gates are complete.

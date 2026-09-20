@@ -31,7 +31,8 @@ export class HydraUpdateService implements IUpdateService {
 		try { trust = getHydraUpdateTrust(); } catch { /* malformed installed trust fails closed */ }
 		let journal: DesktopUpdateJournal | null = null;
 		if (environment.isBuilt && !environment.disableUpdates && trust) {
-			try { journal = new DesktopUpdateJournal(join(environment.userDataPath, 'hydra-update-state')); }
+			try { journal = new DesktopUpdateJournal(join(environment.userDataPath, 'hydra-update-state'), undefined,
+				() => assertHydraInstalledUpdateIdentity(environment, trust!.version)); }
 			catch { /* invalid profile path keeps the channel disabled */ }
 		}
 		if (trust && journal) {

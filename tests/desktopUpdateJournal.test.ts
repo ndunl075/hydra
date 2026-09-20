@@ -10,6 +10,7 @@ import type { InstalledDesktopUpdateTrust } from '../src/core/desktopSignedUpdat
 import type { DesktopUpdateCurrent } from '../src/core/desktopUpdateFeed';
 import { checkDesktopUpdateCandidate } from '../src/core/desktopUpdateCheck';
 import { confirmedDesktopUpdateDownload } from '../src/core/desktopUpdateDownloadConsent';
+import { hydraUserInstallerAppId, type DesktopInstallIdentity } from '../src/core/desktopInstallIdentity';
 
 const candidate = (sequence = 7): VerifiedDesktopUpdate => ({
   sequence, payloadSha256: 'a'.repeat(64), availableVersion: '0.23.0',
@@ -30,6 +31,12 @@ const signingKeys = generateKeyPairSync('ed25519');
 const signedCurrent: DesktopUpdateCurrent = { product: { nameShort: 'Hydra', applicationName: 'hydra', win32AppUserModelId: 'Hydra.IDE' }, channel: 'stable', version: '0.22.0' };
 const signedTrust: InstalledDesktopUpdateTrust = { keyId: 'fixture', publicKeyPem: signingKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString(), channel: 'stable', platform: 'win32', architecture: 'x64', installTarget: 'user' };
 const signedNow = Date.parse('2026-09-20T00:00:00.000Z');
+const installedIdentity: DesktopInstallIdentity = {
+  installationPath: 'C:\\Users\\Nico\\AppData\\Local\\Programs\\Hydra',
+  executablePath: 'C:\\Users\\Nico\\AppData\\Local\\Programs\\Hydra\\Hydra.exe',
+  profilePath: 'C:\\Users\\Nico\\AppData\\Roaming\\Hydra',
+  version: '0.22.0', userInstallerAppId: hydraUserInstallerAppId
+};
 function signedEnvelope(sequence = 7): Buffer {
   const unsigned = { version: 1, product: signedCurrent.product, channel: 'stable', release: {
     version: '0.23.0', artifact: { fileName: 'HydraSetup.exe', sha256: hash('installer') },
@@ -183,4 +190,57 @@ test('failed durable ownership check leaves prior phase intact', async () => wit
   allow = false;
   await assert.rejects(journal.advance(started.id, 'available', 'downloading'), /lost writer/);
   assert.equal((await new DesktopUpdateJournal(directory).load())[0]!.phase, 'available');
+}));
+
+test('installed journal binds a signed candidate to the observed installation across restart', async () => withJournal(async (_journal, directory) => {
+  const bound = () => new DesktopUpdateJournal(directory, undefined, async () => installedIdentity);
+  const first = await bound().startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  const persisted = JSON.parse(await readFile(join(directory, 'desktop-update-operations.json'), 'utf8'));
+  assert.equal(persisted.version, 3);
+  assert.equal(persisted.operations[0].installation.policyVersion, 1);
+  assert.equal(persisted.operations[0].installation.profilePath, installedIdentity.profilePath);
+  assert.equal((await bound().loadSignedCandidate(first.id, signedCurrent, signedTrust, signedNow)).payloadSha256, first.payloadSha256);
+  assert.equal((await new DesktopUpdateJournal(directory, undefined, async () => ({ ...installedIdentity, version: '0.23.0' })).load())[0]!.id, first.id);
+  const relocated = new DesktopUpdateJournal(directory, undefined, async () => ({ ...installedIdentity, profilePath: 'C:\\Other\\Hydra' }));
+  await assert.rejects(relocated.load(), /installation identity.*changed/);
+  assert.equal((await relocated.recovery()).status, 'review');
+  await assert.rejects(relocated.advance(first.id, 'available', 'downloading'), /installation identity.*changed/);
+  assert.equal((await bound().load())[0]!.phase, 'available');
+}));
+
+test('edited persisted installation cannot authorize resumed work', async () => withJournal(async (_journal, directory) => {
+  const bound = new DesktopUpdateJournal(directory, undefined, async () => installedIdentity);
+  const first = await bound.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  const file = join(directory, 'desktop-update-operations.json');
+  const changed = JSON.parse(await readFile(file, 'utf8'));
+  changed.operations[0].installation.executablePath = 'C:\\Other\\Hydra.exe';
+  await writeFile(file, JSON.stringify(changed));
+  await assert.rejects(bound.loadSignedCandidate(first.id, signedCurrent, signedTrust, signedNow), /installation identity.*changed/);
+  assert.equal((await bound.recovery()).status, 'review');
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).operations[0].installation.executablePath, 'C:\\Other\\Hydra.exe');
+}));
+
+test('legacy unbound operation stays review-only without rewriting journal evidence', async () => withJournal(async (journal, directory) => {
+  await journal.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  const file = join(directory, 'desktop-update-operations.json');
+  const legacy = JSON.parse(await readFile(file, 'utf8'));
+  legacy.version = 2;
+  delete legacy.operations[0].installation;
+  await writeFile(file, JSON.stringify(legacy));
+  const original = await readFile(file);
+  const bound = new DesktopUpdateJournal(directory, undefined, async () => installedIdentity);
+  assert.equal((await bound.recovery()).status, 'review');
+  await assert.rejects(bound.load(), /unbound.*review/);
+  await assert.rejects(bound.startSigned(signedEnvelope(8), signedCurrent, signedTrust, signedNow), /unbound.*review/);
+  assert.deepEqual(await readFile(file), original);
+}));
+
+test('installation changing during a journal write keeps the prior durable state', async () => withJournal(async (_journal, directory) => {
+  let calls = 0;
+  const bound = new DesktopUpdateJournal(directory, undefined, async () => {
+    calls++;
+    return calls === 1 ? installedIdentity : { ...installedIdentity, installationPath: 'C:\\Other\\Hydra' };
+  });
+  await assert.rejects(bound.start(candidate()), /installation changed during save/);
+  assert.deepEqual(await new DesktopUpdateJournal(directory).load(), []);
 }));

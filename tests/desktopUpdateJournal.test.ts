@@ -8,6 +8,7 @@ import { DesktopUpdateJournal } from '../src/core/desktopUpdateJournal';
 import type { VerifiedDesktopUpdate } from '../src/core/desktopSignedUpdate';
 import type { InstalledDesktopUpdateTrust } from '../src/core/desktopSignedUpdate';
 import type { DesktopUpdateCurrent } from '../src/core/desktopUpdateFeed';
+import { checkDesktopUpdateCandidate } from '../src/core/desktopUpdateCheck';
 
 const candidate = (sequence = 7): VerifiedDesktopUpdate => ({
   sequence, payloadSha256: 'a'.repeat(64), availableVersion: '0.23.0',
@@ -43,6 +44,40 @@ function signedEnvelope(sequence = 7): Buffer {
     ], manifest: { ...unsigned, sha256: hash(JSON.stringify(unsigned)) } }));
   return Buffer.from(JSON.stringify({ schemaVersion: 1, keyId: signedTrust.keyId, payload: payload.toString('base64'), signature: sign(null, payload, signingKeys.privateKey).toString('base64') }));
 }
+
+test('signed check commits availability before reporting it and resumes without another fetch', async () => withJournal(async (journal, directory) => {
+  let requests = 0;
+  const options = { journal, origin: 'https://updates.example.com', current: signedCurrent, trust: signedTrust, clock: () => signedNow,
+    fetchEnvelope: async () => { requests += 1; return signedEnvelope(); } };
+  const first = await checkDesktopUpdateCandidate(options);
+  assert.equal(first.operation.phase, 'available');
+  assert.equal((await new DesktopUpdateJournal(directory).load())[0]!.payloadSha256, first.update.payloadSha256);
+  const resumed = await checkDesktopUpdateCandidate(options);
+  assert.equal(resumed.operation.id, first.operation.id);
+  assert.equal(requests, 1);
+  await journal.advance(first.operation.id, 'available', 'downloading');
+  await assert.rejects(checkDesktopUpdateCandidate(options), /requires review/);
+  assert.equal(requests, 1);
+}));
+
+test('invalid signed check never reports or persists availability', async () => withJournal(async (journal) => {
+  const raw = signedEnvelope();
+  const changed = JSON.parse(raw.toString());
+  changed.signature = Buffer.alloc(64).toString('base64');
+  await assert.rejects(checkDesktopUpdateCandidate({ journal, origin: 'https://updates.example.com', current: signedCurrent,
+    trust: signedTrust, clock: () => signedNow, fetchEnvelope: async () => Buffer.from(JSON.stringify(changed)) }), /signature is invalid/);
+  assert.deepEqual(await journal.load(), []);
+}));
+
+test('metadata expiring during fetch is rejected at commit time', async () => withJournal(async (journal) => {
+  let clock = signedNow;
+  await assert.rejects(checkDesktopUpdateCandidate({ journal, origin: 'https://updates.example.com', current: signedCurrent,
+    trust: signedTrust, clock: () => clock, fetchEnvelope: async () => {
+      clock = Date.parse('2026-09-21T00:00:00.000Z');
+      return signedEnvelope();
+    } }), /validity window/);
+  assert.deepEqual(await journal.load(), []);
+}));
 
 test('persists the exact signed candidate and reauthenticates after restart', async () => withJournal(async (journal, directory) => {
   const accepted = await journal.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);

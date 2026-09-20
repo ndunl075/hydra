@@ -6,6 +6,7 @@ import { DisablementReason, IUpdateService, State, StateType, UpdateType } from 
 import { checkDesktopUpdateCandidate } from './hydraUpdate/desktopUpdateCheck.js';
 import { confirmedDesktopUpdateDownload } from './hydraUpdate/desktopUpdateDownloadConsent.js';
 import { DesktopUpdateJournal } from './hydraUpdate/desktopUpdateJournal.js';
+import { assertHydraInstalledUpdateIdentity } from './hydraInstallIdentity.js';
 import { getHydraUpdateTrust, type HydraInstalledUpdateTrust } from './hydraUpdateTrust.js';
 
 /**
@@ -48,6 +49,14 @@ export class HydraUpdateService implements IUpdateService {
 		this.stateEmitter.fire(state);
 	}
 
+	private async requireInstallIdentity(): Promise<void> {
+		try { await assertHydraInstalledUpdateIdentity(this.environment, this.trust!.version); }
+		catch (error) {
+			this.setState(State.Disabled(DisablementReason.InvalidConfiguration));
+			throw error;
+		}
+	}
+
 	checkForUpdates(explicit: boolean): Promise<void> {
 		if (!this.trust || !this.journal) return Promise.resolve();
 		if (this.downloadPromise) return Promise.resolve();
@@ -59,8 +68,9 @@ export class HydraUpdateService implements IUpdateService {
 	private async performCheck(explicit: boolean): Promise<void> {
 		const trust = this.trust!;
 		const journal = this.journal!;
-		this.setState(State.CheckingForUpdates(explicit));
 		try {
+			await this.requireInstallIdentity();
+			this.setState(State.CheckingForUpdates(explicit));
 			const { update } = await checkDesktopUpdateCandidate({
 				journal, origin: trust.origin,
 				current: { product: { nameShort: 'Hydra', applicationName: 'hydra', win32AppUserModelId: 'Hydra.IDE' }, channel: 'stable', version: trust.version },
@@ -69,7 +79,7 @@ export class HydraUpdateService implements IUpdateService {
 			});
 			this.setState(State.AvailableForDownload({ version: update.provenance.sourceCommit, productVersion: update.availableVersion }, false));
 		} catch (error) {
-			this.setState(State.Idle(UpdateType.Setup, explicit ? String(error) : undefined));
+			if (this._state.type !== StateType.Disabled) this.setState(State.Idle(UpdateType.Setup, explicit ? String(error) : undefined));
 		}
 	}
 
@@ -88,6 +98,7 @@ export class HydraUpdateService implements IUpdateService {
 		const trust = this.trust!;
 		const journal = this.journal!;
 		try {
+			await this.requireInstallIdentity();
 			const operation = (await journal.load()).at(-1);
 			if (!operation) throw new Error('Hydra update operation is missing.');
 			const outcome = await confirmedDesktopUpdateDownload({
@@ -101,7 +112,9 @@ export class HydraUpdateService implements IUpdateService {
 						message: `Download Hydra ${update.availableVersion}?`,
 						detail: 'Hydra will verify the downloaded installer before it can run.',
 						buttons: ['Download', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true });
-					return choice.response === 0;
+					if (choice.response !== 0) return false;
+					await this.requireInstallIdentity();
+					return true;
 				}
 			});
 			if (outcome.status === 'cancelled') this.setState(available);
@@ -111,7 +124,7 @@ export class HydraUpdateService implements IUpdateService {
 					detail: 'Installation is unavailable until publisher verification passes.', buttons: ['OK'] });
 			}
 		} catch (error) {
-			this.setState(State.Idle(UpdateType.Setup, String(error)));
+			if (this._state.type !== StateType.Disabled) this.setState(State.Idle(UpdateType.Setup, String(error)));
 			throw error;
 		}
 	}

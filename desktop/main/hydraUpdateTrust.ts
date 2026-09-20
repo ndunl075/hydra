@@ -28,7 +28,8 @@ export function parseHydraUpdateTrust(product: unknown, platform = process.platf
 	if (!product || typeof product !== 'object') refuse();
 	const record = product as Record<string, unknown>;
 	if (record.nameShort !== 'Hydra' || record.applicationName !== 'hydra' ||
-		record.win32AppUserModelId !== 'Hydra.IDE' || !stableVersion(record.hydraVersion) ||
+		record.win32AppUserModelId !== 'Hydra.IDE' || record.win32x64UserAppId !== '{{4C372D32-54B2-43D8-8C63-ECC31D3744A8}' ||
+		!stableVersion(record.hydraVersion) ||
 		Object.prototype.hasOwnProperty.call(record, 'updateUrl')) refuse();
 	const value = record.hydraUpdateTrust;
 	const base = ['schemaVersion', 'status', 'product', 'channel', 'target'];

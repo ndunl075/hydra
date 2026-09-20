@@ -100,6 +100,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       - run: npm.cmd run desktop:smoke
       - run: npm.cmd run desktop:installer
+      - name: Verify built installer PE identity with native handle reader
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-pe-identity-test.ps1
       - name: Verify installer lifecycle on disposable runner
         shell: pwsh
         run: ./scripts/desktop-installer-test.ps1 -InstallerPath .desktop/code-oss/.build/win32-x64/user-setup/HydraSetup.exe

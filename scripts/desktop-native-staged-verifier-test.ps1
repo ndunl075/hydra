@@ -8,7 +8,7 @@ $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudi
 if (-not $visualStudio) { throw 'Visual Studio C++ x64 tools are required.' }
 $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvars64.bat'
 $source = Join-Path $repository 'native'
-$sources = @('desktop-update-locked-path.cpp', 'desktop-update-verifier.cpp', 'desktop-update-staged-verifier.cpp', 'desktop-update-staged-verifier-fixture.cpp') | ForEach-Object { '"' + (Join-Path $source $_) + '"' }
+$sources = @('desktop-update-locked-path.cpp', 'desktop-update-verifier.cpp', 'desktop-update-pe-identity.cpp', 'desktop-update-staged-verifier.cpp', 'desktop-update-staged-verifier-fixture.cpp') | ForEach-Object { '"' + (Join-Path $source $_) + '"' }
 $compile = '"' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc ' + ($sources -join ' ') + ' /Fe:desktop-update-staged-verifier-fixture.exe'
 Push-Location $output
 try {
@@ -48,6 +48,8 @@ function Assert-Result($root, $operationId, $digest, $bytes, $publisher, $thumb,
   if (-not $accepted -and ($code -ne 2 -or $result -notmatch '^refused;')) { throw "Unsafe staged signature accepted or lease invariant failed: $result" }
 }
 Assert-Result $userData $id $hash $length $subject $thumbprint $true
+$wrongProduct = & $helper --fixture $userData $id $hash $length $subject $thumbprint '0.22.0'
+if ($LASTEXITCODE -ne 2 -or $wrongProduct -notmatch 'PE product or version differs') { throw "Signed non-Hydra product passed identity check: $wrongProduct" }
 Assert-Result $userData $id ('0' * 64) $length $subject $thumbprint $false
 Assert-Result $userData $id $hash ($length + 1) $subject $thumbprint $false
 Assert-Result $userData $id $hash $length 'CN=Wrong Publisher' $thumbprint $false

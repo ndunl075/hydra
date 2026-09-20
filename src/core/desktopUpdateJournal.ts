@@ -3,7 +3,8 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { replaceAtomic } from './atomicFile.js';
-import type { VerifiedDesktopUpdate } from './desktopSignedUpdate.js';
+import type { DesktopUpdateCurrent } from './desktopUpdateFeed.js';
+import { verifyDesktopSignedUpdate, type InstalledDesktopUpdateTrust, type VerifiedDesktopUpdate } from './desktopSignedUpdate.js';
 
 export type DesktopUpdatePhase = 'available' | 'downloading' | 'verified' | 'awaitingRestart' | 'installing' | 'installed' | 'healthy' | 'refused' | 'failed';
 export interface DesktopUpdateOperation {
@@ -16,14 +17,15 @@ export interface DesktopUpdateOperation {
   artifactBytes: number;
   authorizedAt: string | null;
   reason: string | null;
+  signedEnvelope: string | null;
 }
-interface JournalData { version: 1; operations: DesktopUpdateOperation[]; }
+interface JournalData { version: 2; operations: DesktopUpdateOperation[]; }
 export type DesktopUpdateRecovery =
   | { status: 'none' }
   | { status: 'review'; operation: DesktopUpdateOperation }
   | { status: 'pending'; operation: DesktopUpdateOperation };
 
-const maxBytes = 128 * 1024;
+const maxBytes = 256 * 1024;
 const maxOperations = 32;
 const digest = /^[a-f0-9]{64}$/;
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -45,8 +47,9 @@ function iso(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
     Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value;
 }
-function parseOperation(raw: unknown): DesktopUpdateOperation {
-  const value = exact(raw, ['id', 'phase', 'sequence', 'payloadSha256', 'version', 'artifactSha256', 'artifactBytes', 'authorizedAt', 'reason']);
+function parseOperation(raw: unknown, journalVersion: number): DesktopUpdateOperation {
+  const fields = ['id', 'phase', 'sequence', 'payloadSha256', 'version', 'artifactSha256', 'artifactBytes', 'authorizedAt', 'reason'];
+  const value = exact(raw, journalVersion === 1 ? fields : [...fields, 'signedEnvelope']);
   if (typeof value.id !== 'string' || !operationId.test(value.id) || !phases.includes(value.phase as DesktopUpdatePhase) ||
       !Number.isSafeInteger(value.sequence) || (value.sequence as number) <= 0 ||
       typeof value.payloadSha256 !== 'string' || !digest.test(value.payloadSha256) ||
@@ -57,8 +60,11 @@ function parseOperation(raw: unknown): DesktopUpdateOperation {
       (value.reason !== null && (typeof value.reason !== 'string' || value.reason.length === 0 || value.reason.length > 256)) ||
       (['available', 'downloading', 'verified'].includes(value.phase as string) && value.authorizedAt !== null) ||
       (['awaitingRestart', 'installing', 'installed', 'healthy'].includes(value.phase as string) && value.authorizedAt === null) ||
-      (['refused', 'failed'].includes(value.phase as string) !== (value.reason !== null))) fail('operation record is invalid.');
-  return value as unknown as DesktopUpdateOperation;
+      (['refused', 'failed'].includes(value.phase as string) !== (value.reason !== null)) ||
+      (journalVersion === 2 && value.signedEnvelope !== null && (typeof value.signedEnvelope !== 'string' ||
+        value.signedEnvelope.length > 131072 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.signedEnvelope))) ||
+      (journalVersion === 2 && ['healthy', 'refused', 'failed'].includes(value.phase as string) && value.signedEnvelope !== null)) fail('operation record is invalid.');
+  return { ...value, signedEnvelope: journalVersion === 1 ? null : value.signedEnvelope } as DesktopUpdateOperation;
 }
 function parseJournal(bytes: Buffer): JournalData {
   if (!bytes.length || bytes.length > maxBytes) fail('journal size is invalid.');
@@ -66,15 +72,15 @@ function parseJournal(bytes: Buffer): JournalData {
   try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { return fail('journal JSON is invalid.'); }
   const value = exact(raw, ['version', 'operations']);
-  if (value.version !== 1 || !Array.isArray(value.operations) || value.operations.length > maxOperations) fail('journal header is invalid.');
-  const operations = value.operations.map(parseOperation);
+  if ((value.version !== 1 && value.version !== 2) || !Array.isArray(value.operations) || value.operations.length > maxOperations) fail('journal header is invalid.');
+  const operations = value.operations.map(item => parseOperation(item, value.version as number));
   if (new Set(operations.map(item => item.id)).size !== operations.length ||
       operations.filter(item => !terminal.has(item.phase)).length > 1 ||
       operations.slice(0, -1).some(item => !terminal.has(item.phase))) fail('journal operation order is invalid.');
   for (let i = 1; i < operations.length; i++) {
     if (operations[i]!.sequence <= operations[i - 1]!.sequence) fail('release sequence did not increase.');
   }
-  return { version: 1, operations };
+  return { version: 2, operations };
 }
 
 /** Main-process-owned persistence primitive. No method launches or authorizes an installer. */
@@ -95,14 +101,14 @@ export class DesktopUpdateJournal {
   private async read(): Promise<JournalData> {
     try { await this.checkDirectory(); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, operations: [] };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 2, operations: [] };
       throw error;
     }
     let info;
     try {
       info = await lstat(this.file);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, operations: [] };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 2, operations: [] };
       throw error;
     }
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > maxBytes) fail('journal storage is invalid.');
@@ -143,6 +149,19 @@ export class DesktopUpdateJournal {
     return operation;
   }
   async load(): Promise<DesktopUpdateOperation[]> { return clone((await this.read()).operations); }
+  /** Verify the saved envelope again on every recovery attempt. Never authorizes installation. */
+  async loadSignedCandidate(id: string, current: DesktopUpdateCurrent, trust: InstalledDesktopUpdateTrust, now: number): Promise<VerifiedDesktopUpdate> {
+    const operations = (await this.read()).operations;
+    const operation = operations.at(-1);
+    if (!operation || operation.id !== id || terminal.has(operation.phase) || !operation.signedEnvelope) fail('signed candidate is unavailable.');
+    const raw = Buffer.from(operation.signedEnvelope, 'base64');
+    if (raw.toString('base64') !== operation.signedEnvelope) fail('saved envelope encoding is invalid.');
+    const update = verifyDesktopSignedUpdate(raw, current, trust, { sequence: operation.sequence, payloadSha256: operation.payloadSha256 }, now);
+    if (update.sequence !== operation.sequence || update.payloadSha256 !== operation.payloadSha256 ||
+        update.availableVersion !== operation.version || update.artifact.sha256 !== operation.artifactSha256 ||
+        update.artifactBytes !== operation.artifactBytes) fail('saved signed candidate binding changed.');
+    return update;
+  }
   /** Recovery never returns permission to run a cached installer. */
   async recovery(): Promise<DesktopUpdateRecovery> {
     const current = (await this.read()).operations.at(-1);
@@ -161,7 +180,25 @@ export class DesktopUpdateJournal {
       const operation: DesktopUpdateOperation = {
         id: randomUUID(), phase: 'available', sequence: update.sequence, payloadSha256: update.payloadSha256,
         version: update.availableVersion, artifactSha256: update.artifact.sha256, artifactBytes: update.artifactBytes,
-        authorizedAt: null, reason: null
+        authorizedAt: null, reason: null, signedEnvelope: null
+      };
+      data.operations.push(operation);
+      return operation;
+    });
+  }
+  /** Atomically accepts the signed metadata and its monotonic sequence floor. */
+  async startSigned(rawEnvelope: Buffer, current: DesktopUpdateCurrent, trust: InstalledDesktopUpdateTrust, now: number): Promise<DesktopUpdateOperation> {
+    return this.mutate(data => {
+      const latest = data.operations.at(-1);
+      if (latest && !terminal.has(latest.phase)) fail('active operation prevents start.');
+      if (data.operations.length >= maxOperations) fail('journal capacity is exhausted; preserve evidence before rotation.');
+      const floor = latest ? { sequence: latest.sequence, payloadSha256: latest.payloadSha256 } : null;
+      const update = verifyDesktopSignedUpdate(rawEnvelope, current, trust, floor, now);
+      if (latest && update.sequence <= latest.sequence) fail('release sequence did not increase.');
+      const operation: DesktopUpdateOperation = {
+        id: randomUUID(), phase: 'available', sequence: update.sequence, payloadSha256: update.payloadSha256,
+        version: update.availableVersion, artifactSha256: update.artifact.sha256, artifactBytes: update.artifactBytes,
+        authorizedAt: null, reason: null, signedEnvelope: rawEnvelope.toString('base64')
       };
       data.operations.push(operation);
       return operation;
@@ -183,6 +220,7 @@ export class DesktopUpdateJournal {
         current.reason = options.reason;
       } else if (options.reason !== undefined) fail('unexpected refusal reason.');
       current.phase = phase;
+      if (terminal.has(phase)) current.signedEnvelope = null;
       return current;
     });
   }

@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { DesktopUpdateJournal } from '../src/core/desktopUpdateJournal';
 import type { VerifiedDesktopUpdate } from '../src/core/desktopSignedUpdate';
+import type { InstalledDesktopUpdateTrust } from '../src/core/desktopSignedUpdate';
+import type { DesktopUpdateCurrent } from '../src/core/desktopUpdateFeed';
 
 const candidate = (sequence = 7): VerifiedDesktopUpdate => ({
   sequence, payloadSha256: 'a'.repeat(64), availableVersion: '0.23.0',
@@ -20,6 +23,42 @@ const withJournal = async (run: (journal: DesktopUpdateJournal, directory: strin
   try { await run(new DesktopUpdateJournal(directory), directory); }
   finally { await rm(directory, { recursive: true, force: true }); }
 };
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const signingKeys = generateKeyPairSync('ed25519');
+const signedCurrent: DesktopUpdateCurrent = { product: { nameShort: 'Hydra', applicationName: 'hydra', win32AppUserModelId: 'Hydra.IDE' }, channel: 'stable', version: '0.22.0' };
+const signedTrust: InstalledDesktopUpdateTrust = { keyId: 'fixture', publicKeyPem: signingKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString(), channel: 'stable', platform: 'win32', architecture: 'x64', installTarget: 'user' };
+const signedNow = Date.parse('2026-09-20T00:00:00.000Z');
+function signedEnvelope(sequence = 7): Buffer {
+  const unsigned = { version: 1, product: signedCurrent.product, channel: 'stable', release: {
+    version: '0.23.0', artifact: { fileName: 'HydraSetup.exe', sha256: hash('installer') },
+    signature: { status: 'valid', subject: 'CN=Fixture', thumbprint: 'A'.repeat(40), artifactSha256: hash('installer') },
+    provenance: { sourceCommit: 'c'.repeat(40), buildRunId: 1, artifactSha256: hash('installer') }
+  } };
+  const payload = Buffer.from(JSON.stringify({ schemaVersion: 1, target: { platform: 'win32', architecture: 'x64', installTarget: 'user' }, sequence,
+    issuedAt: '2026-09-19T00:00:00.000Z', expiresAt: '2026-09-21T00:00:00.000Z', artifactBytes: 100000,
+    expectedFiles: [
+      { path: 'Hydra.exe', sha256: hash('app') },
+      { path: 'resources/app/product.json', sha256: hash('product') },
+      { path: 'resources/app/extensions/hydra-agent-manager/package.json', sha256: hash('module') }
+    ], manifest: { ...unsigned, sha256: hash(JSON.stringify(unsigned)) } }));
+  return Buffer.from(JSON.stringify({ schemaVersion: 1, keyId: signedTrust.keyId, payload: payload.toString('base64'), signature: sign(null, payload, signingKeys.privateKey).toString('base64') }));
+}
+
+test('persists the exact signed candidate and reauthenticates after restart', async () => withJournal(async (journal, directory) => {
+  const accepted = await journal.startSigned(signedEnvelope(), signedCurrent, signedTrust, signedNow);
+  const restored = new DesktopUpdateJournal(directory);
+  assert.equal((await restored.loadSignedCandidate(accepted.id, signedCurrent, signedTrust, signedNow)).payloadSha256, accepted.payloadSha256);
+  await assert.rejects(restored.loadSignedCandidate(accepted.id, signedCurrent, signedTrust, Date.parse('2026-09-21T00:00:00.000Z')), /validity window/);
+  const file = join(directory, 'desktop-update-operations.json');
+  const tampered = JSON.parse(await readFile(file, 'utf8'));
+  tampered.operations[0].signedEnvelope = signedEnvelope(8).toString('base64');
+  await writeFile(file, JSON.stringify(tampered));
+  await assert.rejects(restored.loadSignedCandidate(accepted.id, signedCurrent, signedTrust, signedNow), /binding changed/);
+  await writeFile(file, JSON.stringify({ ...tampered, operations: [{ ...tampered.operations[0], signedEnvelope: accepted.signedEnvelope }] }));
+  await restored.advance(accepted.id, 'available', 'failed', { reason: 'cancelled' });
+  assert.equal((await restored.load())[0]!.signedEnvelope, null);
+  await assert.rejects(restored.loadSignedCandidate(accepted.id, signedCurrent, signedTrust, signedNow), /unavailable/);
+}));
 
 test('persists authorization marker and refuses replay or unreviewed restart recovery', async () => withJournal(async (journal, directory) => {
   const started = await journal.start(candidate());

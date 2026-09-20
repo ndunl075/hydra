@@ -1,0 +1,5 @@
+# First-channel installed update identity
+
+Hydra's enabled update service now checks its installation before a metadata request or a download confirmation. The first channel accepts only a built Windows x64 user installation at `%LOCALAPPDATA%\\Programs\\Hydra\\Hydra.exe` with the default `%APPDATA%\\Hydra` profile and a matching HKCU Inno uninstall record for Hydra's x64 user AppId. It requires the registered install path, display name, and version to match the running release. The observed installation, executable, and profile paths must be real paths of the expected file types; a changed path or reparse resolution refuses. The service checks again after the user confirms a download.
+
+Portable/archive, custom `--user-data-dir`, redirected app data, system install, missing or mismatched registry, and malformed paths are out of scope for the first channel and fail closed. This is a main-process admission check, not authority for the native helper. The helper must derive the same installation and user identity independently, and the journal must bind operations to it before any installer launch. The distributed update trust remains disabled.

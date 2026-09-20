@@ -15,6 +15,7 @@ const enabled = () => ({ ...product(), hydraUpdateTrust: {
 
 test('Electron main keeps the installed disabled channel unavailable', () => {
   assert.equal(parseHydraUpdateTrust(product()), null);
+  assert.throws(() => parseHydraUpdateTrust({ ...product(), win32x64UserAppId: '{{00000000-0000-0000-0000-000000000000}' }), /invalid/);
   assert.throws(() => parseHydraUpdateTrust({ ...product(), updateUrl: 'https://upstream.example' }), /invalid/);
   assert.throws(() => parseHydraUpdateTrust({ ...product(), hydraVersion: '1.2.3-beta.1' }), /invalid/);
 });

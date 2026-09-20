@@ -73,7 +73,7 @@ export function brandedElectronApp(text) {
 export const hydraMainUpdateModules = Object.freeze([
   'atomicFile.ts', 'desktopUpdateFeed.ts', 'desktopSignedUpdate.ts',
   'desktopUpdateJournal.ts', 'desktopUpdateStaging.ts', 'desktopUpdateOperation.ts',
-  'desktopUpdateCheck.ts', 'desktopUpdateDownloadConsent.ts'
+  'desktopUpdateCheck.ts', 'desktopUpdateDownloadConsent.ts', 'desktopInstallIdentity.ts'
 ]);
 export async function stageHydraMainUpdatePrimitives(destination) {
   await fs.mkdir(destination, { recursive: true });
@@ -225,6 +225,7 @@ export async function prepare() {
     await stageHydraMainUpdatePrimitives(path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdate'));
     const electronAppPath = 'src/vs/code/electron-main/app.ts';
     await fs.copyFile(path.join(root, 'desktop', 'main', 'hydraUpdateService.ts'), path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdateService.ts'));
+    await fs.copyFile(path.join(root, 'desktop', 'main', 'hydraInstallIdentity.ts'), path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraInstallIdentity.ts'));
     await fs.writeFile(path.join(source, electronAppPath), brandedElectronApp(await git(['show', `${pin.commit}:${electronAppPath}`])));
   const themeStartupPath = 'src/vs/workbench/services/themes/browser/workbenchThemeService.ts';
   await fs.writeFile(path.join(source, themeStartupPath), brandedThemeStartup(await git(['show', `${pin.commit}:${themeStartupPath}`])));

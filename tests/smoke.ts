@@ -128,7 +128,9 @@ export async function run(): Promise<void> {
       assert.ok(vscode.window.terminals.includes(terminal), 'Agents mode retains the existing terminal');
       assert.ok(managerOpen(), 'Manager is open');
       await vscode.commands.executeCommand('hydra.toggleMode');
-      await waitFor(() => !managerOpen() && vscode.window.activeTextEditor?.document === document);
+      await waitFor(() => !managerOpen() && vscode.window.activeTextEditor?.document === document &&
+        vscode.window.activeTextEditor.selection.start.character === 2 &&
+        vscode.window.activeTextEditor.selection.end.character === 6);
       assert.equal(vscode.window.activeTextEditor?.document, document, 'Editor focus is restored');
       assert.equal(vscode.window.activeTextEditor?.selection.start.character, 2);
       assert.equal(vscode.window.activeTextEditor?.selection.end.character, 6);

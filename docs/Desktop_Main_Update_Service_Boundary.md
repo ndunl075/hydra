@@ -1,0 +1,5 @@
+# Electron main update service boundary
+
+The pinned Code - OSS Windows service is replaced at its `IUpdateService` registration point with Hydra's own Electron-main implementation. Hydra does not construct the upstream Win32 updater, so its cache recovery, arbitrary package path, and installer launch paths are unavailable. The patch uses exact source matches and fails during `desktop:prepare` if the pinned registration changes.
+
+This increment deliberately reports the update service as disabled and refuses download, apply, quit-and-install, external package, and internal-channel commands. The next reviewed service increment will derive enabled trust from the installed product record and add bounded signed metadata checks with journal persistence. Download remains gated on main-owned user confirmation, and installation remains gated on native Authenticode verification and shutdown consent. The distributed product record still has `hydraUpdateTrust.status: "disabled"` and no upstream `updateUrl`.

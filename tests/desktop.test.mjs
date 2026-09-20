@@ -5,7 +5,17 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { brandedProduct, brandedElectronMain, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+
+test('pinned Electron app uses only Hydra update service on Windows and refuses source drift', () => {
+  const source = "import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';\nservices.set(IUpdateService, new SyncDescriptor(Win32UpdateService));";
+  const branded = brandedElectronApp(source);
+  assert.match(branded, /import \{ HydraUpdateService \} from '\.\/hydraUpdateService\.js';/);
+  assert.match(branded, /services\.set\(IUpdateService, new SyncDescriptor\(HydraUpdateService\)\)/);
+  assert.doesNotMatch(branded, /Win32UpdateService/);
+  assert.throws(() => brandedElectronApp(branded), /already exists/);
+  assert.throws(() => brandedElectronApp(source.replace('SyncDescriptor(Win32UpdateService)', 'SyncDescriptor(AnotherService)')), /Pinned Electron app changed/);
+});
 
 test('copied Electron-main update primitives compile under pinned NodeNext rules', async () => {
   const parent = path.join(root, '.test-build');

@@ -46,6 +46,18 @@ export function brandedProduct(upstream, version) {
   delete result.updateUrl;
   return result;
 }
+export function brandedElectronMain(text) {
+  if (text.includes('initializeHydraUpdateTrust')) throw new Error('Pinned Electron main changed: Hydra trust hook already exists.');
+  const replaceOnce = (before, after) => {
+    if (text.split(before).length !== 2) throw new Error(`Pinned Electron main changed: ${before}`);
+    text = text.replace(before, after);
+  };
+  replaceOnce("import { CodeApplication } from './app.js';",
+    "import { CodeApplication } from './app.js';\nimport { initializeHydraUpdateTrust } from './hydraUpdateTrust.js';");
+  replaceOnce('await this.initServices(environmentMainService, userDataProfilesMainService, configurationService, stateMainService, productService);',
+    'await this.initServices(environmentMainService, userDataProfilesMainService, configurationService, stateMainService, productService);\n\t\t\t\ttry { initializeHydraUpdateTrust(productService); } catch { console.error("Hydra updates disabled: invalid installed trust."); }');
+  return text;
+}
 export function isolatedEditorTypes(upstream, declaration, typeRoots) {
   // A nested checkout otherwise finds Hydra's older @types/vscode through
   // ancestor node_modules, even with typeRoots set. Resolve imports to the
@@ -183,7 +195,10 @@ export async function prepare() {
   const desktopExport = "export { main } from './electron-browser/desktop.main.js';";
   if (desktopMain.split(desktopExport).length !== 2) throw new Error('Pinned desktop entrypoint changed.');
   await fs.copyFile(path.join(root, 'desktop', 'workbench', 'hydraProfile.ts'), path.join(source, 'src', 'vs', 'workbench', 'hydraProfile.ts'));
-  await fs.writeFile(path.join(source, 'src', 'vs', 'workbench', 'workbench.desktop.main.ts'), desktopMain.replace(desktopExport, `import './hydraProfile.js';\n\n${desktopExport}`));
+    await fs.writeFile(path.join(source, 'src', 'vs', 'workbench', 'workbench.desktop.main.ts'), desktopMain.replace(desktopExport, `import './hydraProfile.js';\n\n${desktopExport}`));
+    const electronMainPath = 'src/vs/code/electron-main/main.ts';
+    await fs.copyFile(path.join(root, 'desktop', 'main', 'hydraUpdateTrust.ts'), path.join(source, 'src', 'vs', 'code', 'electron-main', 'hydraUpdateTrust.ts'));
+    await fs.writeFile(path.join(source, electronMainPath), brandedElectronMain(await git(['show', `${pin.commit}:${electronMainPath}`])));
   const themeStartupPath = 'src/vs/workbench/services/themes/browser/workbenchThemeService.ts';
   await fs.writeFile(path.join(source, themeStartupPath), brandedThemeStartup(await git(['show', `${pin.commit}:${themeStartupPath}`])));
   const nativeThemePath = 'src/vs/platform/theme/electron-main/themeMainServiceImpl.ts';

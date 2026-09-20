@@ -4,7 +4,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import ts from 'typescript';
-import { brandedProduct, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+import { brandedProduct, brandedElectronMain, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, root } from '../scripts/desktop.mjs';
+
+test('pinned Electron main initializes installed Hydra trust and refuses source drift', () => {
+  const source = "import { CodeApplication } from './app.js';\nawait this.initServices(environmentMainService, userDataProfilesMainService, configurationService, stateMainService, productService);";
+  const branded = brandedElectronMain(source);
+  assert.match(branded, /import \{ initializeHydraUpdateTrust \} from '\.\/hydraUpdateTrust\.js';/);
+  assert.match(branded, /initializeHydraUpdateTrust\(productService\);/);
+  assert.match(branded, /catch \{ console\.error\("Hydra updates disabled: invalid installed trust\."\); \}/);
+  assert.throws(() => brandedElectronMain(branded), /Pinned Electron main changed/);
+  assert.throws(() => brandedElectronMain(source.replace('productService);', 'missingService);')), /Pinned Electron main changed/);
+});
 
 test('nested editor compiles its own API declarations without loading the parent extension API', async () => {
   const parent = path.join(root, '.test-build');

@@ -25,6 +25,11 @@ $currentHash = (Get-FileHash -LiteralPath $current -Algorithm SHA256).Hash
 $product = Get-Content -LiteralPath (Join-Path $built 'resources\app\product.json') -Raw | ConvertFrom-Json
 $module = Get-Content -LiteralPath (Join-Path $built 'resources\app\extensions\hydra-agent-manager\package.json') -Raw | ConvertFrom-Json
 if ($product.hydraVersion -ne $manifest.version -or $module.version -ne $manifest.version -or $product.nameShort -ne 'Hydra' -or $product.dataFolderName -ne '.hydra') { throw 'Current built runtime identity does not match the manifest.' }
+$stagedProductPath = Join-Path (Split-Path -Parent $current) 'product.json'
+$stagedProduct = Get-Content -LiteralPath $stagedProductPath -Raw | ConvertFrom-Json
+if ($null -ne $product.PSObject.Properties['target']) { throw 'Built runtime product unexpectedly has an installer target.' }
+$product | Add-Member -NotePropertyName target -NotePropertyValue 'user'
+if ($stagedProduct.target -ne 'user' -or ($stagedProduct | ConvertTo-Json -Depth 100 -Compress) -cne ($product | ConvertTo-Json -Depth 100 -Compress)) { throw 'Installer-staged product differs from the built runtime plus its user target.' }
 $testRoot = Join-Path $env:RUNNER_TEMP ('hydra-upgrade-' + [guid]::NewGuid().ToString('N'))
 $installRoot = Join-Path $testRoot 'Hydra'
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Hydra.lnk'
@@ -56,7 +61,11 @@ function Assert-Identity([string]$expectedVersion, [bool]$compareCurrent) {
   $registration = Get-ItemProperty -LiteralPath $uninstallKey
   if ($installedProduct.nameShort -ne 'Hydra' -or $installedProduct.dataFolderName -ne '.hydra' -or $installedProduct.hydraVersion -ne $expectedVersion -or $installedModule.version -ne $expectedVersion -or $registration.DisplayVersion -ne $expectedVersion) { throw 'Installed product/module/registry version does not match the expected upgrade stage.' }
   if ($compareCurrent) {
-    foreach ($relative in @('Hydra.exe', 'resources\app\product.json', 'resources\app\extensions\hydra-agent-manager\package.json', 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs', 'resources\app\extensions\hydra-agent-manager\dist\webview.js')) {
+    # The pinned Inno task adds target=user to product.json before packaging it.
+    # Compare that exact staged file to the installation, while every other
+    # runtime file must match the original CI build bytes.
+    if ((Get-FileHash -LiteralPath $stagedProductPath).Hash -ne (Get-FileHash -LiteralPath (Join-Path $installRoot 'resources\app\product.json')).Hash) { throw 'Installed product differs from the exact installer-staged CI product.' }
+    foreach ($relative in @('Hydra.exe', 'resources\app\extensions\hydra-agent-manager\package.json', 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs', 'resources\app\extensions\hydra-agent-manager\dist\webview.js')) {
       if ((Get-FileHash -LiteralPath (Join-Path $built $relative)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $installRoot $relative)).Hash) { throw "Installed current runtime differs from the exact CI build: $relative" }
     }
   }

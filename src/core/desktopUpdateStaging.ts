@@ -12,6 +12,8 @@ import type { VerifiedDesktopUpdate } from './desktopSignedUpdate';
 
 const maxArtifactBytes = 1024 * 1024 * 1024;
 const downloadTimeoutMs = 10 * 60 * 1000;
+const maxEnvelopeBytes = 96 * 1024;
+const metadataTimeoutMs = 30 * 1000;
 const sha256 = /^[a-f0-9]{64}$/;
 const operationIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 
@@ -21,14 +23,57 @@ function validArtifact(update: VerifiedDesktopUpdate): void {
   if (update.artifact.fileName !== 'HydraSetup.exe') refuse('artifact name is invalid.');
 }
 
-/** Only installed, reviewed origin data may be passed here. The feed never supplies a URL. */
-export function desktopUpdateArtifactUrl(origin: string, update: VerifiedDesktopUpdate): URL {
+function installedOrigin(origin: string): URL {
   let parsed: URL;
   try { parsed = new URL(origin); }
   catch { return refuse('installed origin is invalid.'); }
   if (parsed.protocol !== 'https:' || parsed.origin !== origin || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || isIP(parsed.hostname) || !parsed.hostname.includes('.') || parsed.hostname.endsWith('.localhost')) refuse('installed origin is invalid.');
+  return parsed;
+}
+
+/** Only installed, reviewed origin data may be passed here. The feed never supplies a URL. */
+export function desktopUpdateArtifactUrl(origin: string, update: VerifiedDesktopUpdate): URL {
+  installedOrigin(origin);
   validArtifact(update);
   return new URL(`/artifacts/sha256/${update.artifact.sha256}/HydraSetup.exe`, origin);
+}
+
+/** Fetches only the fixed channel record; callers must verify its signature before using any field. */
+export async function fetchDesktopUpdateEnvelope(origin: string, signal?: AbortSignal, requestFactory: typeof request = request): Promise<Buffer> {
+  installedOrigin(origin);
+  if (signal?.aborted) refuse('metadata request was cancelled.');
+  const url = new URL('/channels/stable/win32-x64/user.json', origin);
+  return new Promise<Buffer>((accept, reject) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    const timer = setTimeout(abort, metadataTimeoutMs);
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
+    const fail = (error: unknown) => { cleanup(); reject(error); };
+    try {
+      const req = requestFactory(url, { method: 'GET', signal: controller.signal, timeout: metadataTimeoutMs, headers: { accept: 'application/json', 'cache-control': 'no-store' } }, response => {
+        if (response.statusCode !== 200) { response.destroy(); fail(new Error(`Metadata HTTP ${response.statusCode ?? 'unknown'} refused; redirects are not followed.`)); return; }
+        const declared = response.headers['content-length'];
+        if (declared !== undefined && (Array.isArray(declared) || !/^\d+$/.test(declared) || Number(declared) > maxEnvelopeBytes)) { response.destroy(); fail(new Error('Metadata Content-Length is invalid.')); return; }
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        response.on('data', (chunk: Buffer) => {
+          bytes += chunk.length;
+          if (bytes > maxEnvelopeBytes) { response.destroy(new Error('Metadata exceeds size limit.')); return; }
+          chunks.push(chunk);
+        });
+        response.on('error', fail);
+        response.on('end', () => {
+          cleanup();
+          if (bytes === 0 || declared !== undefined && Number(declared) !== bytes) reject(new Error('Metadata response is empty or truncated.'));
+          else accept(Buffer.concat(chunks, bytes));
+        });
+      });
+      req.on('error', fail);
+      req.end();
+    } catch (error) { fail(error); }
+  });
 }
 
 async function noReparse(path: string): Promise<void> {

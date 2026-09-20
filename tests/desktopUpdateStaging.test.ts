@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { desktopUpdateArtifactUrl, stageDesktopUpdateArtifact, verifyStagedDesktopUpdateArtifact } from '../src/core/desktopUpdateStaging';
+import { desktopUpdateArtifactUrl, fetchDesktopUpdateEnvelope, stageDesktopUpdateArtifact, verifyStagedDesktopUpdateArtifact } from '../src/core/desktopUpdateStaging';
 import type { VerifiedDesktopUpdate } from '../src/core/desktopSignedUpdate';
 
 const body = Buffer.from('verified Hydra installer fixture');
@@ -16,9 +16,9 @@ const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex
 const update = { artifactBytes: body.length, artifact: { fileName: 'HydraSetup.exe', sha256: digest(body) } } as VerifiedDesktopUpdate;
 const origin = 'https://updates.example.com';
 
-function transport(statusCode: number, chunks: Buffer[], headers: Record<string, string> = {}) {
+function transport(statusCode: number, chunks: Buffer[], headers: Record<string, string> = {}, expectedUrl = `${origin}/artifacts/sha256/${digest(body)}/HydraSetup.exe`) {
   return ((url: URL, options: { signal?: AbortSignal }, callback: (response: IncomingMessage) => void) => {
-    assert.equal(url.href, `${origin}/artifacts/sha256/${digest(body)}/HydraSetup.exe`);
+    assert.equal(url.href, expectedUrl);
     const rawRequest = new EventEmitter() as EventEmitter & { end(): void };
     const response = new PassThrough();
     const incoming = Object.assign(response, { statusCode, headers }) as unknown as IncomingMessage;
@@ -33,6 +33,17 @@ function transport(statusCode: number, chunks: Buffer[], headers: Record<string,
     return rawRequest as unknown as ClientRequest;
   }) as typeof httpsRequest;
 }
+
+test('fetches only bounded fixed-route metadata before signature verification', async () => {
+  const envelope = Buffer.from('{"schemaVersion":1}');
+  const route = `${origin}/channels/stable/win32-x64/user.json`;
+  assert.deepEqual(await fetchDesktopUpdateEnvelope(origin, undefined, transport(200, [envelope], { 'content-length': String(envelope.length) }, route)), envelope);
+  await assert.rejects(fetchDesktopUpdateEnvelope(origin, undefined, transport(302, [], { location: 'https://other.example.com' }, route)), /redirect/);
+  await assert.rejects(fetchDesktopUpdateEnvelope(origin, undefined, transport(200, [Buffer.alloc(96 * 1024 + 1)], {}, route)), /size limit/);
+  await assert.rejects(fetchDesktopUpdateEnvelope(origin, undefined, transport(200, [envelope], { 'content-length': String(envelope.length + 1) }, route)), /truncated/);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(fetchDesktopUpdateEnvelope(origin, controller.signal, transport(200, [envelope], {}, route)), /cancelled/);
+});
 
 async function fixture(run: (directory: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'hydra-update-stage-'));

@@ -88,6 +88,9 @@ jobs:
       - name: Verify native Authenticode boundary with signed Windows fixture
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-verifier-test.ps1
+      - name: Verify native operation path and replacement locks
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-locked-path-test.ps1
       - run: npm.cmd run desktop:build
         env:
           # Upstream ripgrep uses GitHub's release API; avoid shared-runner anonymous limits.

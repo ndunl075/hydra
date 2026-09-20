@@ -16,6 +16,14 @@ async function fixture() {
 }
 const command = (id: string, source: string, required = true, timeoutMs = 5000) => ({ id, required, timeoutMs, command: { executable: process.execPath, args: ['-e', source] } });
 const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+async function waitForFile(file: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { await readFile(file); return; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    await wait(20);
+  }
+  throw new Error('Verification fixture process did not start.');
+}
 
 test('records full logs for exact passing and failing checks', async () => { const f = await fixture(); try { const evidence = await recordDelegatedVerification(f.storage, { task: f.task, checks: [command('pass', "process.stdout.write('pass')"), command('fail', 'process.exit(7)')] }); assert.deepEqual(evidence.attempts[0]!.checks.map(c => [c.status, c.exitCode]), [['passed', 0], ['failed', 7]]); assert.match(await readFile(path.join(f.storage, ...evidence.attempts[0]!.checks[0]!.artifacts[0]!.path.split('/')), 'utf8'), /pass/); } finally { await rm(f.root, { recursive: true, force: true }); } });
 test('fails closed for unavailable runner, pre-abort, and malformed shell-shaped command', async () => { const f = await fixture(); try { const missing = await recordDelegatedVerification(f.storage, { task: f.task, checks: [{ id: 'missing', required: true, timeoutMs: 5000, command: { executable: 'hydra-no-such-runner', args: [] } }] }); assert.equal(missing.attempts[0]!.checks[0]!.status, 'unavailable'); const controller = new AbortController(); controller.abort(); const marker = path.join(f.root, 'marker'); const aborted = await recordDelegatedVerification(f.storage, { task: f.task, checks: [command('abort', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x')`)], signal: controller.signal }); assert.equal(aborted.attempts[0]!.checks[0]!.status, 'interrupted'); await assert.rejects(readFile(marker)); assert.throws(() => parseDelegatedVerificationChecks([{ id: 'unsafe', required: true, timeoutMs: 5000, command: { executable: 'npm.cmd', args: ['test & echo bad'] } }]), /shell|character|shim/i); } finally { await rm(f.root, { recursive: true, force: true }); } });
@@ -30,17 +38,17 @@ test('refuses a new reviewed result without replacing immutable evidence from th
 test('cancels the owned runner and rolls back a failed durable transaction', async () => { const f = await fixture(); try { const controller = new AbortController(); const marker = path.join(f.root, 'started'); const source = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x');setInterval(()=>{},1000)`; const pending = recordDelegatedVerification(f.storage, { task: f.task, checks: [command('hang', source)], signal: controller.signal }); for (let i = 0; i < 50; i++) { try { await readFile(marker); break; } catch { await new Promise(r => setTimeout(r, 20)); } } controller.abort(); const evidence = await pending; assert.equal(evidence.attempts[0]!.checks[0]!.status, 'interrupted'); const task: Pick<Task, 'verificationEvidence' | 'updatedAt'> = { verificationEvidence: evidence, updatedAt: '2026-01-01T00:00:00.000Z' }; await assert.rejects(persistDelegatedVerification(task, interruptLatestDelegatedVerification(evidence), async () => { throw new Error('disk unavailable'); }, '2026-01-02T00:00:00.000Z'), /disk unavailable/); assert.deepEqual(task.verificationEvidence, evidence); } finally { await rm(f.root, { recursive: true, force: true }); } });
 test('action gate fences shutdown until its active operation settles', async () => { const gate = new DelegatedVerificationActionGate(); let release!: () => void; const pending = new Promise<void>(resolve => { release = resolve; }); const action = gate.start(async signal => { signal.addEventListener('abort', release, { once: true }); await pending; }); assert.throws(() => gate.start(async () => {}), /already in progress/); await gate.abortAndWait(); await action.done; });
 test('termination denial has a bounded interrupted fallback instead of hanging a shutdown', async () => { const f = await fixture(); try {
-  const controller = new AbortController(), marker = path.join(f.root, 'termination-denied.log');
-  const pending = runDelegatedVerificationCommand({ executable: process.execPath, args: ['-e', 'setTimeout(() => process.exit(), 100)'] }, f.task.worktree, marker, controller.signal, async () => { throw new Error('taskkill access denied'); }, 20);
-  setTimeout(() => controller.abort(), 20); const result = await pending;
+  const controller = new AbortController(), marker = path.join(f.root, 'termination-denied.log'), ready = path.join(f.root, 'termination-denied.ready');
+  const pending = runDelegatedVerificationCommand({ executable: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready');setInterval(() => {}, 1000)`] }, f.task.worktree, marker, controller.signal, async () => { throw new Error('taskkill access denied'); }, 20);
+  await waitForFile(ready); controller.abort(); const result = await pending;
   assert.deepEqual(result, { exitCode: null, unavailable: false, interrupted: true, timedOut: false, logFailed: false, logged: true });
   assert.match(await readFile(marker, 'utf8'), /could not confirm process-tree termination/i);
   await wait(150);
 } finally { await rm(f.root, { recursive: true, force: true }); } });
 test('a never-settling process-tree cleanup is bounded and leaves an interrupted uncertainty record', async () => { const f = await fixture(); try {
-  const controller = new AbortController(), marker = path.join(f.root, 'termination-hung.log');
-  const pending = runDelegatedVerificationCommand({ executable: process.execPath, args: ['-e', 'setTimeout(() => process.exit(), 100)'] }, f.task.worktree, marker, controller.signal, async () => await new Promise<void>(() => {}), 20);
-  setTimeout(() => controller.abort(), 20); const result = await pending;
+  const controller = new AbortController(), marker = path.join(f.root, 'termination-hung.log'), ready = path.join(f.root, 'termination-hung.ready');
+  const pending = runDelegatedVerificationCommand({ executable: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready');setInterval(() => {}, 1000)`] }, f.task.worktree, marker, controller.signal, async () => await new Promise<void>(() => {}), 20);
+  await waitForFile(ready); controller.abort(); const result = await pending;
   assert.deepEqual(result, { exitCode: null, unavailable: false, interrupted: true, timedOut: false, logFailed: false, logged: true });
   assert.match(await readFile(marker, 'utf8'), /cleanup exceeded 20ms.*writer ownership is uncertain/i);
   await wait(150);

@@ -1,0 +1,5 @@
+# Electron main update trust boundary
+
+`desktop:prepare` now copies `desktop/main/hydraUpdateTrust.ts` into the pinned Code - OSS Electron main source and patches `main.ts` at an exact startup seam. After main services initialize, it validates the installed `product.json` identity, stable Hydra release version, absence of upstream `updateUrl`, and `hydraUpdateTrust`. Disabled or invalid trust leaves updates unavailable while the IDE can still start. Enabled trust is accepted only for Windows x64 and requires the exact reviewed HTTPS origin, Ed25519 key, and Authenticode signer allowlist. The resulting main-process value is frozen and is not exposed to renderers or extensions.
+
+This establishes the source of authority for a later update service. It adds no fetch, download, installer launch, IPC command, or channel activation. A future PR must consume the main-owned trust with signed metadata verification, durable sequence state, user consent, and the native install helper; it must keep the channel disabled until release-owner inputs and signed acceptance exist.

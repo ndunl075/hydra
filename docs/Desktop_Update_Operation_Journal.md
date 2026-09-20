@@ -1,0 +1,7 @@
+# Desktop update operation journal
+
+`src/core/desktopUpdateJournal.ts` is a main-process persistence primitive for the stable Windows update channel. It keeps one active operation and a bounded history of prior operations, with immutable release sequence, signed-payload digest, installer digest, length, and version bindings. State changes are ordered: `available`, `downloading`, `verified`, `awaitingRestart`, `installing`, `installed`, and `healthy`. Refusal and failure are terminal. A new release must have a higher sequence than the retained history.
+
+Writes use an exclusive writer lock, a synced temporary file, and atomic replacement. A malformed journal, retained lock, stale transition, or failed ownership check refuses while retaining the prior durable record. Recovery reports `awaitingRestart`, `installing`, and `installed` as requiring review; it never yields permission to launch a cached installer. The bounded history refuses new work when full rather than silently discarding evidence.
+
+This module does **not** authenticate the user's Restart to update action, derive installed trust, call the native helper, start an installer, or activate the channel. The future main-process service must own those inputs and must record `awaitingRestart` only after explicit consent and `installing` only after the native helper has reverified the staged artifact. A journal timestamp supplied to `advance` is evidence supplied by its trusted caller, not proof of consent on its own. Signed release acceptance remains pending.

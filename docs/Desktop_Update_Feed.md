@@ -4,7 +4,9 @@
 
 The parser is intentionally a preparation contract, not an automatic-update implementation. Hydra's desktop build currently removes Code - OSS `updateUrl`, and the installer remains unsigned. The native update-channel implementation must separately provide authenticated feed transport, certificate verification against downloaded bytes, download storage, install/restart behavior, recovery, and native upgrade/rollback acceptance.
 
-That native decision is recorded in [Windows update channel decision](Desktop_Update_Channel_ADR.md). Its signed envelope, installed trust configuration, helper, and release gates are future implementation work; this parser alone does not enable updates.
+That native decision is recorded in [Windows update channel decision](Desktop_Update_Channel_ADR.md). Its installed trust configuration, native helper, and release gates are future implementation work; this parser alone does not enable updates.
+
+The first pure [signed metadata verifier](Desktop_Signed_Update.md) now checks a caller-supplied envelope against installed-key and sequence-floor inputs. Channel transport, durable floor storage, native signature checks, installation, and release acceptance remain pending.
 
 ## Manifest
 

@@ -6,7 +6,7 @@ Hydra will have one Windows x64, per-user **stable** update channel. Its trust b
 
 ## Installed trust and release identity
 
-The app embeds immutable Hydra product identity, `stable` channel, `win32-x64` user target, approved HTTPS origin, metadata public key identifier and key, and allowed Authenticode signer identities. Settings, extensions, webviews, and feed data cannot alter these values, choose local paths, or supply installer arguments. `product.hydraVersion` is the update comparator; Code - OSS's API version remains separate. Packaging must prove the app executable, installer, product record, and bundled Hydra module agree on the Hydra release version. The current branding patch changes the executable publisher but has not yet proved that its PE `ProductVersion` matches Hydra's version; resolve that before using the signing preflight as release evidence.
+The app embeds immutable Hydra product identity, `stable` channel, `win32-x64` user target, approved HTTPS origin, metadata public key identifier and key, and allowed Authenticode signer identities. Settings, extensions, webviews, and feed data cannot alter these values, choose local paths, or supply installer arguments. `product.hydraVersion` is the update comparator; Code - OSS's API version remains separate. Packaging must prove the app executable, installer, product record, and bundled Hydra module agree on the Hydra release version. The build stamps the executable's PE `ProductVersion` after upstream packaging and `desktop:verify` compares it with the product record and bundled module. Disposable Windows build acceptance must pass before this becomes release evidence; signing and owner trust inputs remain separate gates.
 
 ## Authenticated metadata and artifact
 

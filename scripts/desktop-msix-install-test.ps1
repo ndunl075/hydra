@@ -7,6 +7,142 @@ Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
   throw 'MSIX installation tests run only on disposable GitHub-hosted Windows runners.'
 }
+
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+
+namespace HydraMsixStandardUserController {
+  public sealed class TokenEvidence {
+    public string UserSid { get; set; }
+    public bool Elevated { get; set; }
+    public int IntegrityRid { get; set; }
+    public bool Administrator { get; set; }
+  }
+  public sealed class ProcessResult {
+    public uint ProcessId { get; set; }
+    public int ExitCode { get; set; }
+    public TokenEvidence Token { get; set; }
+  }
+  public static class Native {
+    const uint TOKEN_QUERY = 0x0008;
+    const int TokenElevation = 20;
+    const int TokenIntegrityLevel = 25;
+    const uint CREATE_SUSPENDED = 0x00000004;
+    const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    const uint CREATE_NO_WINDOW = 0x08000000;
+    const uint WAIT_OBJECT_0 = 0;
+    const uint WAIT_TIMEOUT = 258;
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
+    [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
+      public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+      public uint dwX; public uint dwY; public uint dwXSize; public uint dwYSize;
+      public uint dwXCountChars; public uint dwYCountChars; public uint dwFillAttribute;
+      public uint dwFlags; public short wShowWindow; public short cbReserved2;
+      public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION {
+      public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId;
+    }
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LogonUserW(
+      string username, string domain, string password, int logonType, int logonProvider, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessWithTokenW(
+      IntPtr token, uint logonFlags, string applicationName, StringBuilder commandLine, uint creationFlags,
+      IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenClass, IntPtr information, int length, out int returnLength);
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint subAuthority);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    static TokenEvidence InspectToken(IntPtr token) {
+      int returned;
+      IntPtr elevation = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(TOKEN_ELEVATION)));
+      bool elevated;
+      try {
+        if (!GetTokenInformation(token, TokenElevation, elevation, Marshal.SizeOf(typeof(TOKEN_ELEVATION)), out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenElevation failed.");
+        elevated = ((TOKEN_ELEVATION)Marshal.PtrToStructure(elevation, typeof(TOKEN_ELEVATION))).TokenIsElevated != 0;
+      } finally { Marshal.FreeHGlobal(elevation); }
+      GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out returned);
+      IntPtr integrity = Marshal.AllocHGlobal(returned);
+      int rid;
+      try {
+        if (!GetTokenInformation(token, TokenIntegrityLevel, integrity, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenIntegrityLevel failed.");
+        var label = (TOKEN_MANDATORY_LABEL)Marshal.PtrToStructure(integrity, typeof(TOKEN_MANDATORY_LABEL));
+        byte count = Marshal.ReadByte(GetSidSubAuthorityCount(label.Label.Sid));
+        rid = Marshal.ReadInt32(GetSidSubAuthority(label.Label.Sid, (uint)(count - 1)));
+      } finally { Marshal.FreeHGlobal(integrity); }
+      using (var identity = new WindowsIdentity(token)) {
+        var principal = new WindowsPrincipal(identity);
+        return new TokenEvidence { UserSid = identity.User.Value, Elevated = elevated, IntegrityRid = rid,
+          Administrator = principal.IsInRole(WindowsBuiltInRole.Administrator) };
+      }
+    }
+
+    public static ProcessResult Run(string username, string password, string expectedSid, string executable,
+        string commandLine, string currentDirectory, uint timeoutMilliseconds) {
+      IntPtr userToken = IntPtr.Zero;
+      PROCESS_INFORMATION created = new PROCESS_INFORMATION();
+      bool finished = false;
+      try {
+        if (!LogonUserW(username, ".", password, 2, 0, out userToken))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUserW failed.");
+        var selected = InspectToken(userToken);
+        if (selected.UserSid != expectedSid || selected.Elevated || selected.Administrator ||
+            selected.IntegrityRid < 0x2000 || selected.IntegrityRid >= 0x3000)
+          throw new InvalidOperationException("Logon token is not the expected standard-user medium token.");
+        var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        var mutableCommandLine = new StringBuilder(commandLine);
+        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+        if (!CreateProcessWithTokenW(userToken, 1, executable, mutableCommandLine, flags, IntPtr.Zero, currentDirectory, ref startup, out created))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessWithTokenW failed.");
+        IntPtr processToken;
+        if (!OpenProcessToken(created.hProcess, TOKEN_QUERY, out processToken))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcessToken child failed.");
+        TokenEvidence child;
+        try { child = InspectToken(processToken); } finally { CloseHandle(processToken); }
+        if (child.UserSid != expectedSid || child.Elevated || child.Administrator ||
+            child.IntegrityRid < 0x2000 || child.IntegrityRid >= 0x3000)
+          throw new InvalidOperationException("Child process is not the expected standard-user medium process.");
+        if (ResumeThread(created.hThread) == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed.");
+        uint wait = WaitForSingleObject(created.hProcess, timeoutMilliseconds);
+        if (wait == WAIT_TIMEOUT) throw new TimeoutException("Standard-user MSIX child timed out.");
+        if (wait != WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject failed.");
+        finished = true;
+        uint exitCode;
+        if (!GetExitCodeProcess(created.hProcess, out exitCode)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return new ProcessResult { ProcessId = created.dwProcessId, ExitCode = unchecked((int)exitCode), Token = child };
+      } finally {
+        if (created.hProcess != IntPtr.Zero && !finished) TerminateProcess(created.hProcess, 124);
+        if (created.hThread != IntPtr.Zero) CloseHandle(created.hThread);
+        if (created.hProcess != IntPtr.Zero) CloseHandle(created.hProcess);
+        if (userToken != IntPtr.Zero) CloseHandle(userToken);
+      }
+    }
+  }
+}
+'@
+
+function ConvertTo-WindowsArgument([string]$Value) {
+  if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+  $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+  $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+  return '"' + $escaped + '"'
+}
+function Join-WindowsArguments([string[]]$Values) {
+  return (($Values | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' ')
+}
 $repository = (Resolve-Path -LiteralPath $env:GITHUB_WORKSPACE).Path
 $workspacePrefix = $repository.TrimEnd('\') + '\'
 $builtApp = (Resolve-Path -LiteralPath $BuiltAppPath).Path
@@ -43,6 +179,11 @@ $existingFileWriteRefused = $false
 $existingProcessIds = @()
 $activationAttempted = $false
 $workflowReport = $null
+$standardUserReport = $null
+$fixtureUser = $null
+$fixtureUserSid = $null
+$fixtureAclRule = $null
+$fixturePassword = $null
 $report = [ordered]@{
   schemaVersion = 1
   status = 'started'
@@ -120,12 +261,62 @@ try {
   if ((Get-Item -LiteralPath $installedExecutable).VersionInfo.ProductVersion -ne $product.hydraVersion) {
     throw 'Installed Hydra executable did not retain its packaged PE version.'
   }
+
+  $fixtureUserName = 'hydra' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+  $fixturePassword = 'H!' + [Guid]::NewGuid().ToString('N') + 'a9'
+  $securePassword = ConvertTo-SecureString $fixturePassword -AsPlainText -Force
+  $fixtureUser = New-LocalUser -Name $fixtureUserName -Password $securePassword -AccountNeverExpires `
+    -PasswordNeverExpires -UserMayNotChangePassword -Description 'Disposable Hydra MSIX acceptance user'
+  $fixtureUserSid = $fixtureUser.SID.Value
+  if (-not (Get-LocalGroupMember -SID 'S-1-5-32-545' | Where-Object SID -eq $fixtureUserSid)) {
+    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $fixtureUser
+  }
+  if (Get-LocalGroupMember -SID 'S-1-5-32-544' | Where-Object SID -eq $fixtureUserSid) {
+    throw 'Disposable Hydra fixture user unexpectedly belongs to Administrators.'
+  }
+  $runAcl = Get-Acl -LiteralPath $run
+  $fixtureAclRule = New-Object Security.AccessControl.FileSystemAccessRule(
+    $fixtureUserSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  [void]$runAcl.AddAccessRule($fixtureAclRule)
+  Set-Acl -LiteralPath $run -AclObject $runAcl
+
+  $standardResultPath = Join-Path $run 'standard-user-report.json'
+  $standardRequestPath = Join-Path $run 'standard-user-request.json'
+  [ordered]@{
+    repository = $repository
+    expectedUserSid = $fixtureUserSid
+    packagePath = $signedPackage
+    packageName = $packageName
+    expectedVersion = ($product.hydraVersion + '.0')
+    workflowScript = (Join-Path $repository 'scripts\desktop-msix-workflow-test.ps1')
+    runDirectory = $run
+    resultPath = $standardResultPath
+    environment = [ordered]@{
+      githubActions = $env:GITHUB_ACTIONS
+      runnerEnvironment = $env:RUNNER_ENVIRONMENT
+      runnerOs = $env:RUNNER_OS
+    }
+  } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $standardRequestPath -Encoding utf8
+
   $existingProcessIds = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   $activationAttempted = $true
-  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repository 'scripts\desktop-msix-workflow-test.ps1') `
-    -PackageFullName $package.PackageFullName -PackageFamilyName $package.PackageFamilyName `
-    -InstallLocation $installLocation -RunDirectory $run
-  if ($LASTEXITCODE -ne 0) { throw 'Packaged MSIX workflow acceptance failed.' }
+  $powershell = (Get-Command powershell.exe).Source
+  $childScript = Join-Path $repository 'scripts\desktop-msix-standard-user-test.ps1'
+  $childArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $childScript, '-RequestPath', $standardRequestPath)
+  $childCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $childArguments
+  $child = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
+    $powershell, $childCommandLine, $run, 300000)
+  if ($child.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $standardResultPath)) {
+    throw "Standard-user MSIX controller failed with exit code $($child.ExitCode)."
+  }
+  $standardUserReport = Get-Content -LiteralPath $standardResultPath -Raw | ConvertFrom-Json
+  if ($standardUserReport.status -ne 'passed' -or -not $standardUserReport.packageRemoved) {
+    throw "Standard-user packaged workflow failed: $($standardUserReport.error)"
+  }
+  if (Get-AppxPackage -User $fixtureUserSid -Name $packageName) {
+    throw 'Standard-user package registration survived child cleanup.'
+  }
   $workflowReport = Get-Content -LiteralPath (Join-Path $run 'workflow-report.json') -Raw | ConvertFrom-Json
   if ($workflowReport.status -ne 'passed') { throw 'Packaged MSIX workflow report did not pass.' }
 
@@ -136,7 +327,8 @@ try {
   $report.checks.protectedNewFile = 'refused'
   $report.checks.protectedExistingFileWrite = 'refused'
   $report.checks.executablePeVersion = $product.hydraVersion
-  $report.checks.registeredApplicationLaunch = 'passed with explicit arguments and process identity attestation'
+  $report.checks.standardUserToken = $standardUserReport.token
+  $report.checks.registeredApplicationLaunch = 'passed as a standard local user with explicit arguments and process identity attestation'
   $report.checks.packagedWorkflows = $workflowReport.checks
   $report.status = 'passed'
 } finally {
@@ -144,6 +336,21 @@ try {
     Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $existingProcessIds } |
       Stop-Process -Force -ErrorAction Continue
   }
+  if ($fixtureUserSid) {
+    $fixturePackages = @(Get-AppxPackage -User $fixtureUserSid -Name $packageName -ErrorAction SilentlyContinue)
+    $fixturePackages | ForEach-Object {
+      Remove-AppxPackage -Package $_.PackageFullName -User $fixtureUserSid -ErrorAction Continue
+    }
+    if ($fixtureAclRule) {
+      $cleanupAcl = Get-Acl -LiteralPath $run
+      [void]$cleanupAcl.RemoveAccessRuleSpecific($fixtureAclRule)
+      Set-Acl -LiteralPath $run -AclObject $cleanupAcl -ErrorAction Continue
+    }
+    Get-CimInstance Win32_UserProfile -Filter "SID='$fixtureUserSid'" -ErrorAction SilentlyContinue |
+      Remove-CimInstance -ErrorAction Continue
+  }
+  if ($fixtureUser) { Remove-LocalUser -SID $fixtureUser.SID -ErrorAction Continue }
+  $fixturePassword = $null
   $installed = Get-AppxPackage -Name $packageName
   if ($installed) { Remove-AppxPackage -Package $installed.PackageFullName -ErrorAction Continue }
   if ($imported) {
@@ -154,6 +361,9 @@ try {
     certificateRemoved = -not [bool](Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Thumbprint -eq $signing.thumbprint)
     privateKeyAbsent = -not (Test-Path -LiteralPath (Join-Path $run 'fixture-signing.key'))
     pfxAbsent = -not (Test-Path -LiteralPath (Join-Path $run 'fixture-signing.pfx'))
+    standardUserPackageRemoved = -not $fixtureUserSid -or -not [bool](Get-AppxPackage -User $fixtureUserSid -Name $packageName -ErrorAction SilentlyContinue)
+    standardUserProfileRemoved = -not $fixtureUserSid -or -not [bool](Get-CimInstance Win32_UserProfile -Filter "SID='$fixtureUserSid'" -ErrorAction SilentlyContinue)
+    standardUserRemoved = -not $fixtureUserSid -or -not [bool](Get-LocalUser -SID $fixtureUserSid -ErrorAction SilentlyContinue)
   }
   $logRoot = Join-Path $repository '.desktop\msix-test-logs'
   New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
@@ -162,6 +372,9 @@ try {
   Copy-Item -LiteralPath (Join-Path $run 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing.json') -Force
   if (Test-Path -LiteralPath (Join-Path $run 'workflow-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'workflow-report.json') -Destination (Join-Path $logRoot 'workflow-report.json') -Force
+  }
+  if (Test-Path -LiteralPath (Join-Path $run 'standard-user-report.json')) {
+    Copy-Item -LiteralPath (Join-Path $run 'standard-user-report.json') -Destination (Join-Path $logRoot 'standard-user-report.json') -Force
   }
 }
 if ($report.status -ne 'passed' -or $report.cleanup.Values -contains $false) { throw 'MSIX fixture acceptance or cleanup failed.' }

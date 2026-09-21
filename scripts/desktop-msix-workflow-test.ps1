@@ -213,6 +213,7 @@ $standalone = Join-Path $repository '.desktop\VSCode-win32-x64'
 $vsix = Join-Path $workflowRoot 'hydra-msix-workflow-1.0.0.vsix'
 $cliProvisionScript = Join-Path $workflowRoot 'provision-extension.ps1'
 $cliProvisionReportPath = Join-Path $workflowRoot 'provision-extension.json'
+$cliProvisionLogPath = Join-Path $workflowRoot 'provision-extension.log'
 $phaseOnePath = Join-Path $workflowRoot 'phase-1.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
@@ -240,16 +241,16 @@ try {
   $report.phase = 'provisioning-extension-through-version-matched-standalone-cli'
   Save-WorkflowReport
   Set-Content -LiteralPath $cliProvisionScript -Encoding utf8 -Value @'
-param([string]$Hydra, [string]$Arguments, [string]$ReportPath)
+param([string]$Hydra, [string]$Arguments, [string]$ReportPath, [string]$LogPath)
 $ErrorActionPreference = 'Stop'
 $result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'version-matched-shipped-cli-install-extension';
-  processId = $null; exitCode = $null; stdout = ''; stderr = ''; error = $null }
+  processId = $null; exitCode = $null; outputTail = ''; error = $null }
 try {
   $env:ELECTRON_RUN_AS_NODE = '1'
   Remove-Item Env:VSCODE_DEV -ErrorAction SilentlyContinue
   $start = New-Object Diagnostics.ProcessStartInfo
-  $start.FileName = $Hydra
-  $start.Arguments = $Arguments
+  $start.FileName = $env:ComSpec
+  $start.Arguments = '/d /s /c ""' + $Hydra + '" ' + $Arguments + ' > "' + $LogPath + '" 2>&1"'
   $start.UseShellExecute = $false
   $start.CreateNoWindow = $true
   $process = New-Object Diagnostics.Process
@@ -258,6 +259,10 @@ try {
   if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Installed Hydra CLI process timed out.' }
   $result.processId = $process.Id
   $result.exitCode = $process.ExitCode
+  if (Test-Path -LiteralPath $LogPath) {
+    $output = Get-Content -LiteralPath $LogPath -Raw
+    $result.outputTail = if ($output.Length -le 8000) { $output.Trim() } else { $output.Substring($output.Length - 8000).Trim() }
+  }
   $result.status = if ($process.ExitCode -eq 0) { 'passed' } else { 'failed' }
   if ($process.ExitCode -ne 0) { $result.error = "Installed Hydra CLI exited with code $($process.ExitCode)." }
 } catch {
@@ -278,11 +283,12 @@ if ($result.status -ne 'passed') { exit 1 }
   $standaloneCliArguments = Join-WindowsArguments @((Join-Path $standalone 'resources\app\out\cli.js'),
     '--install-extension', $vsix, '--force', '--user-data-dir', $userData, '--extensions-dir', $extensions)
   & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $cliProvisionScript `
-    -Hydra (Join-Path $standalone 'Hydra.exe') -Arguments $standaloneCliArguments -ReportPath $cliProvisionReportPath
+    -Hydra (Join-Path $standalone 'Hydra.exe') -Arguments $standaloneCliArguments `
+    -ReportPath $cliProvisionReportPath -LogPath $cliProvisionLogPath
   $cliProvisionExit = $LASTEXITCODE
   $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 10
   if ($cliProvisionExit -ne 0 -or $cliProvisionReport.status -ne 'passed' -or $cliProvisionReport.exitCode -ne 0) {
-    throw "Version-matched standalone Hydra CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.stdout) $($cliProvisionReport.stderr)"
+    throw "Version-matched standalone Hydra CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.outputTail)"
   }
   $report.phase = 'waiting-installed-extension'
   Save-WorkflowReport

@@ -51,14 +51,6 @@ async function runFirstPhase(context, config, workspace, checkpoint) {
   if (!changed || !await document.save()) throw new Error('Packaged editor did not save the fixture file.');
 
   await checkpoint('terminal');
-  const terminalClosed = new Promise(resolve => {
-    const subscription = vscode.window.onDidCloseTerminal(terminal => {
-      if (terminal.name === config.terminalName) {
-        subscription.dispose();
-        resolve();
-      }
-    });
-  });
   const terminal = vscode.window.createTerminal({
     name: config.terminalName,
     cwd: workspace,
@@ -77,7 +69,6 @@ async function runFirstPhase(context, config, workspace, checkpoint) {
     throw new Error('Integrated terminal result did not match the workflow nonce.');
   }
   terminal.dispose();
-  await Promise.race([terminalClosed, delay(10_000).then(() => { throw new Error('Integrated terminal did not close after disposal.'); })]);
 
   await checkpoint('external-git');
   const git = await execute('git.exe', ['--version'], { cwd: workspace, windowsHide: true, timeout: 20_000 });

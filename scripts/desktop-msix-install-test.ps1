@@ -28,6 +28,10 @@ namespace HydraMsixStandardUserController {
     public uint ResumeCount { get; set; }
     public TokenEvidence Token { get; set; }
   }
+  sealed class UserObjectGrant {
+    public IntPtr Handle; public IntPtr OldDacl; public IntPtr SecurityDescriptor;
+    public IntPtr NewDacl; public IntPtr Sid;
+  }
   public static class Native {
     const uint TOKEN_QUERY = 0x0008;
     const int TokenUser = 1;
@@ -42,6 +46,13 @@ namespace HydraMsixStandardUserController {
     const uint STARTF_USESHOWWINDOW = 0x00000001;
     const uint WAIT_OBJECT_0 = 0;
     const uint WAIT_TIMEOUT = 258;
+    const int SE_WINDOW_OBJECT = 7;
+    const uint DACL_SECURITY_INFORMATION = 0x00000004;
+    const int GRANT_ACCESS = 1;
+    const int TRUSTEE_IS_SID = 0;
+    const int TRUSTEE_IS_USER = 1;
+    const uint WINSTA_ALL_ACCESS = 0x0000037F;
+    const uint DESKTOP_ALL_ACCESS = 0x000001FF;
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_GROUPS { public uint GroupCount; public SID_AND_ATTRIBUTES Groups; }
@@ -56,11 +67,19 @@ namespace HydraMsixStandardUserController {
     [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION {
       public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId;
     }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct TRUSTEE {
+      public IntPtr pMultipleTrustee; public int MultipleTrusteeOperation; public int TrusteeForm;
+      public int TrusteeType; public IntPtr ptstrName;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct EXPLICIT_ACCESS {
+      public uint grfAccessPermissions; public int grfAccessMode; public uint grfInheritance; public TRUSTEE Trustee;
+    }
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LogonUserW(
       string username, string domain, string password, int logonType, int logonProvider, out IntPtr token);
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessWithTokenW(
-      IntPtr token, uint logonFlags, string applicationName, StringBuilder commandLine, uint creationFlags,
-      IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessWithLogonW(
+      string username, string domain, string password, uint logonFlags, string applicationName, StringBuilder commandLine,
+      uint creationFlags, IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo,
+      out PROCESS_INFORMATION processInformation);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenClass, IntPtr information, int length, out int returnLength);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
@@ -70,6 +89,59 @@ namespace HydraMsixStandardUserController {
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern uint GetSecurityInfo(IntPtr handle, int objectType,
+      uint securityInfo, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetSecurityInfo(IntPtr handle, int objectType,
+      uint securityInfo, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern uint SetEntriesInAclW(
+      int count, ref EXPLICIT_ACCESS entries, IntPtr oldAcl, out IntPtr newAcl);
+
+    static UserObjectGrant GrantUserObject(IntPtr handle, uint access, string sidValue) {
+      if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "User object handle is unavailable.");
+      var sid = new SecurityIdentifier(sidValue);
+      byte[] sidBytes = new byte[sid.BinaryLength]; sid.GetBinaryForm(sidBytes, 0);
+      IntPtr sidMemory = Marshal.AllocHGlobal(sidBytes.Length); Marshal.Copy(sidBytes, 0, sidMemory, sidBytes.Length);
+      IntPtr owner = IntPtr.Zero, group = IntPtr.Zero, oldDacl = IntPtr.Zero, sacl = IntPtr.Zero, descriptor = IntPtr.Zero;
+      IntPtr newDacl = IntPtr.Zero;
+      try {
+        uint result = GetSecurityInfo(handle, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+          out owner, out group, out oldDacl, out sacl, out descriptor);
+        if (result != 0) throw new Win32Exception(unchecked((int)result), "GetSecurityInfo failed.");
+        var trustee = new TRUSTEE { pMultipleTrustee = IntPtr.Zero, MultipleTrusteeOperation = 0,
+          TrusteeForm = TRUSTEE_IS_SID, TrusteeType = TRUSTEE_IS_USER, ptstrName = sidMemory };
+        var entry = new EXPLICIT_ACCESS { grfAccessPermissions = access, grfAccessMode = GRANT_ACCESS,
+          grfInheritance = 0, Trustee = trustee };
+        result = SetEntriesInAclW(1, ref entry, oldDacl, out newDacl);
+        if (result != 0) throw new Win32Exception(unchecked((int)result), "SetEntriesInAcl failed.");
+        result = SetSecurityInfo(handle, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+          IntPtr.Zero, IntPtr.Zero, newDacl, IntPtr.Zero);
+        if (result != 0) throw new Win32Exception(unchecked((int)result), "SetSecurityInfo grant failed.");
+        return new UserObjectGrant { Handle = handle, OldDacl = oldDacl, SecurityDescriptor = descriptor,
+          NewDacl = newDacl, Sid = sidMemory };
+      } catch {
+        if (newDacl != IntPtr.Zero) LocalFree(newDacl);
+        if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        Marshal.FreeHGlobal(sidMemory);
+        throw;
+      }
+    }
+
+    static void RestoreUserObject(UserObjectGrant grant) {
+      if (grant == null) return;
+      try {
+        uint result = SetSecurityInfo(grant.Handle, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+          IntPtr.Zero, IntPtr.Zero, grant.OldDacl, IntPtr.Zero);
+        if (result != 0) throw new Win32Exception(unchecked((int)result), "SetSecurityInfo restore failed.");
+      } finally {
+        if (grant.NewDacl != IntPtr.Zero) LocalFree(grant.NewDacl);
+        if (grant.SecurityDescriptor != IntPtr.Zero) LocalFree(grant.SecurityDescriptor);
+        if (grant.Sid != IntPtr.Zero) Marshal.FreeHGlobal(grant.Sid);
+      }
+    }
 
     static TokenEvidence InspectToken(IntPtr token) {
       int returned;
@@ -121,6 +193,7 @@ namespace HydraMsixStandardUserController {
         string commandLine, string currentDirectory, uint timeoutMilliseconds) {
       IntPtr userToken = IntPtr.Zero;
       PROCESS_INFORMATION created = new PROCESS_INFORMATION();
+      UserObjectGrant windowStationGrant = null, desktopGrant = null;
       bool finished = false;
       try {
         if (!LogonUserW(username, ".", password, 2, 0, out userToken))
@@ -131,10 +204,13 @@ namespace HydraMsixStandardUserController {
           throw new InvalidOperationException("Logon token is not the expected standard-user medium token.");
         var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = 0;
+        windowStationGrant = GrantUserObject(GetProcessWindowStation(), WINSTA_ALL_ACCESS, expectedSid);
+        desktopGrant = GrantUserObject(GetThreadDesktop(GetCurrentThreadId()), DESKTOP_ALL_ACCESS, expectedSid);
         var mutableCommandLine = new StringBuilder(commandLine);
         uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE;
-        if (!CreateProcessWithTokenW(userToken, 1, executable, mutableCommandLine, flags, IntPtr.Zero, currentDirectory, ref startup, out created))
-          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessWithTokenW failed.");
+        if (!CreateProcessWithLogonW(username, ".", password, 1, executable, mutableCommandLine, flags,
+            IntPtr.Zero, currentDirectory, ref startup, out created))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessWithLogonW failed.");
         IntPtr processToken;
         if (!OpenProcessToken(created.hProcess, TOKEN_QUERY, out processToken))
           throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcessToken child failed.");
@@ -152,10 +228,16 @@ namespace HydraMsixStandardUserController {
         finished = true;
         uint exitCode;
         if (!GetExitCodeProcess(created.hProcess, out exitCode)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var completedDesktopGrant = desktopGrant; desktopGrant = null; RestoreUserObject(completedDesktopGrant);
+        var completedWindowStationGrant = windowStationGrant; windowStationGrant = null; RestoreUserObject(completedWindowStationGrant);
         return new ProcessResult { ProcessId = created.dwProcessId, ExitCode = unchecked((int)exitCode),
           ResumeCount = resumeCount, Token = child };
       } finally {
         if (created.hProcess != IntPtr.Zero && !finished) TerminateProcess(created.hProcess, 124);
+        var cleanupDesktopGrant = desktopGrant; desktopGrant = null;
+        try { RestoreUserObject(cleanupDesktopGrant); } catch { }
+        var cleanupWindowStationGrant = windowStationGrant; windowStationGrant = null;
+        try { RestoreUserObject(cleanupWindowStationGrant); } catch { }
         if (created.hThread != IntPtr.Zero) CloseHandle(created.hThread);
         if (created.hProcess != IntPtr.Zero) CloseHandle(created.hProcess);
         if (userToken != IntPtr.Zero) CloseHandle(userToken);

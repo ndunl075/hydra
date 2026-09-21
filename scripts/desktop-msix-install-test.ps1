@@ -10,6 +10,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -23,6 +24,14 @@ namespace HydraMsixStandardUserController {
     public bool Administrator { get; set; }
     public uint SessionId { get; set; }
     public string AuthenticationId { get; set; }
+    public int ElevationType { get; set; }
+    public bool UIAccess { get; set; }
+    public bool SandboxInert { get; set; }
+    public bool HasRestrictions { get; set; }
+    public uint RestrictedSidCount { get; set; }
+    public string[] Privileges { get; set; }
+    public string[] EnabledGroups { get; set; }
+    public string[] DenyOnlyGroups { get; set; }
   }
   public sealed class ProcessResult {
     public uint ProcessId { get; set; }
@@ -43,10 +52,16 @@ namespace HydraMsixStandardUserController {
     const uint TOKEN_ADJUST_DEFAULT = 0x0080;
     const int TokenUser = 1;
     const int TokenGroups = 2;
+    const int TokenPrivileges = 3;
     const int TokenStatistics = 10;
+    const int TokenRestrictedSids = 11;
     const int TokenSessionId = 12;
+    const int TokenSandBoxInert = 15;
+    const int TokenElevationType = 18;
     const int TokenElevation = 20;
+    const int TokenHasRestrictions = 21;
     const int TokenIntegrityLevel = 25;
+    const int TokenUIAccess = 26;
     const uint SE_GROUP_ENABLED = 0x00000004;
     const uint SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
     const uint CREATE_SUSPENDED = 0x00000004;
@@ -62,10 +77,11 @@ namespace HydraMsixStandardUserController {
     const int TRUSTEE_IS_USER = 1;
     const uint WINSTA_ALL_ACCESS = 0x0000037F;
     const uint DESKTOP_ALL_ACCESS = 0x000001FF;
-    const uint DISABLE_MAX_PRIVILEGE = 0x00000001;
     const uint LUA_TOKEN = 0x00000004;
     const uint SE_GROUP_INTEGRITY = 0x00000020;
     [StructLayout(LayoutKind.Sequential)] struct LUID { public uint LowPart; public int HighPart; }
+    [StructLayout(LayoutKind.Sequential)] struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_GROUPS { public uint GroupCount; public SID_AND_ATTRIBUTES Groups; }
@@ -115,6 +131,8 @@ namespace HydraMsixStandardUserController {
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenClass, IntPtr information, int length, out int returnLength);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint subAuthority);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LookupPrivilegeNameW(
+      string systemName, ref LUID luid, StringBuilder name, ref int nameLength);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
@@ -206,6 +224,8 @@ namespace HydraMsixStandardUserController {
       GetTokenInformation(token, TokenGroups, IntPtr.Zero, 0, out returned);
       IntPtr groupsBuffer = Marshal.AllocHGlobal(returned);
       bool administrator = false;
+      var enabledGroups = new List<string>();
+      var denyOnlyGroups = new List<string>();
       try {
         if (!GetTokenInformation(token, TokenGroups, groupsBuffer, returned, out returned))
           throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenGroups failed.");
@@ -214,10 +234,51 @@ namespace HydraMsixStandardUserController {
         int size = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
         for (uint index = 0; index < count; index++) {
           var group = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(IntPtr.Add(groupsBuffer, offset + (int)index * size), typeof(SID_AND_ATTRIBUTES));
+          string groupSid = new SecurityIdentifier(group.Sid).Value;
+          if ((group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) != 0) denyOnlyGroups.Add(groupSid);
+          else if ((group.Attributes & SE_GROUP_ENABLED) != 0) enabledGroups.Add(groupSid);
           if ((group.Attributes & SE_GROUP_ENABLED) != 0 && (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0 &&
-              new SecurityIdentifier(group.Sid).Value == "S-1-5-32-544") { administrator = true; break; }
+              groupSid == "S-1-5-32-544") administrator = true;
         }
       } finally { Marshal.FreeHGlobal(groupsBuffer); }
+      GetTokenInformation(token, TokenPrivileges, IntPtr.Zero, 0, out returned);
+      IntPtr privilegesBuffer = Marshal.AllocHGlobal(returned);
+      var privileges = new List<string>();
+      try {
+        if (!GetTokenInformation(token, TokenPrivileges, privilegesBuffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenPrivileges failed.");
+        uint count = unchecked((uint)Marshal.ReadInt32(privilegesBuffer));
+        int offset = Marshal.OffsetOf(typeof(TOKEN_PRIVILEGES), "Privileges").ToInt32();
+        int size = Marshal.SizeOf(typeof(LUID_AND_ATTRIBUTES));
+        for (uint index = 0; index < count; index++) {
+          var privilege = (LUID_AND_ATTRIBUTES)Marshal.PtrToStructure(
+            IntPtr.Add(privilegesBuffer, offset + (int)index * size), typeof(LUID_AND_ATTRIBUTES));
+          int nameLength = 0;
+          LookupPrivilegeNameW(null, ref privilege.Luid, null, ref nameLength);
+          var name = new StringBuilder(nameLength + 1);
+          if (!LookupPrivilegeNameW(null, ref privilege.Luid, name, ref nameLength))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LookupPrivilegeNameW failed.");
+          privileges.Add(name.ToString() + ":0x" + privilege.Attributes.ToString("x8"));
+        }
+      } finally { Marshal.FreeHGlobal(privilegesBuffer); }
+      Func<int, int> readIntToken = tokenClass => {
+        int valueLength;
+        GetTokenInformation(token, tokenClass, IntPtr.Zero, 0, out valueLength);
+        IntPtr valueBuffer = Marshal.AllocHGlobal(valueLength);
+        try {
+          if (!GetTokenInformation(token, tokenClass, valueBuffer, valueLength, out valueLength))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "GetTokenInformation class " + tokenClass + " failed.");
+          return Marshal.ReadInt32(valueBuffer);
+        } finally { Marshal.FreeHGlobal(valueBuffer); }
+      };
+      GetTokenInformation(token, TokenRestrictedSids, IntPtr.Zero, 0, out returned);
+      IntPtr restrictedBuffer = Marshal.AllocHGlobal(returned);
+      uint restrictedSidCount;
+      try {
+        if (!GetTokenInformation(token, TokenRestrictedSids, restrictedBuffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenRestrictedSids failed.");
+        restrictedSidCount = unchecked((uint)Marshal.ReadInt32(restrictedBuffer));
+      } finally { Marshal.FreeHGlobal(restrictedBuffer); }
       IntPtr sessionBuffer = Marshal.AllocHGlobal(sizeof(uint));
       uint sessionId;
       try {
@@ -234,7 +295,36 @@ namespace HydraMsixStandardUserController {
         authenticationId = statistics.AuthenticationId.HighPart.ToString("x8") + ":" + statistics.AuthenticationId.LowPart.ToString("x8");
       } finally { Marshal.FreeHGlobal(statisticsBuffer); }
       return new TokenEvidence { UserSid = userSid, Elevated = elevated, IntegrityRid = rid, Administrator = administrator,
-        SessionId = sessionId, AuthenticationId = authenticationId };
+        SessionId = sessionId, AuthenticationId = authenticationId, ElevationType = readIntToken(TokenElevationType),
+        UIAccess = readIntToken(TokenUIAccess) != 0, SandboxInert = readIntToken(TokenSandBoxInert) != 0,
+        HasRestrictions = readIntToken(TokenHasRestrictions) != 0, RestrictedSidCount = restrictedSidCount,
+        Privileges = privileges.ToArray(), EnabledGroups = enabledGroups.ToArray(), DenyOnlyGroups = denyOnlyGroups.ToArray() };
+    }
+
+    static void ValidateInteractiveLuaToken(TokenEvidence evidence) {
+      var allowedPrivileges = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+        "SeChangeNotifyPrivilege", "SeShutdownPrivilege", "SeUndockPrivilege",
+        "SeIncreaseWorkingSetPrivilege", "SeTimeZonePrivilege"
+      };
+      foreach (string privilege in evidence.Privileges) {
+        string name = privilege.Split(':')[0];
+        if (!allowedPrivileges.Contains(name))
+          throw new InvalidOperationException("Synthetic LUA token retained unexpected privilege " + privilege + ".");
+      }
+      var administrativeGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+        "S-1-5-32-544", "S-1-5-32-547", "S-1-5-32-548",
+        "S-1-5-32-549", "S-1-5-32-550", "S-1-5-32-551"
+      };
+      foreach (string sid in evidence.EnabledGroups) {
+        if (administrativeGroups.Contains(sid))
+          throw new InvalidOperationException("Synthetic LUA token retained enabled administrative group " + sid + ".");
+      }
+      if (Array.IndexOf(evidence.DenyOnlyGroups, "S-1-5-32-544") < 0)
+        throw new InvalidOperationException("Synthetic LUA token does not retain Administrators as deny-only.");
+      if ((evidence.ElevationType != 1 && evidence.ElevationType != 3) || evidence.UIAccess || evidence.SandboxInert ||
+          !evidence.HasRestrictions || evidence.RestrictedSidCount != 0)
+        throw new InvalidOperationException("Synthetic LUA token elevation or restriction attributes changed: " +
+          FormatEvidence(evidence));
     }
 
     public static ProcessResult Run(string username, string password, string expectedSid, string executable,
@@ -309,7 +399,7 @@ namespace HydraMsixStandardUserController {
         int groupSize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
         disabledGroups = Marshal.AllocHGlobal(groupSize);
         Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = administratorSid, Attributes = 0 }, disabledGroups, false);
-        if (!CreateRestrictedToken(sourceToken, DISABLE_MAX_PRIVILEGE | LUA_TOKEN, 1, disabledGroups,
+        if (!CreateRestrictedToken(sourceToken, LUA_TOKEN, 1, disabledGroups,
             0, IntPtr.Zero, 0, IntPtr.Zero, out restrictedToken) || restrictedToken == IntPtr.Zero)
           throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateRestrictedToken failed.");
         if (!ConvertStringSidToSidW("S-1-16-8192", out mediumSid))
@@ -328,6 +418,7 @@ namespace HydraMsixStandardUserController {
             restricted.IntegrityRid < 0x2000 || restricted.IntegrityRid >= 0x3000)
           throw new InvalidOperationException("Restricted token mismatch. Source=" + FormatEvidence(source) +
             "; Derived=" + FormatEvidence(restricted));
+        ValidateInteractiveLuaToken(restricted);
         var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = 0;
         var mutableCommandLine = new StringBuilder(commandLine);
@@ -345,6 +436,7 @@ namespace HydraMsixStandardUserController {
             child.IntegrityRid < 0x2000 || child.IntegrityRid >= 0x3000)
           throw new InvalidOperationException("Restricted child token changed before resume. Derived=" +
             FormatEvidence(restricted) + "; Child=" + FormatEvidence(child));
+        ValidateInteractiveLuaToken(child);
         uint resumeCount = ResumeThread(created.hThread);
         if (resumeCount == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread restricted child failed.");
         if (resumeCount != 1) throw new InvalidOperationException("Restricted child thread suspend count was " + resumeCount + " before resume; expected 1.");
@@ -371,7 +463,9 @@ namespace HydraMsixStandardUserController {
 
     static string FormatEvidence(TokenEvidence evidence) {
       return "sid=" + evidence.UserSid + ",elevated=" + evidence.Elevated + ",admin=" + evidence.Administrator +
-        ",integrity=" + evidence.IntegrityRid + ",session=" + evidence.SessionId + ",authentication=" + evidence.AuthenticationId;
+        ",integrity=" + evidence.IntegrityRid + ",session=" + evidence.SessionId + ",authentication=" + evidence.AuthenticationId +
+        ",elevationType=" + evidence.ElevationType + ",uiAccess=" + evidence.UIAccess + ",sandboxInert=" + evidence.SandboxInert +
+        ",hasRestrictions=" + evidence.HasRestrictions + ",restrictedSidCount=" + evidence.RestrictedSidCount;
     }
   }
 }
@@ -690,7 +784,7 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     packageRemoved = $standardUserReport.packageRemoved
   }
   $report.checks.restrictedInteractiveWorkflow = [ordered]@{
-    derivation = 'CreateRestrictedToken LUA token with the administrators group disabled, maximum privileges disabled, and medium integrity'
+    derivation = 'CreateRestrictedToken LUA token with the administrators group disabled and medium integrity'
     resumeCount = $restrictedWorkflow.ResumeCount
     sourceToken = $restrictedWorkflow.SourceToken
     derivedToken = $restrictedWorkflow.DerivedToken

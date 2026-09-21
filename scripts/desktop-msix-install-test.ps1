@@ -461,8 +461,17 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   $childArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', $childScript, '-RequestPath', $standardRequestPath)
   $childCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $childArguments
-  $child = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
-    $powershell, $childCommandLine, $run, 600000)
+  try {
+    $child = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
+      $powershell, $childCommandLine, $run, 600000)
+  } catch {
+    $workflowPhase = 'unavailable'
+    $partialWorkflowPath = Join-Path $run 'workflow-report.json'
+    if (Test-Path -LiteralPath $partialWorkflowPath) {
+      try { $workflowPhase = (Get-Content -LiteralPath $partialWorkflowPath -Raw | ConvertFrom-Json).phase } catch { }
+    }
+    throw "Standard-user MSIX controller failed during workflow phase '$workflowPhase': $($_.Exception.Message)"
+  }
   if ($child.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $standardResultPath)) {
     throw "Standard-user MSIX controller failed with exit code $($child.ExitCode)."
   }

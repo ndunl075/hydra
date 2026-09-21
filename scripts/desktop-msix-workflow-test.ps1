@@ -19,6 +19,11 @@ if (-not $run.StartsWith((Join-Path $repository '.test-build\msix-compatibility'
 if (-not $install.StartsWith((Join-Path $env:ProgramFiles 'WindowsApps') + '\', [StringComparison]::OrdinalIgnoreCase)) {
   throw 'Workflow install location is outside WindowsApps.'
 }
+$reportPath = Join-Path $run 'workflow-report.json'
+$stopwatch = [Diagnostics.Stopwatch]::StartNew()
+[ordered]@{ schemaVersion = 1; status = 'started'; phase = 'compiling-native-helper';
+  updatedAtUtc = [DateTime]::UtcNow.ToString('o'); elapsedMilliseconds = $stopwatch.ElapsedMilliseconds } |
+  ConvertTo-Json | Set-Content -LiteralPath $reportPath -Encoding utf8
 
 Add-Type -TypeDefinition @'
 using System;
@@ -179,22 +184,33 @@ $extensions = Join-Path $workflowRoot 'extensions'
 $fixture = Join-Path $repository 'tests\fixtures\msix-workflow-extension'
 $bootstrap = Join-Path $repository 'tests\fixtures\msix-install-bootstrap'
 $vsix = Join-Path $workflowRoot 'hydra-msix-workflow-1.0.0.vsix'
-$reportPath = Join-Path $run 'workflow-report.json'
 $bootstrapReportPath = Join-Path $workflowRoot 'bootstrap-report.json'
 $phaseOnePath = Join-Path $workflowRoot 'phase-1.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-$report = [ordered]@{ schemaVersion = 1; status = 'started'; applicationUserModelId = $applicationUserModelId; checks = [ordered]@{} }
+$report = [ordered]@{ schemaVersion = 1; status = 'started'; phase = 'native-helper-compiled';
+  updatedAtUtc = [DateTime]::UtcNow.ToString('o'); elapsedMilliseconds = $stopwatch.ElapsedMilliseconds;
+  applicationUserModelId = $applicationUserModelId; checks = [ordered]@{} }
+function Save-WorkflowReport {
+  $report.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+  $report.elapsedMilliseconds = $stopwatch.ElapsedMilliseconds
+  $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding utf8
+}
+Save-WorkflowReport
 
 try {
   New-Item -ItemType Directory -Path $workspace, $userData, $extensions -Force | Out-Null
+  $report.phase = 'packaging-fixture-extension'
+  Save-WorkflowReport
   Push-Location $fixture
   try {
-    & (Join-Path $repository 'node_modules\.bin\vsce.cmd') package --no-dependencies --allow-missing-repository --out $vsix
+    & (Join-Path $repository 'node_modules\.bin\vsce.cmd') package --no-dependencies --allow-missing-repository --skip-license --out $vsix
     if ($LASTEXITCODE -ne 0) { throw 'Offline workflow fixture VSIX packaging failed.' }
   } finally { Pop-Location }
   if (-not (Test-Path -LiteralPath $vsix)) { throw 'Workflow fixture VSIX is missing.' }
 
+  $report.phase = 'activating-install-bootstrap'
+  Save-WorkflowReport
   [ordered]@{ vsix = $vsix; reportPath = $bootstrapReportPath;
     targetExtensionId = 'hydra-msix-workflow.hydra-msix-workflow' } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspace '.hydra-msix-bootstrap.json') -Encoding utf8
@@ -203,6 +219,8 @@ try {
     '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
   $installPid = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $installArguments)
   $report.checks.installProcess = Assert-ProcessEvidence $installPid 'VSIX install process'
+  $report.phase = 'waiting-install-bootstrap'
+  Save-WorkflowReport
   $bootstrapReport = Wait-ForJson $bootstrapReportPath
   if ($bootstrapReport.status -ne 'passed' -or
       $bootstrapReport.command -ne 'workbench.extensions.installExtension' -or
@@ -210,6 +228,8 @@ try {
     throw "Packaged Hydra extension bootstrap failed: $($bootstrapReport.error)"
   }
   $report.checks.installExtensionHost = Assert-ProcessEvidence ([uint32]$bootstrapReport.extensionHostPid) 'VSIX install extension host'
+  $report.phase = 'waiting-installed-extension'
+  Save-WorkflowReport
   $extensionDeadline = [DateTime]::UtcNow.AddSeconds(60)
   do {
     $installedFixture = @(Get-ChildItem -LiteralPath $extensions -Directory -ErrorAction SilentlyContinue |
@@ -218,9 +238,13 @@ try {
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $extensionDeadline)
   if ($installedFixture.Count -ne 1) { throw 'Packaged Hydra did not install the offline fixture VSIX.' }
+  $report.phase = 'waiting-install-process-exit'
+  Save-WorkflowReport
   Wait-ForHydraExit $baseline
   $report.checks.userExtensionInstall = [ordered]@{ path = $installedFixture[0].FullName; bootstrap = $bootstrapReport }
 
+  $report.phase = 'preparing-workflow'
+  Save-WorkflowReport
   $editorFile = Join-Path $workspace 'editor result.txt'
   $terminalScript = Join-Path $workspace 'terminal fixture.ps1'
   $terminalOutput = Join-Path $workspace 'terminal-result.json'
@@ -255,9 +279,13 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
     fixtureCli = $fixtureCli; cliOutput = $cliOutput; fontSize = 17; protectedTargets = $targets }
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
 
+  $report.phase = 'activating-phase-one'
+  Save-WorkflowReport
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
   $phaseOnePid = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $workflowArguments)
+  $report.phase = 'waiting-phase-one-report'
+  Save-WorkflowReport
   $phaseOne = Wait-ForJson $phaseOnePath
   if ($phaseOne.status -ne 'passed') { throw "Packaged workflow phase 1 failed: $($phaseOne.error)" }
   if ($phaseOne.appName -ne 'Hydra' -or $phaseOne.workspace -ne $workspace -or
@@ -269,12 +297,18 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $report.checks.phaseOneMain = Assert-ProcessEvidence $phaseOnePid 'Phase 1 main process'
   $report.checks.phaseOneExtensionHost = Assert-ProcessEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
   $report.checks.phaseOne = $phaseOne
+  $report.phase = 'waiting-phase-one-exit'
+  Save-WorkflowReport
   Wait-ForHydraExit $baseline
 
+  $report.phase = 'activating-phase-two'
+  Save-WorkflowReport
   $configuration.phase = 2
   $configuration.reportPath = $phaseTwoPath
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
   $phaseTwoPid = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $workflowArguments)
+  $report.phase = 'waiting-phase-two-report'
+  Save-WorkflowReport
   $phaseTwo = Wait-ForJson $phaseTwoPath
   if ($phaseTwo.status -ne 'passed' -or -not $phaseTwo.checks.editorPersisted -or
       $phaseTwo.checks.userSetting -ne 17 -or $phaseTwo.checks.globalState -ne $nonce) {
@@ -286,14 +320,21 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $report.checks.phaseTwoMain = Assert-ProcessEvidence $phaseTwoPid 'Phase 2 main process'
   $report.checks.phaseTwoExtensionHost = Assert-ProcessEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
   $report.checks.phaseTwo = $phaseTwo
+  $report.phase = 'waiting-phase-two-exit'
+  Save-WorkflowReport
   Wait-ForHydraExit $baseline
+  $report.phase = 'passed'
   $report.status = 'passed'
+} catch {
+  $report.status = 'failed'
+  $report.error = $_.Exception.ToString()
+  throw
 } finally {
   Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $baseline } |
     Stop-Process -Force -ErrorAction Continue
   $report.cleanup = [ordered]@{ packagedProcessesAbsent = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -notin $baseline }).Count -eq 0 }
-  $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding utf8
+  Save-WorkflowReport
 }
 if ($report.status -ne 'passed' -or -not $report.cleanup.packagedProcessesAbsent) { throw 'Packaged MSIX workflow acceptance failed.' }
 Write-Output 'PASS: packaged Hydra identity ran editor, terminal, extension, tool, protected-write, restart, and persistence workflows.'

@@ -63,4 +63,38 @@ try { parseInstalledInventory(malformed); throw new Error('Malformed inventory u
 catch (error) { if (!/Installed inventory refused/.test(String(error))) throw error; }
 await write('malformed.json', malformed);
 await write('malformed.sig', detached(malformed));
+const schemaCase = async (name, bytes) => {
+  await write(`${name}.json`, bytes);
+  await write(`${name}.sig`, detached(bytes));
+};
+const file = inventory.files[0];
+await schemaCase('valid-unicode', Buffer.from(JSON.stringify({ ...inventory,
+  files: [{ ...file, path: 'Résumé.txt' }] })));
+await schemaCase('wrong-target', Buffer.from(JSON.stringify({ ...inventory,
+  target: { ...inventory.target, installTarget: 'system' } })));
+await schemaCase('bad-version', Buffer.from(JSON.stringify({ ...inventory, version: '01.2.3' })));
+await schemaCase('unknown-field', Buffer.from(JSON.stringify({ ...inventory, unexpected: true })));
+await schemaCase('duplicate-field', Buffer.from(payload.toString().replace('"product":"Hydra"', '"product":"Hydra","product":"Hydra"')));
+await schemaCase('whitespace', Buffer.concat([payload, Buffer.from('\n')]));
+await schemaCase('escaped-safe', Buffer.from(payload.toString().replace('Hydra.exe', 'Hydr\\u0061.exe')));
+await schemaCase('wrong-order', Buffer.from(JSON.stringify({ product: inventory.product, ...inventory })));
+await schemaCase('empty-files', Buffer.from(JSON.stringify({ ...inventory, files: [] })));
+await schemaCase('unsorted-files', Buffer.from(JSON.stringify({ ...inventory, files: [
+  { ...file, path: 'Z.txt' }, { ...file, path: 'A.txt' }
+] })));
+await schemaCase('case-collision', Buffer.from(JSON.stringify({ ...inventory, files: [
+  { ...file, path: 'A.txt' }, { ...file, path: 'a.txt' }
+] })));
+await schemaCase('unsafe-path', Buffer.from(JSON.stringify({ ...inventory, files: [{ ...file, path: 'CON.txt' }] })));
+await schemaCase('oversized-entry', Buffer.from(JSON.stringify({ ...inventory, files: [{ ...file, bytes: 1024 * 1024 * 1024 + 1 }] })));
+await schemaCase('negative-entry', Buffer.from(JSON.stringify({ ...inventory, files: [{ ...file, bytes: -1 }] })));
+await schemaCase('fractional-entry', Buffer.from(JSON.stringify({ ...inventory, files: [{ ...file, bytes: 1.5 }] })));
+await schemaCase('wrong-commit', Buffer.from(JSON.stringify({ ...inventory, sourceCommit: 'Z'.repeat(40) })));
+await schemaCase('long-segment', Buffer.from(JSON.stringify({ ...inventory, files: [{ ...file, path: 'x'.repeat(256) }] })));
+await schemaCase('long-path', Buffer.from(JSON.stringify({ ...inventory, files: [{ ...file, path: `${'a'.repeat(200)}/`.repeat(6) + 'x' }] })));
+await schemaCase('too-many-files', Buffer.from(JSON.stringify({ ...inventory,
+  files: Array.from({ length: 20001 }, (_, index) => ({ ...file, path: `f${String(index).padStart(5, '0')}` })) })));
+const badUtf8 = Buffer.from(payload);
+badUtf8[badUtf8.indexOf(Buffer.from('Hydra.exe'))] = 0xff;
+await schemaCase('bad-utf8', badUtf8);
 console.log(`Generated ephemeral P-256 fixture vectors in ${output}`);

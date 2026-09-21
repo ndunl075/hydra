@@ -87,8 +87,8 @@ try {
     throw 'MSIX payload was not installed in the protected WindowsApps location.'
   }
   $installedExecutable = Join-Path $installLocation 'Hydra.exe'
-  $installedExtension = Join-Path $installLocation 'resources\app\extensions\hydra\dist\extension.cjs'
-  foreach ($pair in @(@((Join-Path $builtApp 'Hydra.exe'), $installedExecutable), @((Join-Path $builtApp 'resources\app\extensions\hydra\dist\extension.cjs'), $installedExtension))) {
+  $installedExtension = Join-Path $installLocation 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs'
+  foreach ($pair in @(@((Join-Path $builtApp 'Hydra.exe'), $installedExecutable), @((Join-Path $builtApp 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs'), $installedExtension))) {
     if ((Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash) {
       throw "Installed payload differs from packaged input: $($pair[1])"
     }
@@ -150,7 +150,8 @@ try {
   $logRoot = Join-Path $repository '.desktop\msix-test-logs'
   New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
   $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logRoot 'report.json') -Encoding utf8
-  Copy-Item -LiteralPath (Join-Path $run 'report.json'), (Join-Path $run 'fixture-signing.json') -Destination $logRoot -Force
+  Copy-Item -LiteralPath (Join-Path $run 'report.json') -Destination (Join-Path $logRoot 'packaging-report.json') -Force
+  Copy-Item -LiteralPath (Join-Path $run 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing.json') -Force
 }
 if ($report.status -ne 'passed' -or $report.cleanup.Values -contains $false) { throw 'MSIX fixture acceptance or cleanup failed.' }
 Write-Output 'PASS: signed current Hydra MSIX installs, rejects tampering and package writes, runs its version/native-helper probes, and removes package trust.'

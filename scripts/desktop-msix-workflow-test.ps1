@@ -354,7 +354,7 @@ function Wait-ForJson([string]$Path, [int]$TimeoutSeconds = 90,
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   do {
     if (Test-Path -LiteralPath $Path) {
-      try { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { }
+      try { return [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch { }
     }
     if ($ObservedProcess -and [HydraMsixFixture.Native]::HasExited($ObservedProcess)) {
       $exitCode = [HydraMsixFixture.Native]::GetExitCode($ObservedProcess)
@@ -711,7 +711,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
         Start-Sleep -Seconds 2
       }
       if (Test-Path -LiteralPath $phaseOneProgressPath) {
-        $report.checks.phaseOneProgress = Get-Content -LiteralPath $phaseOneProgressPath -Raw | ConvertFrom-Json
+        $report.checks.phaseOneProgress = [IO.File]::ReadAllText($phaseOneProgressPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
       }
       $phaseOneProcessId = [uint32]$phaseOneLaunch.process.ProcessId
       $report.checks.phaseOneTimeoutSnapshot = Get-HydraProcessSnapshot $phaseOneProcessId
@@ -784,7 +784,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
         $report.checks.phaseTwoExit = Get-HydraExitEvidence $phaseTwoObservation
       }
       if (Test-Path -LiteralPath $phaseTwoProgressPath) {
-        $report.checks.phaseTwoProgress = Get-Content -LiteralPath $phaseTwoProgressPath -Raw | ConvertFrom-Json
+        $report.checks.phaseTwoProgress = [IO.File]::ReadAllText($phaseTwoProgressPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
       }
     } catch {
       $report.checks.phaseTwoDiagnosticsError = $_.Exception.ToString()

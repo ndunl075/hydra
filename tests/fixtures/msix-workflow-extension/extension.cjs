@@ -42,13 +42,15 @@ async function refuseWrite(target) {
   return { kind: target.kind, path: target.path, sha256: after, errorCode };
 }
 
-async function runFirstPhase(context, config, workspace) {
+async function runFirstPhase(context, config, workspace, checkpoint) {
+  await checkpoint('editor');
   const marker = `saved-by-packaged-hydra:${config.nonce}`;
   const document = await vscode.workspace.openTextDocument(vscode.Uri.file(config.editorFile));
   const editor = await vscode.window.showTextDocument(document);
   const changed = await editor.edit(builder => builder.insert(document.positionAt(document.getText().length), `${marker}\n`));
   if (!changed || !await document.save()) throw new Error('Packaged editor did not save the fixture file.');
 
+  await checkpoint('terminal');
   const terminalClosed = new Promise(resolve => {
     const subscription = vscode.window.onDidCloseTerminal(terminal => {
       if (terminal.name === config.terminalName) {
@@ -76,20 +78,25 @@ async function runFirstPhase(context, config, workspace) {
     throw new Error('Integrated terminal result did not match the workflow nonce.');
   }
 
+  await checkpoint('external-git');
   const git = await execute('git.exe', ['--version'], { cwd: workspace, windowsHide: true, timeout: 20_000 });
   if (!/^git version /i.test(git.stdout.trim())) throw new Error('External Git invocation returned unexpected output.');
+  await checkpoint('fixture-cli');
   await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', config.fixtureCli, '-OutputPath', config.cliOutput, '-Nonce', config.nonce],
   { cwd: workspace, windowsHide: true, timeout: 20_000 });
   if ((await fs.readFile(config.cliOutput, 'utf8')).trim() !== config.nonce) throw new Error('Local fixture CLI result changed.');
 
+  await checkpoint('protected-writes');
   const protectedWrites = [];
   for (const target of config.protectedTargets) protectedWrites.push(await refuseWrite(target));
+  await checkpoint('built-in-extension');
   const hydra = vscode.extensions.getExtension('nico-dunlap.hydra-agent-manager');
   if (!hydra) throw new Error('Built-in Hydra extension is unavailable in the packaged app.');
   await hydra.activate();
   if (!hydra.isActive) throw new Error('Built-in Hydra extension did not activate.');
 
+  await checkpoint('persistence');
   await vscode.workspace.getConfiguration('editor').update('fontSize', config.fontSize, vscode.ConfigurationTarget.Global);
   await context.globalState.update('workflowNonce', config.nonce);
   return {
@@ -104,7 +111,8 @@ async function runFirstPhase(context, config, workspace) {
   };
 }
 
-async function runSecondPhase(context, config) {
+async function runSecondPhase(context, config, checkpoint) {
+  await checkpoint('restart-persistence');
   const text = await fs.readFile(config.editorFile, 'utf8');
   const installedExtension = vscode.extensions.getExtension('hydra-msix-workflow.hydra-msix-workflow');
   return {
@@ -137,10 +145,26 @@ async function activate(context) {
     extensionPath: context.extensionPath,
     workspace: folder.uri.fsPath
   };
+  const checkpoint = async stage => {
+    await fs.writeFile(config.progressPath, JSON.stringify({
+      schemaVersion: 1,
+      status: 'started',
+      phase: config.phase,
+      stage,
+      updatedAt: new Date().toISOString(),
+      appName: report.appName,
+      extensionHostPid: report.extensionHostPid,
+      extensionHostParentPid: report.extensionHostParentPid,
+      extensionHostExecutable: report.extensionHostExecutable,
+      extensionPath: report.extensionPath,
+      workspace: report.workspace
+    }, null, 2) + '\n');
+  };
+  await checkpoint('activated');
   try {
     report.checks = config.phase === 1
-      ? await runFirstPhase(context, config, folder.uri.fsPath)
-      : await runSecondPhase(context, config);
+      ? await runFirstPhase(context, config, folder.uri.fsPath, checkpoint)
+      : await runSecondPhase(context, config, checkpoint);
     report.status = 'passed';
   } catch (error) {
     report.status = 'failed';

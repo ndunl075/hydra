@@ -211,7 +211,10 @@ $extensions = Join-Path $workflowRoot 'extensions'
 $fixture = Join-Path $repository 'tests\fixtures\msix-workflow-extension'
 $provisionReportPath = Join-Path $run 'workflow-provision-report.json'
 $phaseOnePath = Join-Path $workflowRoot 'phase-1.json'
+$phaseOneProgressPath = Join-Path $workflowRoot 'phase-1-progress.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
+$phaseTwoProgressPath = Join-Path $workflowRoot 'phase-2-progress.json'
+$electronLogPath = Join-Path $workflowRoot 'electron.log'
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $report = [ordered]@{ schemaVersion = 1; status = 'started'; phase = 'native-helper-compiled';
   updatedAtUtc = [DateTime]::UtcNow.ToString('o'); elapsedMilliseconds = $stopwatch.ElapsedMilliseconds;
@@ -303,21 +306,30 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   )
   $nonce = [guid]::NewGuid().ToString('N')
   $configPath = Join-Path $workspace '.hydra-msix-workflow.json'
-  $configuration = [ordered]@{ nonce = $nonce; phase = 1; reportPath = $phaseOnePath; editorFile = $editorFile;
+  $configuration = [ordered]@{ nonce = $nonce; phase = 1; reportPath = $phaseOnePath;
+    progressPath = $phaseOneProgressPath; editorFile = $editorFile;
     terminalName = 'Hydra MSIX workflow terminal'; terminalScript = $terminalScript; terminalOutput = $terminalOutput;
     fixtureCli = $fixtureCli; cliOutput = $cliOutput; fontSize = 17; protectedTargets = $targets }
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
 
   $report.phase = 'activating-phase-one'
   Save-WorkflowReport
+  $electronLogArgument = '--log-file=' + $electronLogPath
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust',
-    '--log', 'trace')
+    '--log', 'trace', '--enable-logging=file', $electronLogArgument)
   $phaseOneLaunch = Start-HydraApplication $workflowArguments 'Phase 1 main process'
   $report.checks.phaseOneMain = $phaseOneLaunch
   $report.phase = 'waiting-phase-one-report'
   Save-WorkflowReport
-  $phaseOne = Wait-ForJson $phaseOnePath
+  try {
+    $phaseOne = Wait-ForJson $phaseOnePath 150
+  } catch {
+    if (Test-Path -LiteralPath $phaseOneProgressPath) {
+      $report.checks.phaseOneProgress = Get-Content -LiteralPath $phaseOneProgressPath -Raw | ConvertFrom-Json
+    }
+    throw
+  }
   if ($phaseOne.status -ne 'passed') { throw "Packaged workflow phase 1 failed: $($phaseOne.error)" }
   if ($phaseOne.appName -ne 'Hydra' -or $phaseOne.workspace -ne $workspace -or
       -not $phaseOne.extensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase) -or
@@ -335,12 +347,20 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   Save-WorkflowReport
   $configuration.phase = 2
   $configuration.reportPath = $phaseTwoPath
+  $configuration.progressPath = $phaseTwoProgressPath
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
   $phaseTwoLaunch = Start-HydraApplication $workflowArguments 'Phase 2 main process'
   $report.checks.phaseTwoMain = $phaseTwoLaunch
   $report.phase = 'waiting-phase-two-report'
   Save-WorkflowReport
-  $phaseTwo = Wait-ForJson $phaseTwoPath
+  try {
+    $phaseTwo = Wait-ForJson $phaseTwoPath 150
+  } catch {
+    if (Test-Path -LiteralPath $phaseTwoProgressPath) {
+      $report.checks.phaseTwoProgress = Get-Content -LiteralPath $phaseTwoProgressPath -Raw | ConvertFrom-Json
+    }
+    throw
+  }
   if ($phaseTwo.status -ne 'passed' -or -not $phaseTwo.checks.editorPersisted -or
       $phaseTwo.checks.userSetting -ne 17 -or $phaseTwo.checks.globalState -ne $nonce) {
     throw 'Packaged workflow restart did not preserve editor, setting, or extension state.'

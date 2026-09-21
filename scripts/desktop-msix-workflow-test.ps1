@@ -61,9 +61,18 @@ namespace HydraMsixFixture {
     public bool Elevated { get; set; }
     public int IntegrityRid { get; set; }
   }
+  public sealed class ProcessObservation {
+    public uint ProcessId { get; private set; }
+    internal IntPtr Handle { get; private set; }
+    internal ProcessObservation(uint processId, IntPtr handle) { ProcessId = processId; Handle = handle; }
+    internal void Release() { Handle = IntPtr.Zero; }
+  }
 
   public static class Native {
     const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    const uint SYNCHRONIZE = 0x00100000;
+    const uint WAIT_OBJECT_0 = 0;
+    const uint WAIT_TIMEOUT = 258;
     const uint TOKEN_QUERY = 0x0008;
     const int TokenElevation = 20;
     const int TokenIntegrityLevel = 25;
@@ -75,22 +84,32 @@ namespace HydraMsixFixture {
 
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(
+      IntPtr process, out long creationTime, out long exitTime, out long kernelTime, out long userTime);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenClass, IntPtr information, int length, out int returnLength);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint subAuthority);
 
-    public static uint Activate(string applicationUserModelId, string arguments) {
+    static ProcessObservation Observe(uint processId) {
+      IntPtr handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+      if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcess observation failed.");
+      return new ProcessObservation(processId, handle);
+    }
+
+    public static ProcessObservation ActivateObserved(string applicationUserModelId, string arguments) {
       var manager = (IApplicationActivationManager)new ApplicationActivationManager();
       uint processId;
       int result = manager.ActivateApplication(applicationUserModelId, arguments, ActivateOptions.None, out processId);
       if (result < 0) Marshal.ThrowExceptionForHR(result);
       if (processId == 0) throw new InvalidOperationException("Package activation returned no process ID.");
-      return processId;
+      return Observe(processId);
     }
 
-    public static uint StartDirect(string executable, string arguments) {
+    public static ProcessObservation StartDirectObserved(string executable, string arguments) {
       var start = new ProcessStartInfo {
         FileName = executable,
         Arguments = arguments,
@@ -99,7 +118,35 @@ namespace HydraMsixFixture {
       };
       var process = Process.Start(start);
       if (process == null) throw new InvalidOperationException("Direct packaged executable launch returned no process.");
-      return (uint)process.Id;
+      try { return Observe((uint)process.Id); } finally { process.Dispose(); }
+    }
+
+    public static bool HasExited(ProcessObservation observation) {
+      uint wait = WaitForSingleObject(observation.Handle, 0);
+      if (wait == WAIT_OBJECT_0) return true;
+      if (wait == WAIT_TIMEOUT) return false;
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject observation failed.");
+    }
+
+    public static int GetExitCode(ProcessObservation observation) {
+      uint exitCode;
+      if (!GetExitCodeProcess(observation.Handle, out exitCode))
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess observation failed.");
+      return unchecked((int)exitCode);
+    }
+
+    public static string GetExitTimeUtc(ProcessObservation observation) {
+      long creationTime, exitTime, kernelTime, userTime;
+      if (!GetProcessTimes(observation.Handle, out creationTime, out exitTime, out kernelTime, out userTime))
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "GetProcessTimes observation failed.");
+      return DateTime.FromFileTimeUtc(exitTime).ToString("o");
+    }
+
+    public static void CloseObservation(ProcessObservation observation) {
+      if (observation == null || observation.Handle == IntPtr.Zero) return;
+      IntPtr handle = observation.Handle;
+      observation.Release();
+      CloseHandle(handle);
     }
 
     public static ProcessEvidence Inspect(uint processId) {
@@ -157,11 +204,16 @@ function ConvertTo-WindowsArgument([string]$Value) {
 function Join-WindowsArguments([string[]]$Values) {
   return (($Values | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' ')
 }
-function Wait-ForJson([string]$Path, [int]$TimeoutSeconds = 90) {
+function Wait-ForJson([string]$Path, [int]$TimeoutSeconds = 90,
+    [HydraMsixFixture.ProcessObservation]$ObservedProcess = $null) {
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   do {
     if (Test-Path -LiteralPath $Path) {
       try { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { }
+    }
+    if ($ObservedProcess -and [HydraMsixFixture.Native]::HasExited($ObservedProcess)) {
+      $exitCode = [HydraMsixFixture.Native]::GetExitCode($ObservedProcess)
+      throw "Packaged Hydra process $($ObservedProcess.ProcessId) exited with code $exitCode before writing $Path."
     }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
@@ -175,6 +227,13 @@ function Wait-ForHydraExit([int[]]$Baseline, [int]$TimeoutSeconds = 45) {
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
   throw "Packaged Hydra processes did not exit: $($remaining.Id -join ', ')"
+}
+function Get-HydraExitEvidence([HydraMsixFixture.ProcessObservation]$Observation) {
+  $exitCode = [HydraMsixFixture.Native]::GetExitCode($Observation)
+  $unsignedExitCode = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$exitCode), 0)
+  return [ordered]@{ processId = $Observation.ProcessId; exitCode = $exitCode;
+    exitCodeUnsigned = [uint64]$unsignedExitCode; exitCodeHex = ('0x{0:x8}' -f $unsignedExitCode);
+    exitTimeUtc = [HydraMsixFixture.Native]::GetExitTimeUtc($Observation) }
 }
 function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role) {
   $evidence = [HydraMsixFixture.Native]::Inspect($ProcessId)
@@ -191,15 +250,19 @@ function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role) {
 function Start-HydraApplication([string]$Arguments, [string]$Role) {
   $method = 'application-activation-manager'
   try {
-    $processId = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $Arguments)
+    $observation = [HydraMsixFixture.Native]::ActivateObserved($applicationUserModelId, $Arguments)
   } catch {
     if ($_.Exception.ToString() -notmatch '0x80070520') { throw }
     $method = 'direct-installed-executable'
-    $processId = [HydraMsixFixture.Native]::StartDirect((Join-Path $install 'Hydra.exe'), $Arguments)
+    $observation = [HydraMsixFixture.Native]::StartDirectObserved((Join-Path $install 'Hydra.exe'), $Arguments)
   }
+  return [pscustomobject]@{ launchMethod = $method; arguments = $Arguments; observation = $observation; role = $Role }
+}
+function Get-HydraApplicationEvidence($Activation) {
+  $processId = $Activation.observation.ProcessId
   $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop).CommandLine
-  return [ordered]@{ launchMethod = $method; arguments = $Arguments; commandLine = $commandLine;
-    process = (Assert-ProcessEvidence $processId $Role) }
+  return [ordered]@{ launchMethod = $Activation.launchMethod; arguments = $Activation.arguments; commandLine = $commandLine;
+    process = (Assert-ProcessEvidence $processId $Activation.role) }
 }
 function Get-HydraProcessSnapshot([uint32]$TargetProcessId) {
   $snapshot = [ordered]@{ capturedAtUtc = [DateTime]::UtcNow.ToString('o'); processId = $TargetProcessId }
@@ -210,6 +273,11 @@ function Get-HydraProcessSnapshot([uint32]$TargetProcessId) {
     $snapshot.startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
     $snapshot.sessionId = $process.SessionId
     $snapshot.parentProcessId = [uint32]$cim.ParentProcessId
+    try {
+      $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($cim.ParentProcessId)" -ErrorAction Stop
+      $snapshot.parent = [ordered]@{ processId = [uint32]$parent.ProcessId; name = $parent.Name;
+        executablePath = $parent.ExecutablePath; commandLine = $parent.CommandLine; sessionId = [uint32]$parent.SessionId }
+    } catch { $snapshot.parentError = $_.Exception.Message }
     $snapshot.commandLine = $cim.CommandLine
     $snapshot.handleCount = $process.HandleCount
     $snapshot.threadCount = $process.Threads.Count
@@ -239,13 +307,21 @@ function Get-HydraProcessSnapshot([uint32]$TargetProcessId) {
 }
 function Get-ActivationEvents([DateTime]$StartedAtUtc, [uint32]$TargetProcessId) {
   $events = [ordered]@{}
+  $hexProcessId = '0x{0:x}' -f $TargetProcessId
+  $executablePath = Join-Path $install 'Hydra.exe'
   foreach ($logName in @('Microsoft-Windows-AppModel-Runtime/Admin', 'Microsoft-Windows-TWinUI/Operational',
       'Microsoft-Windows-CodeIntegrity/Operational', 'Application')) {
     try {
       $matching = @(Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $StartedAtUtc.ToLocalTime() } -ErrorAction Stop |
-        Where-Object { $_.Message -match [regex]::Escape($PackageFullName) -or $_.Message -match "(?<!\d)$TargetProcessId(?!\d)" } |
+        Where-Object {
+          $eventText = ([string]$_.Message) + "`n" + $_.ToXml()
+          $eventText -match [regex]::Escape($PackageFullName) -or
+          $eventText -match [regex]::Escape($PackageFamilyName) -or $eventText -match '(?i)Hydra\.exe' -or
+          $eventText -match [regex]::Escape($executablePath) -or
+          $eventText -match "(?<!\d)$TargetProcessId(?!\d)" -or $eventText -match "(?i)(?<![0-9a-f])$hexProcessId(?![0-9a-f])"
+        } |
         Select-Object -First 50 | ForEach-Object { [ordered]@{ timeCreatedUtc = $_.TimeCreated.ToUniversalTime().ToString('o');
-          id = $_.Id; level = $_.LevelDisplayName; provider = $_.ProviderName; message = $_.Message } })
+          id = $_.Id; level = $_.LevelDisplayName; provider = $_.ProviderName; message = $_.Message; eventXml = $_.ToXml() } })
       $events[$logName] = $matching
     } catch { $events[$logName] = [ordered]@{ captureError = $_.Exception.Message } }
   }
@@ -307,6 +383,8 @@ $phaseOneProgressPath = Join-Path $workflowRoot 'phase-1-progress.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
 $phaseTwoProgressPath = Join-Path $workflowRoot 'phase-2-progress.json'
 $electronLogPath = Join-Path $workflowRoot 'electron.log'
+$phaseOneObservation = $null
+$phaseTwoObservation = $null
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $report = [ordered]@{ schemaVersion = 1; status = 'started'; phase = 'native-helper-compiled';
   updatedAtUtc = [DateTime]::UtcNow.ToString('o'); elapsedMilliseconds = $stopwatch.ElapsedMilliseconds;
@@ -411,21 +489,36 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust',
     '--log', 'trace', '--enable-logging=file', $electronLogArgument)
   $phaseOneStartedAtUtc = [DateTime]::UtcNow
-  $phaseOneLaunch = Start-HydraApplication $workflowArguments 'Phase 1 main process'
+  $phaseOneActivation = Start-HydraApplication $workflowArguments 'Phase 1 main process'
+  $phaseOneObservation = $phaseOneActivation.observation
+  try {
+    $phaseOneLaunch = Get-HydraApplicationEvidence $phaseOneActivation
+  } catch {
+    if ([HydraMsixFixture.Native]::HasExited($phaseOneObservation)) {
+      $report.checks.phaseOneExit = Get-HydraExitEvidence $phaseOneObservation
+    }
+    throw
+  }
   $report.checks.phaseOneMain = $phaseOneLaunch
   $report.checks.phaseOneStartupSnapshot = Get-HydraProcessSnapshot ([uint32]$phaseOneLaunch.process.ProcessId)
   $report.phase = 'waiting-phase-one-report'
   Save-WorkflowReport
   try {
-    $phaseOne = Wait-ForJson $phaseOnePath 150
+    $phaseOne = Wait-ForJson $phaseOnePath 150 $phaseOneObservation
   } catch {
     $phaseOneFailure = $_
     try {
+      if ([HydraMsixFixture.Native]::HasExited($phaseOneObservation)) {
+        $report.checks.phaseOneExit = Get-HydraExitEvidence $phaseOneObservation
+        Start-Sleep -Seconds 2
+      }
       if (Test-Path -LiteralPath $phaseOneProgressPath) {
         $report.checks.phaseOneProgress = Get-Content -LiteralPath $phaseOneProgressPath -Raw | ConvertFrom-Json
       }
       $phaseOneProcessId = [uint32]$phaseOneLaunch.process.ProcessId
       $report.checks.phaseOneTimeoutSnapshot = Get-HydraProcessSnapshot $phaseOneProcessId
+      $report.checks.phaseOneSurvivingHydraProcesses = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue |
+        Where-Object { $_.Id -notin $baseline } | ForEach-Object { Get-HydraProcessSnapshot ([uint32]$_.Id) })
       $report.checks.phaseOneActivationEvents = Get-ActivationEvents $phaseOneStartedAtUtc $phaseOneProcessId
       $dumpArguments = @{
         TargetProcessId = $phaseOneProcessId
@@ -463,17 +556,35 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $configuration.reportPath = $phaseTwoPath
   $configuration.progressPath = $phaseTwoProgressPath
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
-  $phaseTwoLaunch = Start-HydraApplication $workflowArguments 'Phase 2 main process'
+  $phaseTwoActivation = Start-HydraApplication $workflowArguments 'Phase 2 main process'
+  $phaseTwoObservation = $phaseTwoActivation.observation
+  try {
+    $phaseTwoLaunch = Get-HydraApplicationEvidence $phaseTwoActivation
+  } catch {
+    if ([HydraMsixFixture.Native]::HasExited($phaseTwoObservation)) {
+      $report.checks.phaseTwoExit = Get-HydraExitEvidence $phaseTwoObservation
+    }
+    throw
+  }
   $report.checks.phaseTwoMain = $phaseTwoLaunch
   $report.phase = 'waiting-phase-two-report'
   Save-WorkflowReport
   try {
-    $phaseTwo = Wait-ForJson $phaseTwoPath 150
+    $phaseTwo = Wait-ForJson $phaseTwoPath 150 $phaseTwoObservation
   } catch {
-    if (Test-Path -LiteralPath $phaseTwoProgressPath) {
-      $report.checks.phaseTwoProgress = Get-Content -LiteralPath $phaseTwoProgressPath -Raw | ConvertFrom-Json
+    $phaseTwoFailure = $_
+    try {
+      if ([HydraMsixFixture.Native]::HasExited($phaseTwoObservation)) {
+        $report.checks.phaseTwoExit = Get-HydraExitEvidence $phaseTwoObservation
+      }
+      if (Test-Path -LiteralPath $phaseTwoProgressPath) {
+        $report.checks.phaseTwoProgress = Get-Content -LiteralPath $phaseTwoProgressPath -Raw | ConvertFrom-Json
+      }
+    } catch {
+      $report.checks.phaseTwoDiagnosticsError = $_.Exception.ToString()
     }
-    throw
+    try { Save-WorkflowReport } catch { Write-Warning "Failed to persist phase-two diagnostics: $($_.Exception.Message)" }
+    throw $phaseTwoFailure
   }
   if ($phaseTwo.status -ne 'passed' -or -not $phaseTwo.checks.editorPersisted -or
       $phaseTwo.checks.userSetting -ne 17 -or $phaseTwo.checks.globalState -ne $nonce) {
@@ -494,6 +605,8 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $report.error = $_.Exception.ToString()
   throw
 } finally {
+  if ($phaseOneObservation) { [HydraMsixFixture.Native]::CloseObservation($phaseOneObservation) }
+  if ($phaseTwoObservation) { [HydraMsixFixture.Native]::CloseObservation($phaseTwoObservation) }
   Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $baseline } |
     Stop-Process -Force -ErrorAction Continue
   $report.cleanup = [ordered]@{ packagedProcessesAbsent = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue |

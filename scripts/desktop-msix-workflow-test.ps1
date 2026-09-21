@@ -207,7 +207,9 @@ $workspace = Join-Path $workflowRoot ('workspace ' + $unicodeSuffix)
 $userData = Join-Path $workflowRoot 'user data'
 $extensions = Join-Path $workflowRoot 'extensions'
 $fixture = Join-Path $repository 'tests\fixtures\msix-workflow-extension'
+$bootstrap = Join-Path $repository 'tests\fixtures\msix-install-bootstrap'
 $vsix = Join-Path $workflowRoot 'hydra-msix-workflow-1.0.0.vsix'
+$bootstrapReportPath = Join-Path $workflowRoot 'bootstrap-report.json'
 $phaseOnePath = Join-Path $workflowRoot 'phase-1.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
@@ -232,13 +234,26 @@ try {
   } finally { Pop-Location }
   if (-not (Test-Path -LiteralPath $vsix)) { throw 'Workflow fixture VSIX is missing.' }
 
-  $report.phase = 'activating-extension-install'
+  $report.phase = 'activating-install-bootstrap'
   Save-WorkflowReport
-  $installArguments = Join-WindowsArguments @('--install-extension', $vsix, '--force',
-    '--user-data-dir', $userData, '--extensions-dir', $extensions,
+  [ordered]@{ vsix = $vsix; reportPath = $bootstrapReportPath;
+    targetExtensionId = 'hydra-msix-workflow.hydra-msix-workflow' } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspace '.hydra-msix-bootstrap.json') -Encoding utf8
+  $installArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
+    '--extensions-dir', $extensions, ('--extensionDevelopmentPath=' + $bootstrap),
     '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
   $installLaunch = Start-HydraApplication $installArguments 'VSIX install process'
+  $installPid = [uint32]$installLaunch.process.ProcessId
   $report.checks.installProcess = $installLaunch
+  $report.phase = 'waiting-install-bootstrap'
+  Save-WorkflowReport
+  $bootstrapReport = Wait-ForJson $bootstrapReportPath
+  if ($bootstrapReport.status -ne 'passed' -or
+      $bootstrapReport.command -ne 'workbench.extensions.installExtension' -or
+      $bootstrapReport.targetExtensionId -ne 'hydra-msix-workflow.hydra-msix-workflow') {
+    throw "Packaged Hydra extension bootstrap failed: $($bootstrapReport.error)"
+  }
+  $report.checks.installExtensionHost = Assert-ProcessEvidence ([uint32]$bootstrapReport.extensionHostPid) 'VSIX install extension host'
   $report.phase = 'waiting-installed-extension'
   Save-WorkflowReport
   $extensionDeadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -252,8 +267,7 @@ try {
   $report.phase = 'waiting-install-process-exit'
   Save-WorkflowReport
   Wait-ForHydraExit $baseline
-  $report.checks.userExtensionInstall = [ordered]@{ command = '--install-extension';
-    id = 'hydra-msix-workflow.hydra-msix-workflow'; path = $installedFixture[0].FullName }
+  $report.checks.userExtensionInstall = [ordered]@{ path = $installedFixture[0].FullName; bootstrap = $bootstrapReport }
 
   $report.phase = 'preparing-workflow'
   Save-WorkflowReport

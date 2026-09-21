@@ -63,6 +63,7 @@ namespace HydraMsixStandardUserController {
     const uint WINSTA_ALL_ACCESS = 0x0000037F;
     const uint DESKTOP_ALL_ACCESS = 0x000001FF;
     const uint DISABLE_MAX_PRIVILEGE = 0x00000001;
+    const uint LUA_TOKEN = 0x00000004;
     const uint SE_GROUP_INTEGRITY = 0x00000020;
     [StructLayout(LayoutKind.Sequential)] struct LUID { public uint LowPart; public int HighPart; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
@@ -308,7 +309,7 @@ namespace HydraMsixStandardUserController {
         int groupSize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
         disabledGroups = Marshal.AllocHGlobal(groupSize);
         Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = administratorSid, Attributes = 0 }, disabledGroups, false);
-        if (!CreateRestrictedToken(sourceToken, DISABLE_MAX_PRIVILEGE, 1, disabledGroups,
+        if (!CreateRestrictedToken(sourceToken, DISABLE_MAX_PRIVILEGE | LUA_TOKEN, 1, disabledGroups,
             0, IntPtr.Zero, 0, IntPtr.Zero, out restrictedToken) || restrictedToken == IntPtr.Zero)
           throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateRestrictedToken failed.");
         if (!ConvertStringSidToSidW("S-1-16-8192", out mediumSid))
@@ -325,7 +326,8 @@ namespace HydraMsixStandardUserController {
         if (restricted.UserSid != source.UserSid || restricted.SessionId != source.SessionId ||
             restricted.AuthenticationId != source.AuthenticationId || restricted.Elevated || restricted.Administrator ||
             restricted.IntegrityRid < 0x2000 || restricted.IntegrityRid >= 0x3000)
-          throw new InvalidOperationException("SAFER token is not the expected same-session normal-user medium token.");
+          throw new InvalidOperationException("Restricted token mismatch. Source=" + FormatEvidence(source) +
+            "; Derived=" + FormatEvidence(restricted));
         var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = 0;
         var mutableCommandLine = new StringBuilder(commandLine);
@@ -341,7 +343,8 @@ namespace HydraMsixStandardUserController {
         if (child.UserSid != restricted.UserSid || child.SessionId != restricted.SessionId ||
             child.AuthenticationId != restricted.AuthenticationId || child.Elevated || child.Administrator ||
             child.IntegrityRid < 0x2000 || child.IntegrityRid >= 0x3000)
-          throw new InvalidOperationException("Restricted child token changed before resume.");
+          throw new InvalidOperationException("Restricted child token changed before resume. Derived=" +
+            FormatEvidence(restricted) + "; Child=" + FormatEvidence(child));
         uint resumeCount = ResumeThread(created.hThread);
         if (resumeCount == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread restricted child failed.");
         if (resumeCount != 1) throw new InvalidOperationException("Restricted child thread suspend count was " + resumeCount + " before resume; expected 1.");
@@ -364,6 +367,11 @@ namespace HydraMsixStandardUserController {
         if (administratorSid != IntPtr.Zero) LocalFree(administratorSid);
         if (sourceToken != IntPtr.Zero) CloseHandle(sourceToken);
       }
+    }
+
+    static string FormatEvidence(TokenEvidence evidence) {
+      return "sid=" + evidence.UserSid + ",elevated=" + evidence.Elevated + ",admin=" + evidence.Administrator +
+        ",integrity=" + evidence.IntegrityRid + ",session=" + evidence.SessionId + ",authentication=" + evidence.AuthenticationId;
     }
   }
 }
@@ -649,7 +657,7 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     packageRemoved = $standardUserReport.packageRemoved
   }
   $report.checks.restrictedInteractiveWorkflow = [ordered]@{
-    derivation = 'CreateRestrictedToken with the administrators group disabled, maximum privileges disabled, and medium integrity'
+    derivation = 'CreateRestrictedToken LUA token with the administrators group disabled, maximum privileges disabled, and medium integrity'
     resumeCount = $restrictedWorkflow.ResumeCount
     sourceToken = $restrictedWorkflow.SourceToken
     derivedToken = $restrictedWorkflow.DerivedToken

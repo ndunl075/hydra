@@ -72,11 +72,12 @@ async function runFirstPhase(context, config, workspace, checkpoint) {
   });
   terminal.show(false);
   await waitForFile(config.terminalOutput, 45_000);
-  await Promise.race([terminalClosed, delay(10_000).then(() => { throw new Error('Integrated terminal did not close.'); })]);
   const terminalResult = await readJson(config.terminalOutput);
   if (terminalResult.nonce !== config.nonce || terminalResult.parentProcessId <= 0) {
     throw new Error('Integrated terminal result did not match the workflow nonce.');
   }
+  terminal.dispose();
+  await Promise.race([terminalClosed, delay(10_000).then(() => { throw new Error('Integrated terminal did not close after disposal.'); })]);
 
   await checkpoint('external-git');
   const git = await execute('git.exe', ['--version'], { cwd: workspace, windowsHide: true, timeout: 20_000 });

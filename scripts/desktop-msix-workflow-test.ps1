@@ -313,7 +313,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
   $phaseOneLaunch = Start-HydraApplication $workflowArguments 'Phase 1 main process'
-  $phaseOnePid = [uint32]$phaseOneLaunch.process.ProcessId
+  $report.checks.phaseOneMain = $phaseOneLaunch
   $report.phase = 'waiting-phase-one-report'
   Save-WorkflowReport
   $phaseOne = Wait-ForJson $phaseOnePath
@@ -324,7 +324,6 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
       $phaseOne.checks.globalState -ne $nonce -or @($phaseOne.checks.protectedWrites).Count -ne 4) {
     throw 'Packaged workflow phase 1 identity, editor, setting, or extension state evidence changed.'
   }
-  $report.checks.phaseOneMain = $phaseOneLaunch
   $report.checks.phaseOneExtensionHost = Assert-ProcessEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
   $report.checks.phaseOne = $phaseOne
   $report.phase = 'waiting-phase-one-exit'
@@ -337,7 +336,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $configuration.reportPath = $phaseTwoPath
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
   $phaseTwoLaunch = Start-HydraApplication $workflowArguments 'Phase 2 main process'
-  $phaseTwoPid = [uint32]$phaseTwoLaunch.process.ProcessId
+  $report.checks.phaseTwoMain = $phaseTwoLaunch
   $report.phase = 'waiting-phase-two-report'
   Save-WorkflowReport
   $phaseTwo = Wait-ForJson $phaseTwoPath
@@ -348,7 +347,6 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   if (-not $phaseTwo.checks.installedExtensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Workflow fixture did not activate from the isolated user extension directory.'
   }
-  $report.checks.phaseTwoMain = $phaseTwoLaunch
   $report.checks.phaseTwoExtensionHost = Assert-ProcessEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
   $report.checks.phaseTwo = $phaseTwo
   $report.phase = 'waiting-phase-two-exit'

@@ -209,11 +209,7 @@ $workspace = Join-Path $workflowRoot ('workspace ' + $unicodeSuffix)
 $userData = Join-Path $workflowRoot 'user data'
 $extensions = Join-Path $workflowRoot 'extensions'
 $fixture = Join-Path $repository 'tests\fixtures\msix-workflow-extension'
-$standalone = Join-Path $repository '.desktop\VSCode-win32-x64'
-$vsix = Join-Path $workflowRoot 'hydra-msix-workflow-1.0.0.vsix'
-$cliProvisionScript = Join-Path $workflowRoot 'provision-extension.ps1'
-$cliProvisionReportPath = Join-Path $workflowRoot 'provision-extension.json'
-$cliProvisionLogPath = Join-Path $workflowRoot 'provision-extension.log'
+$provisionReportPath = Join-Path $run 'workflow-provision-report.json'
 $phaseOnePath = Join-Path $workflowRoot 'phase-1.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
@@ -229,79 +225,27 @@ Save-WorkflowReport
 
 try {
   New-Item -ItemType Directory -Path $workspace, $userData, $extensions -Force | Out-Null
-  $report.phase = 'packaging-fixture-extension'
+  $report.phase = 'validating-provisioned-extension'
   Save-WorkflowReport
-  Push-Location $fixture
-  try {
-    & (Join-Path $repository 'node_modules\.bin\vsce.cmd') package --no-dependencies --allow-missing-repository --skip-license --out $vsix
-    if ($LASTEXITCODE -ne 0) { throw 'Offline workflow fixture VSIX packaging failed.' }
-  } finally { Pop-Location }
-  if (-not (Test-Path -LiteralPath $vsix)) { throw 'Workflow fixture VSIX is missing.' }
-
-  $report.phase = 'provisioning-extension-through-version-matched-standalone-cli'
-  Save-WorkflowReport
-  Set-Content -LiteralPath $cliProvisionScript -Encoding utf8 -Value @'
-param([string]$Hydra, [string]$Arguments, [string]$ReportPath, [string]$LogPath)
-$ErrorActionPreference = 'Stop'
-$result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'version-matched-shipped-cli-install-extension';
-  processId = $null; exitCode = $null; outputTail = ''; error = $null }
-try {
-  $env:ELECTRON_RUN_AS_NODE = '1'
-  Remove-Item Env:VSCODE_DEV -ErrorAction SilentlyContinue
-  $start = New-Object Diagnostics.ProcessStartInfo
-  $start.FileName = $env:ComSpec
-  $start.Arguments = '/d /s /c ""' + $Hydra + '" ' + $Arguments + ' > "' + $LogPath + '" 2>&1"'
-  $start.UseShellExecute = $false
-  $start.CreateNoWindow = $true
-  $process = New-Object Diagnostics.Process
-  $process.StartInfo = $start
-  if (-not $process.Start()) { throw 'Installed Hydra CLI process did not start.' }
-  if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Installed Hydra CLI process timed out.' }
-  $result.processId = $process.Id
-  $result.exitCode = $process.ExitCode
-  if (Test-Path -LiteralPath $LogPath) {
-    $output = Get-Content -LiteralPath $LogPath -Raw
-    $result.outputTail = if ($output.Length -le 8000) { $output.Trim() } else { $output.Substring($output.Length - 8000).Trim() }
-  }
-  $result.status = if ($process.ExitCode -eq 0) { 'passed' } else { 'failed' }
-  if ($process.ExitCode -ne 0) { $result.error = "Installed Hydra CLI exited with code $($process.ExitCode)." }
-} catch {
-  $result.status = 'failed'
-  $result.error = $_.Exception.ToString()
-} finally {
-  $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
-}
-if ($result.status -ne 'passed') { exit 1 }
-'@
-  $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
-  $standaloneProduct = Get-Content -LiteralPath (Join-Path $standalone 'resources\app\product.json') -Raw | ConvertFrom-Json
+  if (-not (Test-Path -LiteralPath $provisionReportPath)) { throw 'Workflow fixture provisioning evidence is missing.' }
+  $provisionReport = Get-Content -LiteralPath $provisionReportPath -Raw | ConvertFrom-Json
   $installedProduct = Get-Content -LiteralPath (Join-Path $install 'resources\app\product.json') -Raw | ConvertFrom-Json
-  if ($standaloneProduct.hydraVersion -ne $installedProduct.hydraVersion -or
-      $standaloneProduct.commit -ne $installedProduct.commit) {
-    throw 'Standalone fixture provisioner does not match the installed package runtime.'
+  if ($provisionReport.status -ne 'passed' -or $provisionReport.exitCode -ne 0 -or
+      $provisionReport.hydraVersion -ne $installedProduct.hydraVersion -or
+      $provisionReport.commit -ne $installedProduct.commit) {
+    throw 'Workflow fixture provisioning evidence does not match the installed package runtime.'
   }
-  $standaloneCliArguments = Join-WindowsArguments @((Join-Path $standalone 'resources\app\out\cli.js'),
-    '--install-extension', $vsix, '--force', '--user-data-dir', $userData, '--extensions-dir', $extensions)
-  & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $cliProvisionScript `
-    -Hydra (Join-Path $standalone 'Hydra.exe') -Arguments $standaloneCliArguments `
-    -ReportPath $cliProvisionReportPath -LogPath $cliProvisionLogPath
-  $cliProvisionExit = $LASTEXITCODE
-  $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 10
-  if ($cliProvisionExit -ne 0 -or $cliProvisionReport.status -ne 'passed' -or $cliProvisionReport.exitCode -ne 0) {
-    throw "Version-matched standalone Hydra CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.outputTail)"
+  $extensionPath = (Resolve-Path -LiteralPath ([string]$provisionReport.extensionPath)).Path
+  if (-not $extensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Provisioned workflow fixture is outside the isolated extension directory.'
   }
-  $report.phase = 'waiting-installed-extension'
-  Save-WorkflowReport
-  $extensionDeadline = [DateTime]::UtcNow.AddSeconds(60)
-  do {
-    $installedFixture = @(Get-ChildItem -LiteralPath $extensions -Directory -ErrorAction SilentlyContinue |
-      Where-Object Name -Like 'hydra-msix-workflow.hydra-msix-workflow-*')
-    if ($installedFixture.Count -eq 1) { break }
-    Start-Sleep -Milliseconds 250
-  } while ([DateTime]::UtcNow -lt $extensionDeadline)
-  if ($installedFixture.Count -ne 1) { throw 'Packaged Hydra did not install the offline fixture VSIX.' }
-  $installedManifest = Join-Path $installedFixture[0].FullName 'package.json'
-  $installedEntrypoint = Join-Path $installedFixture[0].FullName 'extension.cjs'
+  $installedFixture = @(Get-ChildItem -LiteralPath $extensions -Directory -ErrorAction SilentlyContinue |
+    Where-Object Name -Like 'hydra-msix-workflow.hydra-msix-workflow-*')
+  if ($installedFixture.Count -ne 1 -or $installedFixture[0].FullName -ne $extensionPath) {
+    throw 'Provisioned workflow fixture directory evidence changed.'
+  }
+  $installedManifest = Join-Path $extensionPath 'package.json'
+  $installedEntrypoint = Join-Path $extensionPath 'extension.cjs'
   $fixtureManifest = Join-Path $fixture 'package.json'
   $fixtureEntrypoint = Join-Path $fixture 'extension.cjs'
   $installedMetadata = Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json
@@ -319,14 +263,14 @@ if ($result.status -ne 'passed') { exit 1 }
       (Get-FileHash -LiteralPath $installedEntrypoint -Algorithm SHA256).Hash) {
     throw 'Installed fixture extension entrypoint bytes changed.'
   }
-  $report.checks.userExtensionProvisioning = [ordered]@{ invocation = 'version-matched-standalone-cli';
-    hydraVersion = $standaloneProduct.hydraVersion; commit = $standaloneProduct.commit;
-    command = 'Hydra.exe resources\app\out\cli.js --install-extension';
-    path = $installedFixture[0].FullName; publisher = $installedMetadata.publisher; name = $installedMetadata.name;
-    version = $installedMetadata.version; installMetadata = $installMetadata;
-    sourceManifestSha256 = (Get-FileHash $fixtureManifest -Algorithm SHA256).Hash.ToLowerInvariant();
-    installedManifestSha256 = (Get-FileHash $installedManifest -Algorithm SHA256).Hash.ToLowerInvariant();
-    entrypointSha256 = (Get-FileHash $installedEntrypoint -Algorithm SHA256).Hash.ToLowerInvariant(); cli = $cliProvisionReport }
+  if ($provisionReport.publisher -ne $installedMetadata.publisher -or $provisionReport.name -ne $installedMetadata.name -or
+      $provisionReport.version -ne $installedMetadata.version -or
+      $provisionReport.sourceManifestSha256 -ne (Get-FileHash $fixtureManifest -Algorithm SHA256).Hash.ToLowerInvariant() -or
+      $provisionReport.installedManifestSha256 -ne (Get-FileHash $installedManifest -Algorithm SHA256).Hash.ToLowerInvariant() -or
+      $provisionReport.entrypointSha256 -ne (Get-FileHash $installedEntrypoint -Algorithm SHA256).Hash.ToLowerInvariant()) {
+    throw 'Workflow fixture provisioning hashes or identity changed.'
+  }
+  $report.checks.userExtensionProvisioning = $provisionReport
 
   $report.phase = 'preparing-workflow'
   Save-WorkflowReport

@@ -620,6 +620,39 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   if (Get-AppxPackage -User $fixtureUserSid -Name $packageName) {
     throw 'Standard-user package registration survived child cleanup.'
   }
+  $provisionScript = Join-Path $repository 'scripts\desktop-msix-workflow-provision.ps1'
+  $provisionStart = New-Object Diagnostics.ProcessStartInfo
+  $provisionStart.FileName = $powershell
+  $provisionStart.Arguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $provisionScript, '-InstallLocation', $installLocation, '-RunDirectory', $run)
+  $provisionStart.WorkingDirectory = $run
+  $provisionStart.UseShellExecute = $false
+  $provisionStart.CreateNoWindow = $true
+  $provisionStart.RedirectStandardOutput = $true
+  $provisionStart.RedirectStandardError = $true
+  $provisionProcess = New-Object Diagnostics.Process
+  $provisionProcess.StartInfo = $provisionStart
+  if (-not $provisionProcess.Start()) { throw 'Workflow fixture provisioning process did not start.' }
+  $provisionStdout = $provisionProcess.StandardOutput.ReadToEndAsync()
+  $provisionStderr = $provisionProcess.StandardError.ReadToEndAsync()
+  if (-not $provisionProcess.WaitForExit(180000)) {
+    $provisionProcess.Kill()
+    $provisionProcess.WaitForExit()
+    throw 'Workflow fixture provisioning process timed out after 180 seconds.'
+  }
+  $provisionStdout.Wait()
+  $provisionStderr.Wait()
+  $provisionOutput = (($provisionStdout.Result, $provisionStderr.Result |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine)
+  $provisionExit = $provisionProcess.ExitCode
+  $provisionReportPath = Join-Path $run 'workflow-provision-report.json'
+  if ($provisionExit -ne 0 -or -not (Test-Path -LiteralPath $provisionReportPath)) {
+    throw "Version-matched workflow fixture provisioning failed with exit code $provisionExit. $provisionOutput"
+  }
+  $provisionReport = Get-Content -LiteralPath $provisionReportPath -Raw | ConvertFrom-Json
+  if ($provisionReport.status -ne 'passed' -or $provisionReport.exitCode -ne 0) {
+    throw "Version-matched workflow fixture provisioning failed: $($provisionReport.error)"
+  }
   $workflowScript = Join-Path $repository 'scripts\desktop-msix-workflow-test.ps1'
   $workflowArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', $workflowScript, '-PackageFullName', $package.PackageFullName,
@@ -663,6 +696,7 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     derivedToken = $restrictedWorkflow.DerivedToken
     childToken = $restrictedWorkflow.Token
   }
+  $report.checks.workflowFixtureProvisioning = $provisionReport
   $report.checks.packagedWorkflows = $workflowReport.checks
   $report.status = 'passed'
 } finally {
@@ -713,6 +747,9 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   Copy-Item -LiteralPath (Join-Path $run 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing.json') -Force
   if (Test-Path -LiteralPath (Join-Path $run 'workflow-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'workflow-report.json') -Destination (Join-Path $logRoot 'workflow-report.json') -Force
+  }
+  if (Test-Path -LiteralPath (Join-Path $run 'workflow-provision-report.json')) {
+    Copy-Item -LiteralPath (Join-Path $run 'workflow-provision-report.json') -Destination (Join-Path $logRoot 'workflow-provision-report.json') -Force
   }
   if (Test-Path -LiteralPath (Join-Path $run 'standard-user-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'standard-user-report.json') -Destination (Join-Path $logRoot 'standard-user-report.json') -Force

@@ -1,0 +1,24 @@
+{
+  "name": "hydra-msix-workflow",
+  "displayName": "Hydra MSIX Workflow Fixture",
+  "description": "Offline acceptance fixture for Hydra packaged-identity workflows.",
+  "version": "1.0.0",
+  "publisher": "hydra-msix-workflow",
+  "private": true,
+  "engines": {
+    "vscode": "^1.113.0"
+  },
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  }
+}

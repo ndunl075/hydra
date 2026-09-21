@@ -40,9 +40,9 @@ $installLocation = $null
 $tamperRefused = $false
 $newFileRefused = $false
 $existingFileWriteRefused = $false
-$launchedProcessIds = @()
 $existingProcessIds = @()
 $activationAttempted = $false
+$workflowReport = $null
 $report = [ordered]@{
   schemaVersion = 1
   status = 'started'
@@ -121,21 +121,13 @@ try {
     throw 'Installed Hydra executable did not retain its packaged PE version.'
   }
   $existingProcessIds = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-  $applicationId = 'shell:AppsFolder\' + $package.PackageFamilyName + '!HydraProbe'
   $activationAttempted = $true
-  Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') -ArgumentList $applicationId
-  $deadline = [DateTime]::UtcNow.AddSeconds(20)
-  do {
-    Start-Sleep -Milliseconds 500
-    $launched = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $existingProcessIds })
-  } while ($launched.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
-  if ($launched.Count -eq 0) { throw 'Registered MSIX application did not launch.' }
-  $launchedProcessIds = @($launched | ForEach-Object { $_.Id })
-  Start-Sleep -Seconds 3
-  $remaining = @(Get-Process -Id $launchedProcessIds -ErrorAction SilentlyContinue)
-  if ($remaining.Count -eq 0 -or -not ($remaining | Where-Object { $_.Path -eq $installedExecutable })) {
-    throw 'Registered MSIX application did not remain running from its installed executable.'
-  }
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repository 'scripts\desktop-msix-workflow-test.ps1') `
+    -PackageFullName $package.PackageFullName -PackageFamilyName $package.PackageFamilyName `
+    -InstallLocation $installLocation -RunDirectory $run
+  if ($LASTEXITCODE -ne 0) { throw 'Packaged MSIX workflow acceptance failed.' }
+  $workflowReport = Get-Content -LiteralPath (Join-Path $run 'workflow-report.json') -Raw | ConvertFrom-Json
+  if ($workflowReport.status -ne 'passed') { throw 'Packaged MSIX workflow report did not pass.' }
 
   $report.checks.tamperedPackage = 'refused'
   $report.checks.installedVersion = $package.Version.ToString()
@@ -144,7 +136,8 @@ try {
   $report.checks.protectedNewFile = 'refused'
   $report.checks.protectedExistingFileWrite = 'refused'
   $report.checks.executablePeVersion = $product.hydraVersion
-  $report.checks.registeredApplicationLaunch = 'passed'
+  $report.checks.registeredApplicationLaunch = 'passed with explicit arguments and process identity attestation'
+  $report.checks.packagedWorkflows = $workflowReport.checks
   $report.status = 'passed'
 } finally {
   if ($activationAttempted) {
@@ -164,9 +157,12 @@ try {
   }
   $logRoot = Join-Path $repository '.desktop\msix-test-logs'
   New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
-  $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $logRoot 'report.json') -Encoding utf8
+  $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $logRoot 'report.json') -Encoding utf8
   Copy-Item -LiteralPath (Join-Path $run 'report.json') -Destination (Join-Path $logRoot 'packaging-report.json') -Force
   Copy-Item -LiteralPath (Join-Path $run 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing.json') -Force
+  if (Test-Path -LiteralPath (Join-Path $run 'workflow-report.json')) {
+    Copy-Item -LiteralPath (Join-Path $run 'workflow-report.json') -Destination (Join-Path $logRoot 'workflow-report.json') -Force
+  }
 }
 if ($report.status -ne 'passed' -or $report.cleanup.Values -contains $false) { throw 'MSIX fixture acceptance or cleanup failed.' }
-Write-Output 'PASS: signed current Hydra MSIX installs, rejects tampering and package writes, launches by registered identity, and removes package trust.'
+Write-Output 'PASS: signed current Hydra MSIX installs, rejects tampering and package writes, passes packaged workflows, and removes package trust.'

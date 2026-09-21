@@ -30,4 +30,10 @@ This closes only the version-matched **packaging** prerequisite in acceptance st
 4. Verify modified package bytes and a wrong-publisher replacement refuse. Upgrade an installed version N to a correctly signed N+1 package and prove user data retention, shortcuts, CLI registration, and downgrade refusal.
 5. Design and test real update consent independently of package integrity. Keep the existing native helper and production channel disabled until the chosen distribution model passes its full signed release acceptance.
 
+## Disposable install acceptance
+
+`scripts/desktop-msix-install-test.ps1` is restricted to GitHub-hosted Windows runners because it temporarily changes the LocalMachine Trusted People certificate store. After the normal standalone build and smoke test, it packages that exact runtime, signs a separate copy with the one-day fixture certificate, temporarily trusts only its public certificate, and installs the package. The gate verifies package identity and version, matching executable and bundled-Hydra hashes, WindowsApps placement, refusal to create or open code for write under the installed tree, rejection of a byte-modified signed package, preserved executable PE version, and launch through the registered package application identity.
+
+The `finally` path removes the package and certificate and records whether package trust, private-key material, and PFX material are absent. Evidence uploads even when the gate fails. Passing this gate will establish fixture install and protected-payload behavior on that disposable runner. It will not establish full editor/terminal/extensions/CLI/settings workflows, N-to-N+1 package upgrades, wrong-publisher replacement, production signing, or genuine update consent.
+
 MSIX changes installation location and potentially shortcut, CLI, extension, and update behavior. The probe establishes only that Code OSS's existing payload can be represented as a validated unsigned package on this host.

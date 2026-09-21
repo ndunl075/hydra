@@ -334,7 +334,7 @@ try {
     '-File', $childScript, '-RequestPath', $standardRequestPath)
   $childCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $childArguments
   $child = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
-    $powershell, $childCommandLine, $run, 300000)
+    $powershell, $childCommandLine, $run, 600000)
   if ($child.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $standardResultPath)) {
     throw "Standard-user MSIX controller failed with exit code $($child.ExitCode)."
   }

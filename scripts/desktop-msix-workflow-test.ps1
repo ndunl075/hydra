@@ -197,7 +197,9 @@ function Start-HydraApplication([string]$Arguments, [string]$Role) {
     $method = 'direct-installed-executable'
     $processId = [HydraMsixFixture.Native]::StartDirect((Join-Path $install 'Hydra.exe'), $Arguments)
   }
-  return [ordered]@{ launchMethod = $method; process = (Assert-ProcessEvidence $processId $Role) }
+  $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop).CommandLine
+  return [ordered]@{ launchMethod = $method; arguments = $Arguments; commandLine = $commandLine;
+    process = (Assert-ProcessEvidence $processId $Role) }
 }
 
 $applicationUserModelId = $PackageFamilyName + '!HydraProbe'
@@ -207,9 +209,9 @@ $workspace = Join-Path $workflowRoot ('workspace ' + $unicodeSuffix)
 $userData = Join-Path $workflowRoot 'user data'
 $extensions = Join-Path $workflowRoot 'extensions'
 $fixture = Join-Path $repository 'tests\fixtures\msix-workflow-extension'
-$bootstrap = Join-Path $repository 'tests\fixtures\msix-install-bootstrap'
 $vsix = Join-Path $workflowRoot 'hydra-msix-workflow-1.0.0.vsix'
-$bootstrapReportPath = Join-Path $workflowRoot 'bootstrap-report.json'
+$cliProvisionScript = Join-Path $workflowRoot 'provision-extension.ps1'
+$cliProvisionReportPath = Join-Path $workflowRoot 'provision-extension.json'
 $phaseOnePath = Join-Path $workflowRoot 'phase-1.json'
 $phaseTwoPath = Join-Path $workflowRoot 'phase-2.json'
 $baseline = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
@@ -234,26 +236,54 @@ try {
   } finally { Pop-Location }
   if (-not (Test-Path -LiteralPath $vsix)) { throw 'Workflow fixture VSIX is missing.' }
 
-  $report.phase = 'activating-install-bootstrap'
+  $report.phase = 'provisioning-extension-through-packaged-cli'
   Save-WorkflowReport
-  [ordered]@{ vsix = $vsix; reportPath = $bootstrapReportPath;
-    targetExtensionId = 'hydra-msix-workflow.hydra-msix-workflow' } |
-    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspace '.hydra-msix-bootstrap.json') -Encoding utf8
-  $installArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
-    '--extensions-dir', $extensions, ('--extensionDevelopmentPath=' + $bootstrap),
-    '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
-  $installLaunch = Start-HydraApplication $installArguments 'VSIX install process'
-  $installPid = [uint32]$installLaunch.process.ProcessId
-  $report.checks.installProcess = $installLaunch
-  $report.phase = 'waiting-install-bootstrap'
-  Save-WorkflowReport
-  $bootstrapReport = Wait-ForJson $bootstrapReportPath
-  if ($bootstrapReport.status -ne 'passed' -or
-      $bootstrapReport.command -ne 'workbench.extensions.installExtension' -or
-      $bootstrapReport.targetExtensionId -ne 'hydra-msix-workflow.hydra-msix-workflow') {
-    throw "Packaged Hydra extension bootstrap failed: $($bootstrapReport.error)"
+  Set-Content -LiteralPath $cliProvisionScript -Encoding utf8 -Value @'
+param([string]$Hydra, [string]$Arguments, [string]$ReportPath)
+$ErrorActionPreference = 'Stop'
+$result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'shipped-cli-install-extension' }
+try {
+  $env:ELECTRON_RUN_AS_NODE = '1'
+  Remove-Item Env:VSCODE_DEV -ErrorAction SilentlyContinue
+  $start = New-Object Diagnostics.ProcessStartInfo
+  $start.FileName = $Hydra
+  $start.Arguments = $Arguments
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $start
+  if (-not $process.Start()) { throw 'Installed Hydra CLI process did not start.' }
+  $stdout = $process.StandardOutput.ReadToEndAsync()
+  $stderr = $process.StandardError.ReadToEndAsync()
+  if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Installed Hydra CLI process timed out.' }
+  [Threading.Tasks.Task]::WaitAll(@($stdout, $stderr))
+  $result.processId = $process.Id
+  $result.exitCode = $process.ExitCode
+  $result.stdout = $stdout.Result.Trim()
+  $result.stderr = $stderr.Result.Trim()
+  $result.status = if ($process.ExitCode -eq 0) { 'passed' } else { 'failed' }
+} catch {
+  $result.status = 'failed'
+  $result.error = $_.Exception.ToString()
+} finally {
+  $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
+}
+if ($result.status -ne 'passed') { exit 1 }
+'@
+  $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $installedCliArguments = Join-WindowsArguments @((Join-Path $install 'resources\app\out\cli.js'),
+    '--install-extension', $vsix, '--force', '--user-data-dir', $userData, '--extensions-dir', $extensions)
+  $cliArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $cliProvisionScript, '-Hydra', (Join-Path $install 'Hydra.exe'),
+    '-Arguments', $installedCliArguments, '-ReportPath', $cliProvisionReportPath)
+  Invoke-CommandInDesktopPackage -PackageFamilyName $PackageFamilyName -AppId 'HydraProbe' -Command $powershell `
+    -Args $cliArguments -PreventBreakaway
+  $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 120
+  if ($cliProvisionReport.status -ne 'passed' -or $cliProvisionReport.exitCode -ne 0) {
+    throw "Packaged Hydra shipped CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.stdout) $($cliProvisionReport.stderr)"
   }
-  $report.checks.installExtensionHost = Assert-ProcessEvidence ([uint32]$bootstrapReport.extensionHostPid) 'VSIX install extension host'
   $report.phase = 'waiting-installed-extension'
   Save-WorkflowReport
   $extensionDeadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -264,10 +294,32 @@ try {
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $extensionDeadline)
   if ($installedFixture.Count -ne 1) { throw 'Packaged Hydra did not install the offline fixture VSIX.' }
-  $report.phase = 'waiting-install-process-exit'
-  Save-WorkflowReport
-  Wait-ForHydraExit $baseline
-  $report.checks.userExtensionInstall = [ordered]@{ path = $installedFixture[0].FullName; bootstrap = $bootstrapReport }
+  $installedManifest = Join-Path $installedFixture[0].FullName 'package.json'
+  $installedEntrypoint = Join-Path $installedFixture[0].FullName 'extension.cjs'
+  $fixtureManifest = Join-Path $fixture 'package.json'
+  $fixtureEntrypoint = Join-Path $fixture 'extension.cjs'
+  $installedMetadata = Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json
+  $fixtureMetadata = Get-Content -LiteralPath $fixtureManifest -Raw | ConvertFrom-Json
+  if ($installedMetadata.publisher -ne 'hydra-msix-workflow' -or $installedMetadata.name -ne 'hydra-msix-workflow' -or
+      $installedMetadata.version -ne '1.0.0') { throw 'Installed fixture extension identity changed.' }
+  $installMetadata = $installedMetadata.__metadata
+  if (-not $installMetadata) { throw 'Installed fixture extension lacks Code OSS install metadata.' }
+  $installedMetadata.PSObject.Properties.Remove('__metadata')
+  if (($installedMetadata | ConvertTo-Json -Depth 20 -Compress) -cne
+      ($fixtureMetadata | ConvertTo-Json -Depth 20 -Compress)) {
+    throw 'Installed fixture extension manifest changed beyond Code OSS install metadata.'
+  }
+  if ((Get-FileHash -LiteralPath $fixtureEntrypoint -Algorithm SHA256).Hash -ne
+      (Get-FileHash -LiteralPath $installedEntrypoint -Algorithm SHA256).Hash) {
+    throw 'Installed fixture extension entrypoint bytes changed.'
+  }
+  $report.checks.userExtensionInstall = [ordered]@{ invocation = 'Invoke-CommandInDesktopPackage';
+    packageContext = 'debugger-context'; command = 'Hydra.exe resources\app\out\cli.js --install-extension';
+    path = $installedFixture[0].FullName; publisher = $installedMetadata.publisher; name = $installedMetadata.name;
+    version = $installedMetadata.version; installMetadata = $installMetadata;
+    sourceManifestSha256 = (Get-FileHash $fixtureManifest -Algorithm SHA256).Hash.ToLowerInvariant();
+    installedManifestSha256 = (Get-FileHash $installedManifest -Algorithm SHA256).Hash.ToLowerInvariant();
+    entrypointSha256 = (Get-FileHash $installedEntrypoint -Algorithm SHA256).Hash.ToLowerInvariant(); cli = $cliProvisionReport }
 
   $report.phase = 'preparing-workflow'
   Save-WorkflowReport

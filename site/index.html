@@ -6,321 +6,694 @@
 <title>Hydra: know what your agents did before you merge</title>
 <meta name="description" content="Hydra is an IDE that runs Claude Code and Codex tasks in parallel, each in its own git worktree, and lets you review every change in native diffs before anything lands on your branch.">
 <link rel="icon" href="hydra-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #fbfaf7;
-    --fg: #161616;
-    --muted: #5d5d58;
-    --rule: #e2e0d9;
-    --accent: #173c2c;
-    --accent-fg: #f5f5f5;
-    --code-bg: #141414;
-    --code-fg: #e8e8e4;
-    --code-dim: #8a8a86;
-    --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    --bg: #ffffff;
+    --fg: #111111;
+    --fg-2: #5f5f5f;
+    --fg-3: #8a8a8a;
+    --rule: #e6e6e6;
+    --green: #4fc62b;
+    --green-deep: #2ea043;
+    --green-soft: #d9f5cf;
+    --red: #d64545;
+    --card: #ffffff;
+    --card-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+    --sans: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: "Courier Prime", "Courier New", Courier, monospace;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #141414;
-      --fg: #f5f5f5;
-      --muted: #a3a39e;
-      --rule: #2a2a2a;
-      --accent: #2f7a58;
-      --accent-fg: #f5f5f5;
-      --code-bg: #0d0d0d;
-      --code-fg: #e8e8e4;
-      --code-dim: #77776f;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #141414;
-    --fg: #f5f5f5;
-    --muted: #a3a39e;
-    --rule: #2a2a2a;
-    --accent: #2f7a58;
-    --accent-fg: #f5f5f5;
-    --code-bg: #0d0d0d;
-    --code-fg: #e8e8e4;
-    --code-dim: #77776f;
-  }
-
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: var(--sans);
-    font-size: 17px;
-    line-height: 1.6;
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 18px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
-  a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 3px; }
-  a:hover { color: var(--accent); }
+  a { color: inherit; }
+  .wrap { max-width: 1840px; margin: 0 auto; padding: 0 48px; }
+  @media (max-width: 720px) { .wrap { padding: 0 16px; } }
 
-  .wrap { max-width: 720px; margin: 0 auto; padding: 0 16px; }
+  /* ---------- header ---------- */
+  .topbar { position: sticky; top: 0; z-index: 30; background: var(--bg); }
+  .top { height: 80px; display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 14px; font-size: 24px; text-decoration: none; }
+  .brand img { width: 34px; height: 34px; }
+  .menu { display: flex; gap: 28px; font-size: 16px; }
+  .menu a { text-decoration: none; color: var(--fg-2); }
+  .menu a:hover { color: var(--fg); }
+  @media (max-width: 720px) { .menu { display: none; } }
 
-  header {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; padding: 22px 0;
+  /* ---------- hero ---------- */
+  .hero {
+    position: relative; overflow: hidden; border-radius: 4px;
+    padding: 330px 48px 72px; min-height: 860px;
+    background: #f4f8f1;
   }
-  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; }
-  .brand img { width: 28px; height: 28px; }
-  nav { display: flex; gap: 20px; font-size: 15px; }
-  nav a { text-decoration: none; color: var(--muted); }
-  nav a:hover { color: var(--fg); }
-
-  .hero { padding: 64px 0 40px; }
-  h1 {
-    font-family: var(--serif);
-    font-weight: 400;
-    font-size: clamp(2rem, 5.2vw, 3.1rem);
-    line-height: 1.12;
-    letter-spacing: -0.01em;
-    margin: 0 0 22px;
+  @media (max-width: 720px) { .hero { padding: 200px 16px 48px; min-height: 0; } }
+  .aurora { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  .aurora span {
+    position: absolute; border-radius: 50%; filter: blur(70px); opacity: .9;
+    mix-blend-mode: multiply; will-change: transform;
   }
-  .lede { font-size: 1.15rem; color: var(--muted); margin: 0 0 30px; max-width: 60ch; }
-  .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-  .btn {
-    display: inline-block; padding: 10px 18px; border-radius: 6px;
-    text-decoration: none; font-size: 15px; font-weight: 500;
-    border: 1px solid var(--accent);
+  .aurora .a1 { width: 70vw; height: 60vw; left: 25%; top: -30%; background: radial-gradient(closest-side, #7fd85a 0%, rgba(127,216,90,0) 70%); animation: drift1 14s ease-in-out infinite alternate; }
+  .aurora .a2 { width: 60vw; height: 50vw; left: 55%; top: 10%; background: radial-gradient(closest-side, #1e6b3a 0%, rgba(30,107,58,0) 70%); animation: drift2 18s ease-in-out infinite alternate; }
+  .aurora .a3 { width: 90vw; height: 30vw; left: -10%; top: 55%; background: radial-gradient(closest-side, #8ff04d 0%, rgba(143,240,77,0) 70%); animation: drift3 11s ease-in-out infinite alternate; }
+  .aurora .a4 { width: 40vw; height: 40vw; left: 5%; top: -10%; background: radial-gradient(closest-side, #cfe6c4 0%, rgba(207,230,196,0) 70%); animation: drift2 20s ease-in-out infinite alternate-reverse; }
+  .aurora .beam {
+    position: absolute; left: 30%; top: -20%; width: 120%; height: 120%;
+    background: repeating-linear-gradient(115deg, rgba(255,255,255,0) 0 60px, rgba(255,255,255,.35) 60px 90px, rgba(255,255,255,0) 90px 180px);
+    filter: blur(24px); opacity: .6; animation: beam 24s linear infinite;
   }
-  .btn.primary { background: var(--accent); color: var(--accent-fg); }
-  .btn.secondary { color: var(--fg); border-color: var(--rule); }
-  .btn.secondary:hover { border-color: var(--accent); }
+  @keyframes drift1 { from { transform: translate(0,0) scale(1); } to { transform: translate(-8%, 10%) scale(1.15); } }
+  @keyframes drift2 { from { transform: translate(0,0) rotate(0deg); } to { transform: translate(10%, -6%) rotate(12deg); } }
+  @keyframes drift3 { from { transform: translateX(0) scaleY(1); } to { transform: translateX(12%) scaleY(1.3); } }
+  @keyframes beam { from { transform: translateX(-10%) rotate(0deg); } to { transform: translateX(10%) rotate(3deg); } }
+  @media (prefers-reduced-motion: reduce) { .aurora span, .aurora .beam, .anim, .anim * { animation: none !important; } }
 
-  section { padding: 44px 0; border-top: 1px solid var(--rule); }
-  h2 {
-    font-family: var(--serif);
-    font-weight: 400;
-    font-size: 1.7rem;
-    line-height: 1.2;
-    margin: 0 0 18px;
+  .hero > .in { position: relative; z-index: 1; }
+  .eyebrow { font-family: var(--mono); font-size: 16px; letter-spacing: .08em; text-transform: uppercase; display: flex; align-items: center; gap: 12px; color: var(--fg); }
+  .eyebrow .arrow { color: var(--green); font-size: 20px; }
+  .hero h1 {
+    font-weight: 400; letter-spacing: -0.035em; line-height: 1.05; margin: 34px 0 60px;
+    font-size: clamp(2.6rem, 5.6vw, 6rem); max-width: 1700px;
   }
-  p { margin: 0 0 16px; max-width: 64ch; }
-  p:last-child { margin-bottom: 0; }
+  .cta { display: flex; flex-wrap: wrap; gap: 24px; align-items: center; margin-bottom: 44px; }
+  .btn { display: inline-flex; align-items: center; height: 62px; padding: 0 44px; border-radius: 999px; font-size: 22px; text-decoration: none; border: 1px solid var(--fg); white-space: nowrap; }
+  .btn.solid { background: var(--fg); color: #fff; }
+  .btn.ghost { background: transparent; color: var(--fg); border-color: rgba(0,0,0,.35); }
+  .cmd { display: inline-flex; align-items: center; gap: 12px; height: 62px; padding: 0 30px; border-radius: 999px; border: 1px solid rgba(0,0,0,.35); font-family: var(--mono); font-size: 20px; }
+  .cmd .d { color: var(--green-deep); }
+  .cmd button { border: 0; background: none; cursor: pointer; padding: 4px; color: var(--fg); display: inline-flex; }
+  @media (max-width: 720px) { .btn, .cmd { height: 52px; font-size: 17px; padding: 0 22px; } .cmd { font-size: 14px; max-width: 100%; overflow: hidden; } }
+  .hero-sub { font-size: 23px; color: var(--fg-2); line-height: 1.55; margin: 0; }
+  @media (max-width: 720px) { .hero-sub { font-size: 18px; } }
 
-  .terminal {
-    background: var(--code-bg); color: var(--code-fg);
-    font-family: var(--mono); font-size: 13.5px; line-height: 1.6;
-    border-radius: 8px; padding: 18px 20px; margin: 26px 0 0;
-    overflow-x: auto; white-space: pre;
+  /* ---------- feature grid ---------- */
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 64px; padding: 110px 0 40px; }
+  .grid2 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 64px; padding: 40px 0 120px; }
+  @media (max-width: 1100px) { .grid3, .grid2 { grid-template-columns: 1fr; gap: 56px; } }
+  .feat p.lead { font-size: 28px; line-height: 1.3; margin: 0 0 60px; color: var(--fg-2); }
+  .feat p.lead b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 720px) { .feat p.lead { font-size: 22px; margin-bottom: 30px; } }
+  .card {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: var(--card-shadow); padding: 30px 30px; height: 450px; position: relative; overflow: hidden;
+    font-size: 17px; color: var(--fg-2);
   }
-  .terminal .dim { color: var(--code-dim); }
-  .terminal .ok { color: #6fcf97; }
-  .terminal .warn { color: #e9c46a; }
+  .card .hd { display: flex; justify-content: space-between; align-items: center; color: var(--fg-3); font-size: 16px; margin-bottom: 14px; }
+  .card .in { border: 1px solid var(--rule); border-radius: 6px; height: calc(100% - 40px); padding: 18px; position: relative; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--rule); font-size: 14px; color: var(--fg-3); background: #fafafa; }
+  .pill.red { border-color: #f1c0c0; background: #fff3f3; color: var(--red); }
+  .pill.green { border-color: #bfe9b1; background: #eefae9; color: var(--green-deep); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #cfcfcf; }
+  .dot.g { background: var(--green); }
+  .dot.r { background: var(--red); }
+  .dot.y { background: #e0b53c; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .row:last-child { border-bottom: 0; }
+  .card .mono { font-family: var(--mono); }
 
-  ol.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; }
-  ol.steps li {
-    counter-increment: step; position: relative;
-    padding: 18px 0 18px 56px; border-top: 1px solid var(--rule);
+  /* card 1: task lifecycle */
+  .c1 .name { position: absolute; left: 18px; bottom: 76px; font-size: 18px; color: var(--fg); }
+  .c1 .ttl { position: absolute; left: 18px; bottom: 50px; color: var(--fg-3); font-size: 15px; }
+  .c1 .tags { position: absolute; left: 18px; bottom: 12px; display: flex; gap: 6px; }
+  .c1 .bar { position: absolute; left: 18px; right: 18px; top: 18px; height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
+  .c1 .bar i { display: block; height: 100%; width: 0; background: var(--green); animation: fill 6s linear infinite; }
+  @keyframes fill { 0% { width: 0; } 90% { width: 100%; } 100% { width: 100%; } }
+  .c1 .live { animation: blinkTxt 6s linear infinite; }
+  @keyframes blinkTxt { 0%, 85% { opacity: 1; } 86%, 100% { opacity: .3; } }
+
+  /* card 2: approvals */
+  .c2 .in { padding-top: 130px; }
+  .c2 .who { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .c2 .who .id { font-family: var(--mono); color: var(--fg-3); font-size: 15px; }
+  .c2 .stack > div { opacity: 0; transform: translateY(6px); animation: rise 7s ease-in-out infinite; }
+  .c2 .stack > div:nth-child(2) { animation-delay: 1.2s; }
+  .c2 .stack > div:nth-child(3) { animation-delay: 2.4s; }
+  @keyframes rise { 0% { opacity: 0; transform: translateY(6px); } 12%, 80% { opacity: 1; transform: none; } 92%, 100% { opacity: 0; } }
+
+  /* card 3: review */
+  .c3 .in { padding-top: 150px; }
+  .c3 .ev { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .c3 .ev .x { color: var(--red); font-size: 16px; }
+  .c3 .ev .k { font-family: var(--mono); color: var(--fg-3); }
+  .c3 .ev { opacity: 0; animation: rise 8s ease-in-out infinite; }
+  .c3 .ev:nth-child(2) { animation-delay: 1s; }
+  .c3 .ev:nth-child(3) { animation-delay: 2s; }
+  .c3 .ghost { position: absolute; right: 18px; top: 8px; color: #ddd; font-size: 13px; }
+
+  /* card 4: queue */
+  .c4 .in { padding-top: 130px; }
+  .c4 .ln { display: flex; gap: 22px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--rule); font-family: var(--mono); font-size: 15px; }
+  .c4 .ln .n { color: var(--fg-3); width: 16px; }
+  .c4 .ln:last-child { border-bottom: 0; }
+  .c4 .ln { opacity: 0; animation: rise 9s ease-in-out infinite; }
+  .c4 .ln:nth-child(2) { animation-delay: .9s; } .c4 .ln:nth-child(3) { animation-delay: 1.8s; }
+
+  /* card 5: commit plan */
+  .c5 .in { padding-top: 150px; }
+  .c5 .cols { display: flex; justify-content: space-between; font-size: 13px; color: var(--fg-3); letter-spacing: .04em; text-transform: uppercase; margin-bottom: 14px; }
+  .c5 .cols .on { color: var(--green-deep); animation: hop 6s steps(1) infinite; }
+  .c5 .find { display: flex; align-items: center; gap: 10px; }
+
+  /* ---------- statement ---------- */
+  .statement { padding: 120px 0 40px; }
+  .statement h2 { font-weight: 400; letter-spacing: -0.03em; line-height: 1.08; font-size: clamp(2rem, 4.2vw, 4.4rem); margin: 0 0 60px; }
+  .statement h2 span { display: block; color: var(--fg-3); }
+  .statement p { font-size: 26px; line-height: 1.45; color: var(--fg-2); max-width: 1140px; margin: 0 0 50px; }
+  @media (max-width: 720px) { .statement p { font-size: 19px; } }
+  .steps { list-style: none; padding: 0; margin: 0 0 56px; }
+  .steps li { display: flex; gap: 22px; align-items: center; font-size: 26px; padding: 12px 0; color: var(--fg-3); transition: color .4s; }
+  .steps li .ar { color: var(--green); font-size: 22px; }
+  .steps li.on { color: var(--fg); }
+  @media (max-width: 720px) { .steps li { font-size: 19px; } }
+  .ctl { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 48px; }
+  .ctl button { font-family: var(--mono); font-size: 18px; background: #fff; border: 1px solid #c9c9c9; padding: 18px 26px; cursor: pointer; display: inline-flex; gap: 12px; align-items: center; color: var(--fg); }
+  .ctl button:hover { border-color: var(--fg); }
+  .log {
+    border: 1px solid var(--rule); background: #f4f3ef; border-radius: 2px; padding: 52px 0 52px 230px;
+    font-family: var(--mono); font-size: 32px; line-height: 1.32; overflow: hidden; white-space: nowrap; height: 260px;
+    color: #4a5d47;
   }
-  ol.steps li:first-child { border-top: 0; padding-top: 4px; }
-  ol.steps li::before {
-    content: counter(step, decimal-leading-zero);
-    position: absolute; left: 0; top: 18px;
-    font-family: var(--mono); font-size: 14px; color: var(--muted);
+  .log div { display: flex; gap: 0; }
+  .log b { font-weight: 700; color: #2b6b2f; }
+  .log .cur { color: #245d28; }
+  @media (max-width: 1100px) { .log { padding-left: 40px; font-size: 20px; height: 180px; } }
+  @media (max-width: 720px) { .log { padding-left: 16px; font-size: 14px; height: 140px; padding-top: 24px; } }
+
+  /* ---------- tabs ---------- */
+  .tabs {
+    position: sticky; top: 80px; z-index: 20; background: var(--bg);
+    border-bottom: 1px solid var(--rule); display: flex; gap: 40px; overflow-x: auto; scrollbar-width: none;
+    margin-top: 120px;
   }
-  ol.steps li:first-child::before { top: 4px; }
-  ol.steps strong { display: block; font-weight: 600; margin-bottom: 4px; }
-  ol.steps p { color: var(--muted); font-size: 16px; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { display: flex; gap: 10px; align-items: baseline; padding: 30px 12px 26px 0; text-decoration: none; color: var(--fg-3); font-size: 20px; white-space: nowrap; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tabs a .n { font-family: var(--mono); font-size: 15px; }
+  .tabs a.on { color: var(--fg); border-bottom-color: var(--fg); }
 
-  dl { margin: 0; }
-  dl div { padding: 14px 0; border-top: 1px solid var(--rule); }
-  dl div:first-child { border-top: 0; padding-top: 0; }
-  dt { font-weight: 600; margin-bottom: 4px; }
-  dd { margin: 0; color: var(--muted); max-width: 64ch; }
+  .sec { padding: 90px 0 30px; scroll-margin-top: 170px; }
+  .sec .eb { display: flex; align-items: center; gap: 30px; font-family: var(--mono); letter-spacing: .18em; font-size: 16px; text-transform: uppercase; margin-bottom: 90px; }
+  .sec .eb .ic { width: 54px; height: 54px; border: 1px solid var(--fg); display: grid; place-items: center; }
+  .sec .eb .ic svg { width: 28px; height: 28px; }
+  .sec h2 { font-weight: 400; letter-spacing: -0.03em; line-height: 1.08; font-size: clamp(2rem, 4.2vw, 4.4rem); margin: 0 0 80px; max-width: 1220px; }
+  .sec h2 span { color: var(--fg-3); }
+  .sec h2.indent { text-indent: 8.5%; }
+  @media (max-width: 720px) { .sec h2.indent { text-indent: 0; } .sec .eb { margin-bottom: 40px; } .sec h2 { margin-bottom: 40px; } }
 
-  ul.plain { padding-left: 1.2em; margin: 0; }
-  ul.plain li { margin-bottom: 8px; max-width: 64ch; }
-
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
-  @media (max-width: 640px) { .two { grid-template-columns: 1fr; } }
-  .two h3 { font-size: 1rem; font-weight: 600; margin: 0 0 10px; }
-
-  footer {
-    border-top: 1px solid var(--rule); padding: 28px 0 48px;
-    color: var(--muted); font-size: 14px;
+  .panel {
+    position: relative; border-radius: 2px; padding: 60px 70px; overflow: hidden;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(79,198,43,.55) 1.2px, transparent 1.6px) 0 0 / 12px 12px,
+      linear-gradient(120deg, #e8f5df 0%, #ffffff 35%, #ffffff 60%, #eaf7e0 100%);
   }
-  footer .row { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  .panel::before { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at 45% 50%, #ffffff 0%, #ffffff 30%, rgba(255,255,255,0) 75%); pointer-events: none; }
+  .panel > * { position: relative; }
+  @media (max-width: 720px) { .panel { padding: 24px 16px; } }
+  .panel .lab { font-family: var(--mono); letter-spacing: .2em; font-size: 15px; text-transform: uppercase; margin-bottom: 6px; }
+  .panel h3 { font-weight: 400; font-size: 36px; margin: 0 0 44px; letter-spacing: -0.02em; }
+  .phases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 40px; }
+  @media (max-width: 720px) { .phases { grid-template-columns: repeat(2, 1fr); } }
+  .phases div { font-size: 20px; color: var(--fg-2); }
+  .phases div i { display: block; height: 4px; background: #d9d9d9; border-radius: 2px; margin-bottom: 18px; overflow: hidden; position: relative; }
+  .phases div i::after { content: ""; position: absolute; inset: 0; background: #3a3a3a; transform-origin: left; transform: scaleX(0); animation: phase 12s linear infinite; }
+  .phases div:nth-child(2) i::after { animation-delay: 3s; } .phases div:nth-child(3) i::after { animation-delay: 6s; } .phases div:nth-child(4) i::after { animation-delay: 9s; }
+  @keyframes phase { 0% { transform: scaleX(0); } 25%, 100% { transform: scaleX(1); } }
+  .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-bottom: 44px; }
+  @media (max-width: 1100px) { .trio { grid-template-columns: 1fr; } }
+  .box { background: #fff; border: 1px solid var(--rule); border-radius: 10px; box-shadow: var(--card-shadow); padding: 28px 24px; min-height: 410px; }
+  .box .t { display: flex; justify-content: space-between; align-items: baseline; font-size: 21px; margin-bottom: 18px; }
+  .box .t small { font-size: 16px; color: var(--fg-3); }
+  .box .t small.red { color: var(--red); }
+  .box p { margin: 0 0 22px; font-size: 19px; color: var(--fg-2); }
+  .box .r { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--rule); font-size: 21px; }
+  .box .r:last-child { border-bottom: 0; }
+  .box .r .sub { display: block; color: var(--fg-3); font-size: 18px; margin-top: 4px; }
+  .box .r.red { color: var(--red); }
+  .box .r .st { color: var(--fg-2); font-size: 18px; }
+  .box .r.gone { animation: fadeRow 12s ease-in-out infinite; }
+  .box .r.gone:nth-child(2) { animation-delay: .5s; } .box .r.gone:nth-child(3) { animation-delay: 1s; } .box .r.gone:nth-child(4) { animation-delay: 1.5s; }
+  @keyframes fadeRow { 0%, 60% { opacity: 1; } 75%, 90% { opacity: .35; } 100% { opacity: 1; } }
+  .panel .foot h4 { margin: 0 0 6px; font-weight: 400; font-size: 23px; }
+  .panel .foot p { margin: 0; font-size: 20px; color: var(--fg-2); }
+
+  .illus { display: flex; gap: 22px; align-items: flex-start; margin: 30px 0 60px; font-size: 20px; color: var(--fg-2); max-width: 1140px; }
+  .illus .tag { font-family: var(--mono); letter-spacing: .18em; font-size: 14px; border: 1px solid #bbb; padding: 6px 10px; white-space: nowrap; color: var(--fg-2); }
+  .props { display: grid; gap: 40px; padding-bottom: 60px; }
+  .props .p svg { width: 26px; height: 26px; margin-bottom: 18px; }
+  .props .p h4 { margin: 0 0 12px; font-size: 24px; font-weight: 600; }
+  .props .p p { margin: 0; font-size: 24px; color: var(--fg-2); }
+  @media (max-width: 720px) { .props .p h4, .props .p p { font-size: 19px; } }
+  .sec + .sec { border-top: 1px solid var(--rule); }
+
+  /* safety-style cards */
+  .cards3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; margin-bottom: 40px; }
+  @media (max-width: 1100px) { .cards3 { grid-template-columns: 1fr; } }
+  .scard { background: #fff; border: 1px solid var(--rule); border-radius: 22px; box-shadow: var(--card-shadow); padding: 46px 46px 0; height: 560px; overflow: hidden; position: relative; }
+  .scard h4 { margin: 0 0 10px; font-size: 25px; font-weight: 600; }
+  .scard p { margin: 0 0 26px; font-size: 22px; color: var(--fg-2); }
+  .chat { border: 1px solid var(--rule); border-radius: 8px; padding: 14px; font-size: 16px; }
+  .chat .m { display: flex; gap: 12px; padding: 8px 0; }
+  .chat .av { width: 34px; height: 34px; border-radius: 50%; background: #e7e7e7; display: grid; place-items: center; font-size: 14px; color: var(--fg-2); flex: none; }
+  .chat .av.d { background: #123b26; color: #fff; }
+  .chat .m .who { font-weight: 600; }
+  .chat .m .when { color: var(--fg-3); font-size: 14px; margin-left: 8px; }
+  .chat .m.dim { opacity: .35; }
+  .chat .m.pop { animation: rise 7s ease-in-out infinite; opacity: 0; }
+  .bars { display: flex; align-items: flex-end; gap: 10px; height: 200px; padding-top: 10px; }
+  .bars i { flex: 1; background: linear-gradient(#5fd63a, #2ea043); border-radius: 6px 6px 0 0; transform-origin: bottom; animation: bar 4s ease-in-out infinite alternate; }
+  @keyframes bar { from { transform: scaleY(.55); } to { transform: scaleY(1); } }
+  .ledger { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+  .ledger .l { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--rule); color: var(--fg-3); }
+  .ledger .l:last-child { border-bottom: 0; }
+  .ledger .l .k { font-family: var(--mono); letter-spacing: .06em; font-size: 12px; padding: 2px 8px; border-radius: 4px; background: #f2f2f2; }
+  .ledger .l .k.pass { background: #e4f6dc; color: var(--green-deep); }
+  .ledger .l .k.wait { background: #fff4d6; color: #8a6d00; }
+  .ledger .l { animation: rise 8s ease-in-out infinite; opacity: 0; }
+  .ledger .l:nth-child(2) { animation-delay: .6s; } .ledger .l:nth-child(3) { animation-delay: 1.2s; } .ledger .l:nth-child(4) { animation-delay: 1.8s; } .ledger .l:nth-child(5) { animation-delay: 2.4s; }
+
+  /* editor mock */
+  .editor { background: #fff; border: 1px solid var(--rule); border-radius: 14px; box-shadow: var(--card-shadow); overflow: hidden; }
+  .editor .bar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 18px 28px; border-bottom: 1px solid var(--rule); font-size: 20px; color: var(--fg-2); }
+  .editor .bar .lights { display: flex; gap: 10px; }
+  .editor .bar .lights i { width: 18px; height: 18px; border-radius: 50%; display: block; }
+  .editor .body { display: grid; grid-template-columns: 270px 1fr; min-height: 420px; }
+  @media (max-width: 720px) { .editor .body { grid-template-columns: 1fr; } .editor .tree { display: none; } }
+  .editor .tree { border-right: 1px solid var(--rule); padding: 18px 0; font-size: 19px; color: var(--fg-2); }
+  .editor .tree div { padding: 7px 18px; display: flex; gap: 10px; align-items: center; }
+  .editor .tree .i1 { padding-left: 36px; } .editor .tree .i2 { padding-left: 54px; } .editor .tree .i3 { padding-left: 72px; } .editor .tree .i4 { padding-left: 100px; }
+  .editor .tree .sel { background: #e3f4dc; color: var(--fg); }
+  .editor .tabbar { border-bottom: 1px solid var(--rule); display: flex; }
+  .editor .tabbar div { padding: 12px 20px; border-right: 1px solid var(--rule); font-size: 19px; display: flex; gap: 10px; align-items: center; }
+  .editor pre { margin: 0; padding: 22px 26px; font-family: var(--mono); font-size: 21px; line-height: 1.55; color: var(--fg); white-space: pre; overflow-x: auto; }
+  .editor pre .ln { display: inline-block; width: 32px; color: var(--fg-3); }
+  .editor pre .cm { color: #3d7a3a; }
+  .editor pre .kw { color: #204a9a; }
+  .editor pre .str { color: #b0362b; }
+  .editor pre .fn { color: #7a3d92; }
+  .editor pre .add { background: #e6f7dd; display: block; margin: 0 -26px; padding: 0 26px; }
+  .editor pre .del { background: #fdebe9; display: block; margin: 0 -26px; padding: 0 26px; text-decoration: line-through; color: var(--fg-3); }
+  @media (max-width: 720px) { .editor pre { font-size: 14px; } }
+  .fico { width: 18px; height: 18px; border-radius: 3px; background: #2ea043; display: inline-block; flex: none; }
+  .folder { width: 18px; height: 14px; border-radius: 2px; background: #d6a94a; display: inline-block; flex: none; }
+
+  /* map mock */
+  .map { position: relative; height: 380px; }
+  .map svg { width: 100%; height: 100%; }
+  .map .flow { stroke-dasharray: 6 8; animation: dash 1.2s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -28; } }
+
+  footer { border-top: 1px solid var(--rule); padding: 60px 0 80px; color: var(--fg-2); font-size: 17px; }
+  footer .cols { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 40px; }
+  @media (max-width: 720px) { footer .cols { grid-template-columns: 1fr; } }
+  footer a { text-decoration: none; display: block; margin-bottom: 10px; }
+  footer a:hover { color: var(--fg); }
+  footer .brand { font-size: 20px; margin-bottom: 14px; }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <header>
+<header class="topbar">
+  <div class="wrap top">
     <a class="brand" href="./"><img src="hydra-logo.png" alt=""> Hydra</a>
-    <nav>
-      <a href="#how">How it works</a>
-      <a href="#limits">Limits</a>
+    <nav class="menu">
+      <a href="#features">Features</a>
+      <a href="#deep">How it works</a>
       <a href="https://github.com/ndunl075/hydra/blob/main/README.md">Docs</a>
       <a href="https://github.com/ndunl075/hydra">GitHub</a>
     </nav>
-  </header>
+  </div>
+</header>
 
-  <div class="hero">
-    <h1>Know what your agents did before you merge.</h1>
-    <p class="lede">
-      Hydra is an IDE that runs Claude Code and Codex tasks in parallel. Each task gets its own
-      git worktree and branch. You watch, review, and commit from one window, and nothing touches
-      your checkout until you say so.
-    </p>
-    <div class="actions">
-      <a class="btn primary" href="https://github.com/ndunl075/hydra">View on GitHub</a>
-      <a class="btn secondary" href="https://github.com/ndunl075/hydra/blob/main/docs/Standalone_Build.md">Build Hydra.exe</a>
+<div class="wrap" style="padding-left:8px;padding-right:8px">
+  <section class="hero">
+    <div class="aurora" aria-hidden="true"><span class="a4"></span><span class="a1"></span><span class="a2"></span><span class="a3"></span><div class="beam"></div></div>
+    <div class="in">
+      <div class="eyebrow"><span class="arrow">→</span> Parallel agent orchestration</div>
+      <h1>Know what your agents did before you merge,<br>each in a disposable worktree.</h1>
+      <div class="cta">
+        <a class="btn solid" href="https://github.com/ndunl075/hydra/blob/main/docs/Standalone_Build.md">Build Hydra.exe</a>
+        <a class="btn ghost" href="https://github.com/ndunl075/hydra">View the source</a>
+        <span class="cmd"><span class="d">$</span> <span id="cmdtext">git clone https://github.com/ndunl075/hydra</span>
+          <button type="button" id="copy" aria-label="Copy command"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+        </span>
+      </div>
+      <p class="hero-sub">The IDE is open source and builds today as a standalone Windows app, with no account.<br>Provider sign-in stays in the official Claude Code and Codex tools: Hydra never sends a prompt on its own.</p>
+    </div>
+  </section>
+</div>
+
+<div class="wrap" id="features">
+  <div class="grid3">
+    <div class="feat">
+      <p class="lead"><b>Isolated Worktree.</b> A separate checkout, branch, and index for every task an agent runs.</p>
+      <div class="card c1 anim"><div class="hd"><span>task</span><span class="live">live</span></div>
+        <div class="in">
+          <div class="bar"><i></i></div>
+          <div class="name">retry-loop-3f2a</div>
+          <div class="ttl">agent/retry-loop-3f2a · from HEAD 4054229</div>
+          <div class="tags"><span class="pill">worktree</span><span class="pill">codex</span><span class="pill">setup ok</span><span class="pill">isolated</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="feat">
+      <p class="lead"><b>Scoped Approvals.</b> Every command, file write, and network call the agent wants, shown before it runs.</p>
+      <div class="card c2 anim"><div class="hd"><span>approvals</span><span class="dot g"></span></div>
+        <div class="in">
+          <div class="who"><span class="id">t_3f2a</span><span class="pill">run: npm test</span></div>
+          <div class="stack">
+            <div class="row"><span>command · npm test</span><span class="dot g"></span></div>
+            <div class="row"><span>file · src/worktree.ts</span><span class="dot g"></span></div>
+            <div class="row"><span>network · registry.npmjs.org</span><span class="dot y"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="feat">
+      <p class="lead"><b>Guarded Checkout.</b> Nothing reaches your main working copy, even when the agent tries.</p>
+      <div class="card c3 anim"><div class="hd"><span>guard</span><span class="dot r"></span><span class="ghost">main · dirty</span></div>
+        <div class="in">
+          <div class="ev"><span class="x">⊗</span><span class="k">WT-018</span></div>
+          <div class="ev"><span>../hydra/src/index.ts</span></div>
+          <div class="ev"><span class="pill red">refused</span><span>outside task worktree</span></div>
+        </div>
+      </div>
     </div>
   </div>
+  <div class="grid2">
+    <div class="feat">
+      <p class="lead"><b>Queue.</b> Two sessions at a time by default, the rest waiting with explicit dependencies.</p>
+      <div class="card c4 anim"><div class="hd"><span>queued</span><span>limit 2 per window</span></div>
+        <div class="in">
+          <div class="ln"><span class="n">1</span><span>claude · rewrite retry loop</span></div>
+          <div class="ln"><span class="n">2</span><span>codex · add worktree tests</span></div>
+          <div class="ln"><span class="n">3</span><span style="color:var(--fg-3)">waiting · after 1</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="feat">
+      <p class="lead"><b>Reviewed Commits.</b> Freeze the tree you read, then commit exactly that tree.</p>
+      <div class="card c5 anim"><div class="hd"><span>review</span><span class="dot g"></span></div>
+        <div class="in">
+          <div class="cols"><span>Saved</span><span>Staged</span><span>Frozen</span><span class="on">Commit</span></div>
+          <div class="find"><span class="pill green">RECORDED</span><span>9c1e0b7 · 3 files, +41 −12</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-  <section>
-    <p>
-      Hydra makes a worktree for every task, checked out at committed HEAD on a unique branch.
-      Your agent works there, alone. Dirty edits in your main checkout stay exactly where they are.
-      When the task stops, you read the diff in a native editor tab, stage what you want, and
-      commit the tree you reviewed. Not the tree the agent last touched.
-    </p>
-    <p>
-      Whether the change came from Claude Code, from Codex, or from you handing a task off to
-      the official extension, the record of what happened is local, timestamped, and survives reload.
-    </p>
-<div class="terminal"><span class="dim">$</span> hydra: new task "Rewrite the retry loop in worktree.ts"
-<span class="dim">→</span> branch  agent/retry-loop-3f2a
-<span class="dim">→</span> worktree ../hydra-worktrees/retry-loop-3f2a  <span class="dim">(from HEAD 4054229)</span>
-<span class="dim">→</span> provider codex 0.154.0  <span class="ok">sandbox ready</span>
-<span class="dim">…</span>
-<span class="warn">approval</span>  run: npm test      <span class="dim">[allow once] [allow for task] [deny]</span>
-<span class="dim">…</span>
-<span class="ok">stopped</span>   3 files changed, 41 insertions, 12 deletions
-<span class="dim">→</span> review    base-to-saved · staged · unstaged · untracked
-<span class="dim">→</span> commit    reviewed tree 9c1e0b7 recorded</div>
+<div class="wrap">
+  <section class="statement">
+    <h2>An agent's change, reviewed before it lands.<span>One diff. One commit.</span></h2>
+    <p>Hydra makes a worktree for every task, checked out at committed HEAD on its own branch. Your agent works there whether it is Claude Code or Codex. You read the diff, stage what you want, and commit the tree you reviewed. Then the worktree can go.</p>
+    <ul class="steps" id="steps">
+      <li class="on"><span class="ar">→</span> A worktree per task, at committed HEAD</li>
+      <li><span class="ar">→</span> The agent runs there, with scoped approvals</li>
+      <li><span class="ar">→</span> You commit the tree you reviewed</li>
+    </ul>
+    <div class="ctl">
+      <button type="button" id="pause">❚❚ <span>Pause</span></button>
+      <button type="button" id="restart">↺ <span>Restart</span></button>
+      <button type="button" id="full">⛶ <span>Fullscreen</span></button>
+    </div>
+    <div class="log" id="log" aria-live="off"></div>
   </section>
+</div>
 
-  <section id="how">
-    <h2>How it works</h2>
-    <ol class="steps">
-      <li>
-        <strong>Start a task, not a chat.</strong>
-        <p>Give it a title and a brief. Hydra creates the branch and worktree, reserves ports and
-        service names if you asked for them, and runs your setup commands in the checkout. Setup must
-        pass before any provider work launches.</p>
-      </li>
-      <li>
-        <strong>The agent runs in its own checkout.</strong>
-        <p>Managed Claude and Codex sessions stream into the task view: text, raw events, token
-        usage, and scoped approval cards for commands, files, and network. You can interrupt a turn
-        or stop the whole process tree. Or open the provider in a native terminal at the exact
-        worktree and drive it yourself.</p>
-      </li>
-      <li>
-        <strong>Run several at once, within a limit you set.</strong>
-        <p>The default is two active sessions per window. Extra launches wait in a persistent queue
-        with explicit dependencies. Soft budgets can warn or hold new work based on reported usage.
-        The agent map shows every repository, worktree, and running session on one canvas.</p>
-      </li>
-      <li>
-        <strong>Review the diff. Commit the tree you read.</strong>
-        <p>Stopped tasks open in read-only native diff tabs: base-to-saved, committed, staged,
-        unstaged, untracked. Prepare a commit review to freeze a tree, then commit exactly that
-        tree. Stale changes, active writers, and unsaved buffers refuse. Your Git hooks still run.</p>
-      </li>
-      <li>
-        <strong>Hand off when it makes sense.</strong>
-        <p>An idle or stopped task can open in the official Claude Code or Codex extension, in a
-        separate window with only that checkout and the task prompt. Login, permissions, and
-        conversation history stay with the provider.</p>
-      </li>
-    </ol>
-  </section>
+<div class="wrap" id="deep">
+  <nav class="tabs" id="tabs">
+    <a href="#t1" class="on"><span class="n">01</span> Isolated Worktrees</a>
+    <a href="#t2"><span class="n">02</span> Managed Sessions</a>
+    <a href="#t3"><span class="n">03</span> Native Review</a>
+    <a href="#t4"><span class="n">04</span> Scheduling</a>
+    <a href="#t5"><span class="n">05</span> Handoff</a>
+  </nav>
 
-  <section>
-    <h2>What is in the box</h2>
-    <dl>
-      <div>
-        <dt>One worktree per task</dt>
-        <dd>Isolated files and index for every agent. No shared working copy, no half-applied edits
-        across tasks, and no automatic copying of secrets, ignored files, or dependencies.</dd>
+  <!-- 01 -->
+  <section class="sec" id="t1">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h6v6H4zM14 14h6v6h-6zM14 4h6v6h-6z" stroke="#4fc62b"/><path d="M4 14h6v6H4z"/></svg></span> Isolated worktrees</div>
+    <h2 class="indent">Every task gets its own checkout. <span>A branch from committed HEAD, a sibling worktree, and an index nobody else writes to.</span></h2>
+    <div class="panel">
+      <div class="lab">Isolated worktree</div>
+      <h3>Nothing leaks</h3>
+      <div class="phases anim"><div><i></i>Create</div><div><i></i>Set up</div><div><i></i>Run</div><div><i></i>Review</div></div>
+      <div class="trio">
+        <div class="box anim">
+          <div class="t"><span>Main checkout</span><small>Not in path</small></div>
+          <div class="r"><span>src/</span><span class="dot"></span></div>
+          <div class="r"><span>dirty edits</span><span class="dot"></span></div>
+          <div class="r red"><span>index</span><span>✕</span></div>
+          <div class="r"><span>node_modules</span><span class="dot"></span></div>
+        </div>
+        <div class="box">
+          <div class="t"><span>Boundary</span></div>
+          <p>The task cannot write outside its own worktree.</p>
+          <div class="r"><span>Own branch<span class="sub">agent/… from committed HEAD</span></span><span class="dot g"></span></div>
+          <div class="r"><span>Own index<span class="sub">Staging never crosses tasks</span></span><span class="dot g"></span></div>
+          <div class="r"><span>No secrets copied<span class="sub">Ignored files stay ignored</span></span><span class="dot g"></span></div>
+        </div>
+        <div class="box anim">
+          <div class="t"><span>Task worktree</span><small>ready</small></div>
+          <div class="r gone"><span>Branch</span><span class="st">created</span></div>
+          <div class="r gone"><span>Ports</span><span class="st">reserved</span></div>
+          <div class="r gone"><span>Setup</span><span class="st">passed</span></div>
+          <div class="r gone"><span>Provider</span><span class="st">launched</span></div>
+        </div>
       </div>
-      <div>
-        <dt>Editor and Agents in one window</dt>
-        <dd>Toggle between a normal editor layout and the agent manager with one keystroke. Task
-        selection, session output, approvals, and follow-up drafts are shared between both modes.</dd>
-      </div>
-      <div>
-        <dt>Native review</dt>
-        <dd>Renames keep both paths. Deletions compare against an empty side. Binary, large,
-        non-UTF-8, and submodule changes show metadata instead of a fake text diff.</dd>
-      </div>
-      <div>
-        <dt>Provider usage in view</dt>
-        <dd>Refresh Codex account limits without spending a model turn. Missing fields stay
-        missing, observations are timestamped, and stale data is labelled stale.</dd>
-      </div>
-      <div>
-        <dt>Local, versioned records</dt>
-        <dd>Tasks, sessions, and receipts are stored with atomic, versioned metadata. Corrupt
-        records are kept for diagnosis rather than silently dropped.</dd>
-      </div>
-      <div>
-        <dt>A standalone editor</dt>
-        <dd>Hydra ships as Hydra.exe, a Windows x64 build with the Hydra module built in. VS Code
-        is a development test host, not a dependency of the product.</dd>
-      </div>
-    </dl>
-  </section>
-
-  <section id="limits">
-    <h2>What Hydra does not do</h2>
-    <p>Worth knowing before you rely on it.</p>
-    <div class="two">
-      <div>
-        <h3>It does not talk to models itself.</h3>
-        <p>Hydra never sends a prompt on its own. Opening a task, switching modes, or refreshing
-        usage never submits a provider request. Authentication lives in the official CLI or
-        extension.</p>
-      </div>
-      <div>
-        <h3>It does not merge for you.</h3>
-        <p>A reviewed commit is a local receipt. Integrating into your target branch is a separate,
-        explicit step.</p>
-      </div>
-      <div>
-        <h3>Worktrees are not a sandbox.</h3>
-        <p>They isolate files and indexes. They do not contain a process. Codex sandbox readiness is
-        checked before a turn, but that is the provider's sandbox, not Hydra's.</p>
-      </div>
-      <div>
-        <h3>It does not promise background survival.</h3>
-        <p>Hydra stops the terminals it owns when the extension shuts down. A session that goes
-        missing is marked interrupted, never completed.</p>
-      </div>
+      <div class="foot"><h4>Kept after stop</h4><p>Worktrees and branches remain until you discard them, with a reversible confirmed discard.</p></div>
+    </div>
+    <div class="illus"><span class="tag">Illustrative</span><span>The order is real, and so is the boundary: create, set up, run, review. The rows are a shaped run, not a recording.</span></div>
+    <div class="props">
+      <div class="p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3v18M18 3v18M6 12h12"/></svg><h4>Own branch, own worktree</h4><p>Each task starts at committed HEAD in a unique branch and sibling worktree. Dirty main-checkout edits stay where they are.</p></div>
+      <div class="p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><h4>Reserved resources</h4><p>Ports and database or service names are reserved per task before first launch, and reservations survive restart.</p></div>
+      <div class="p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v16H4z"/><path d="M8 12l3 3 5-6"/></svg><h4>Setup must pass</h4><p>Saved setup commands run in the checkout first. Provider work does not launch until they succeed.</p></div>
     </div>
   </section>
 
-  <section>
-    <h2>Get it running</h2>
-    <p>Windows x64, Node.js 22, and the official Claude Code or Codex CLI installed with its own login.</p>
-<div class="terminal"><span class="dim">PS&gt;</span> npm.cmd ci
-<span class="dim">PS&gt;</span> npm.cmd run desktop:build
-<span class="dim">PS&gt;</span> npm.cmd run desktop:verify
-<span class="dim">PS&gt;</span> npm.cmd run desktop:smoke
-<span class="dim"># build lands in .desktop/VSCode-win32-x64/</span></div>
-    <p style="margin-top:18px">
-      The <a href="https://github.com/ndunl075/hydra/blob/main/README.md">README</a> covers the
-      full feature list. <a href="https://github.com/ndunl075/hydra/blob/main/docs/Implementation_Status.md">Implementation
-      status</a> says what has passed acceptance and what is still pending, in plain terms.
-    </p>
+  <!-- 02 -->
+  <section class="sec" id="t2">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 17l6-6-6-6M12 19h8" stroke="#4fc62b"/></svg></span> Managed sessions</div>
+    <h2 class="indent">Whether this agent is doing what you asked <span>with streamed output, raw events, token usage, and an approval card for every scoped action.</span></h2>
+    <div class="cards3">
+      <div class="scard">
+        <h4>Approve, once or for the task.</h4>
+        <p>Commands, file writes, and network reach are shown before they happen, and the answer is recorded.</p>
+        <div class="chat anim">
+          <div class="m dim"><span class="av d">C</span><div><span class="who">codex</span><span class="when">8:55 PM</span><br>wants to run <code>npm test</code> in the task worktree</div></div>
+          <div class="m pop"><span class="av">H</span><div><span class="who">hydra</span><span class="when">8:56 PM</span><br>Allowed for this task. Written to the session record.</div></div>
+        </div>
+      </div>
+      <div class="scard">
+        <h4>Usage you can see.</h4>
+        <p>Provider-reported tokens per turn, saved locally, and a soft budget that warns or holds.</p>
+        <div class="bars anim"><i style="height:30%"></i><i style="height:55%"></i><i style="height:80%"></i><i style="height:45%"></i><i style="height:65%"></i><i style="height:95%"></i><i style="height:40%"></i><i style="height:70%"></i><i style="height:85%"></i><i style="height:50%"></i><i style="height:60%"></i><i style="height:90%"></i><i style="height:35%"></i></div>
+      </div>
+      <div class="scard">
+        <h4>Interrupted, never completed.</h4>
+        <p>A session that goes missing is marked interrupted. Records recover after reload with what actually happened.</p>
+        <div class="ledger anim">
+          <div class="l"><span class="k">TURN</span><span>4:25:29 PM</span></div>
+          <div class="l"><span class="k pass">TEXT</span><span>4:25:30 PM</span></div>
+          <div class="l"><span class="k wait">APPROVAL</span><span>4:25:31 PM</span></div>
+          <div class="l"><span class="k">TURN</span><span>4:25:33 PM</span></div>
+          <div class="l"><span class="k">STOPPED</span><span>4:25:34 PM</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="props">
+      <div class="p"><h4>Managed Claude</h4><p>Streams a task through the verified Claude CLI. Follow-ups resume the explicit session ID. Stop terminates the owned process tree.</p></div>
+      <div class="p"><h4>Managed Codex</h4><p>Pinned Codex App Server: streamed text, thread-ID follow-ups, scoped approval cards, and explicit turn interruption. Sandbox readiness is checked before any model turn.</p></div>
+      <div class="p"><h4>Or a plain terminal</h4><p>Open the provider in a native terminal at the exact worktree and paste the prompt yourself. Login and permissions stay in the official CLI.</p></div>
+    </div>
   </section>
 
+  <!-- 03 -->
+  <section class="sec" id="t3">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h10M4 18h16" stroke="#4fc62b"/></svg></span> Native review</div>
+    <h2 class="indent">Read the diff the editor shows you. <span>Base-to-saved, committed, staged, unstaged, untracked. Then commit the tree you read, not the tree the agent last touched.</span></h2>
+    <div class="panel">
+      <div class="editor">
+        <div class="bar"><span class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span><span>Hydra · retry-loop-3f2a</span><span></span></div>
+        <div class="body">
+          <div class="tree">
+            <div>▾ <span class="folder"></span> HYDRA-WORKTREES</div>
+            <div class="i1">▾ <span class="folder"></span> retry-loop-3f2a</div>
+            <div class="i2">▾ <span class="folder"></span> src</div>
+            <div class="i3 sel"><span class="fico"></span> worktree.ts</div>
+            <div class="i3"><span class="fico"></span> scheduler.ts</div>
+            <div class="i2">▸ <span class="folder"></span> tests</div>
+          </div>
+          <div>
+            <div class="tabbar"><div><span class="fico"></span> worktree.ts (base ↔ saved) <span style="color:var(--fg-3)">×</span></div></div>
+<pre><span class="ln">1</span><span class="cm">// Retry loop, rewritten by the task. Read-only diff, native tab.</span>
+<span class="ln">2</span><span class="kw">export async function</span> <span class="fn">withRetry</span>(fn, attempts = 3) {
+<span class="del"><span class="ln">3</span>  <span class="kw">for</span> (<span class="kw">let</span> i = 0; i &lt; attempts; i++) <span class="kw">return await</span> fn();</span>
+<span class="add"><span class="ln">3</span>  <span class="kw">let</span> lastError;</span>
+<span class="add"><span class="ln">4</span>  <span class="kw">for</span> (<span class="kw">let</span> i = 0; i &lt; attempts; i++) {</span>
+<span class="add"><span class="ln">5</span>    <span class="kw">try</span> { <span class="kw">return await</span> fn(); } <span class="kw">catch</span> (e) { lastError = e; }</span>
+<span class="add"><span class="ln">6</span>  }</span>
+<span class="add"><span class="ln">7</span>  <span class="kw">throw</span> lastError;</span>
+<span class="ln">8</span>}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="illus"><span class="tag">Illustrative</span><span>The diff modes are real. Renames keep both paths, deletions compare against an empty side, and binary, large, non-UTF-8, and submodule changes show metadata instead of a fake text diff.</span></div>
+    <div class="props">
+      <div class="p"><h4>Prepare commit review</h4><p>Freeze a fixed tree against the task base and inspect it. Stale changes, active writers, and unsaved task buffers refuse.</p></div>
+      <div class="p"><h4>Commit reviewed tree</h4><p>Creates the exact reviewed commit, or records one already made. Your native Git hooks still apply.</p></div>
+      <div class="p"><h4>Local receipt, not a merge</h4><p>Integrating the target branch is a separate, explicit step. Hydra never merges on your behalf.</p></div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section class="sec" id="t4">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8" stroke="#4fc62b"/><path d="M12 8v4l3 2"/></svg></span> Scheduling</div>
+    <h2 class="indent">Run several at once, inside a limit you set. <span>Two active managed sessions per window by default. The rest wait in a persistent queue with explicit dependencies.</span></h2>
+    <div class="panel">
+      <div class="lab">Agent map</div>
+      <h3>Every worktree on one canvas</h3>
+      <div class="map anim" aria-hidden="true">
+        <svg viewBox="0 0 1200 380" fill="none" stroke="#111" stroke-width="1.5">
+          <rect x="40" y="150" width="200" height="80" rx="10" fill="#fff"/>
+          <text x="140" y="185" text-anchor="middle" font-family="Inter,sans-serif" font-size="18" fill="#111" stroke="none">hydra</text>
+          <text x="140" y="210" text-anchor="middle" font-family="Courier Prime,monospace" font-size="14" fill="#8a8a8a" stroke="none">main · 4054229</text>
+          <path class="flow" d="M240 190 C 360 190, 360 70, 480 70" stroke="#4fc62b"/>
+          <path class="flow" d="M240 190 C 360 190, 360 190, 480 190" stroke="#4fc62b"/>
+          <path d="M240 190 C 360 190, 360 310, 480 310" stroke="#bbb" stroke-dasharray="6 8"/>
+          <rect x="480" y="40" width="220" height="60" rx="8" fill="#fff"/><text x="590" y="76" text-anchor="middle" font-family="Courier Prime,monospace" font-size="15" fill="#111" stroke="none">agent/retry-loop-3f2a</text>
+          <rect x="480" y="160" width="220" height="60" rx="8" fill="#fff"/><text x="590" y="196" text-anchor="middle" font-family="Courier Prime,monospace" font-size="15" fill="#111" stroke="none">agent/worktree-tests</text>
+          <rect x="480" y="280" width="220" height="60" rx="8" fill="#fff" stroke="#bbb"/><text x="590" y="316" text-anchor="middle" font-family="Courier Prime,monospace" font-size="15" fill="#8a8a8a" stroke="none">agent/docs-pass</text>
+          <path class="flow" d="M700 70 H 860" stroke="#4fc62b"/><path class="flow" d="M700 190 H 860" stroke="#4fc62b"/><path d="M700 310 H 860" stroke="#bbb" stroke-dasharray="6 8"/>
+          <circle cx="900" cy="70" r="30" fill="#fff"/><text x="900" y="76" text-anchor="middle" font-family="Inter,sans-serif" font-size="16" fill="#111" stroke="none">Codex</text>
+          <circle cx="900" cy="190" r="30" fill="#fff"/><text x="900" y="196" text-anchor="middle" font-family="Inter,sans-serif" font-size="16" fill="#111" stroke="none">Claude</text>
+          <circle cx="900" cy="310" r="30" fill="#fff" stroke="#bbb"/><text x="900" y="316" text-anchor="middle" font-family="Inter,sans-serif" font-size="14" fill="#8a8a8a" stroke="none">queued</text>
+          <text x="960" y="76" font-family="Inter,sans-serif" font-size="15" fill="#2ea043" stroke="none">running</text>
+          <text x="960" y="196" font-family="Inter,sans-serif" font-size="15" fill="#2ea043" stroke="none">running</text>
+          <text x="960" y="316" font-family="Inter,sans-serif" font-size="15" fill="#8a8a8a" stroke="none">after retry-loop</text>
+        </svg>
+      </div>
+      <div class="foot"><h4>Moving arrows are local sessions</h4><p>They stop for approvals. External sessions stay static because their progress is unavailable.</p></div>
+    </div>
+    <div class="illus"><span class="tag">Illustrative</span><span>The map follows the editor theme and the reduced-motion preference and makes no model requests. Agent-to-agent dependencies and message flow are not implemented yet.</span></div>
+    <div class="props">
+      <div class="p"><h4>Persistent queue</h4><p>Excess launches wait with explicit dependencies and are reconciled after restart.</p></div>
+      <div class="p"><h4>Soft budgets</h4><p>Task and project budgets can warn or hold new work using reported usage. Holds require an explicit retry.</p></div>
+      <div class="p"><h4>Shared profile capacity</h4><p>A reservation limit shared across participating windows in one local profile. Uncertain writers keep their slots until explicit recovery.</p></div>
+    </div>
+  </section>
+
+  <!-- 05 -->
+  <section class="sec" id="t5">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12h12M12 6l6 6-6 6" stroke="#4fc62b"/></svg></span> Handoff</div>
+    <h2 class="indent">Hand a task to the official extension when it makes sense. <span>A separate window, only that checkout, the task prompt, and nothing submitted until you press the button.</span></h2>
+    <div class="cards3">
+      <div class="scard">
+        <h4>Open in Claude Code.</h4>
+        <p>A generated workspace with exactly one checkout and the official extension recommendation.</p>
+        <div class="ledger anim">
+          <div class="l"><span class="k">WORKSPACE</span><span>generated</span></div>
+          <div class="l"><span class="k pass">CHECKOUT</span><span>identity verified</span></div>
+          <div class="l"><span class="k">PROMPT</span><span>copied locally</span></div>
+          <div class="l"><span class="k wait">PROVIDER</span><span>not launched</span></div>
+        </div>
+      </div>
+      <div class="scard">
+        <h4>Open in Codex.</h4>
+        <p>Same route. The extension owns login, conversation, permissions, and history.</p>
+        <div class="chat anim">
+          <div class="m dim"><span class="av">H</span><div><span class="who">hydra</span><span class="when">handoff</span><br>Select Open Codex to invoke the public UI command.</div></div>
+          <div class="m pop"><span class="av d">C</span><div><span class="who">codex</span><span class="when">extension</span><br>Ready in agent/retry-loop-3f2a. No prompt submitted.</div></div>
+        </div>
+      </div>
+      <div class="scard">
+        <h4>Missing extension, documented fallback.</h4>
+        <p>An absent or disabled extension shows an install search. An unsupported command shows the Command Palette route.</p>
+        <div class="ledger anim">
+          <div class="l"><span class="k">CHECK</span><span>extension present</span></div>
+          <div class="l"><span class="k wait">MISSING</span><span>search opened</span></div>
+          <div class="l"><span class="k">FALLBACK</span><span>Command Palette</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="props">
+      <div class="p"><h4>No CLI required for this route</h4><p>Handoff works through the extension alone. Provider authentication never passes through Hydra.</p></div>
+      <div class="p"><h4>Check before you trust</h4><p>Check Claude Code and Check Codex inspect the configured CLI version and public help, with captured stdout, stderr, and exit status kept locally.</p></div>
+    </div>
+  </section>
+</div>
+
+<div class="wrap">
   <footer>
-    <div class="row">
-      <span>Hydra</span>
-      <a href="https://github.com/ndunl075/hydra">GitHub</a>
-      <a href="https://github.com/ndunl075/hydra/blob/main/docs/Implementation_Status.md">Status</a>
-      <a href="https://github.com/ndunl075/hydra/blob/main/docs/Standalone_Build.md">Build guide</a>
+    <div class="cols">
+      <div><div class="brand">Hydra</div><p style="margin:0;max-width:420px">An IDE for orchestrating Claude Code and Codex in parallel, one worktree per task, reviewed before anything lands.</p></div>
+      <div><a href="https://github.com/ndunl075/hydra">GitHub</a><a href="https://github.com/ndunl075/hydra/blob/main/README.md">README</a><a href="https://github.com/ndunl075/hydra/blob/main/docs/Implementation_Status.md">Implementation status</a></div>
+      <div><a href="https://github.com/ndunl075/hydra/blob/main/docs/Standalone_Build.md">Build guide</a><a href="https://github.com/ndunl075/hydra/blob/main/docs/Native_Review.md">Native review</a><a href="https://github.com/ndunl075/hydra/blob/main/docs/Task_Scheduling.md">Scheduling</a></div>
     </div>
   </footer>
-
 </div>
+
+<script>
+(function () {
+  // copy command
+  var copy = document.getElementById('copy');
+  copy.addEventListener('click', function () {
+    var t = document.getElementById('cmdtext').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(t).then(function(){ copy.style.color = '#2ea043'; setTimeout(function(){ copy.style.color=''; }, 1200); });
+  });
+
+  // statement demo: steps + log
+  var lines = [
+    ['worktree', 'create', 'agent/retry-loop-3f2a', 'from', '4054229'],
+    ['setup', 'run', 'npm ci', 'passed', '41s'],
+    ['codex', 'turn', 'revision 1', 'streaming', '3 files'],
+    ['approval', 'command', 'npm test', 'allowed', 'for task'],
+    ['codex', 'stopped', 'revision 2', '+41 −12', 'saved'],
+    ['review', 'diff', 'base ↔ saved', 'read', '3 files'],
+    ['commit', 'reviewed tree', '9c1e0b7', 'recorded', 'hooks ok']
+  ];
+  var log = document.getElementById('log');
+  var steps = document.getElementById('steps').children;
+  var i = 0, paused = false, timer;
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function tick() {
+    var l = lines[i % lines.length];
+    var d = document.createElement('div');
+    d.innerHTML = '<b>' + l[0] + '</b>&nbsp;&nbsp;' + l[1] + '&nbsp;&nbsp;<span class="cur">' + l[2] + '</span>&nbsp;&nbsp;' + l[3] + '&nbsp;&nbsp;' + l[4];
+    log.appendChild(d);
+    while (log.children.length > 4) log.removeChild(log.firstChild);
+    var s = i % lines.length < 2 ? 0 : i % lines.length < 5 ? 1 : 2;
+    for (var k = 0; k < steps.length; k++) steps[k].classList.toggle('on', k === s);
+    i++;
+    if (!paused && !reduce) timer = setTimeout(tick, 1400);
+  }
+  function restart() { clearTimeout(timer); log.innerHTML = ''; i = 0; paused = false; document.querySelector('#pause span').textContent = 'Pause'; tick(); }
+  document.getElementById('pause').addEventListener('click', function () {
+    paused = !paused; this.querySelector('span').textContent = paused ? 'Play' : 'Pause';
+    if (paused) clearTimeout(timer); else tick();
+  });
+  document.getElementById('restart').addEventListener('click', restart);
+  document.getElementById('full').addEventListener('click', function () {
+    var el = document.querySelector('.statement');
+    if (el.requestFullscreen) el.requestFullscreen();
+  });
+  if (reduce) { for (var j = 0; j < 4; j++) tick(); } else tick();
+
+  // tabs: highlight the section in view
+  var tabs = document.querySelectorAll('#tabs a');
+  var secs = Array.prototype.map.call(tabs, function (a) { return document.querySelector(a.getAttribute('href')); });
+  function sync() {
+    var y = window.scrollY + 200, cur = 0;
+    for (var k = 0; k < secs.length; k++) if (secs[k].offsetTop <= y) cur = k;
+    for (var m = 0; m < tabs.length; m++) tabs[m].classList.toggle('on', m === cur);
+  }
+  window.addEventListener('scroll', sync, { passive: true });
+  sync();
+})();
+</script>
 </body>
 </html>

@@ -106,6 +106,9 @@ jobs:
       - name: Verify disabled native helper identity preflight
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-helper-preflight-test.ps1
+      - name: Verify restricted interactive token preflight
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-msix-install-test.ps1 -TokenPreflightOnly
       - run: npm.cmd run desktop:build
         env:
           # Upstream ripgrep uses GitHub's release API; avoid shared-runner anonymous limits.

@@ -25,6 +25,7 @@ namespace HydraMsixStandardUserController {
   public sealed class ProcessResult {
     public uint ProcessId { get; set; }
     public int ExitCode { get; set; }
+    public uint ResumeCount { get; set; }
     public TokenEvidence Token { get; set; }
   }
   public static class Native {
@@ -36,8 +37,9 @@ namespace HydraMsixStandardUserController {
     const uint SE_GROUP_ENABLED = 0x00000004;
     const uint SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
     const uint CREATE_SUSPENDED = 0x00000004;
+    const uint CREATE_NEW_CONSOLE = 0x00000010;
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
-    const uint CREATE_NO_WINDOW = 0x08000000;
+    const uint STARTF_USESHOWWINDOW = 0x00000001;
     const uint WAIT_OBJECT_0 = 0;
     const uint WAIT_TIMEOUT = 258;
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
@@ -128,8 +130,9 @@ namespace HydraMsixStandardUserController {
             selected.IntegrityRid < 0x2000 || selected.IntegrityRid >= 0x3000)
           throw new InvalidOperationException("Logon token is not the expected standard-user medium token.");
         var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = 0;
         var mutableCommandLine = new StringBuilder(commandLine);
-        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE;
         if (!CreateProcessWithTokenW(userToken, 1, executable, mutableCommandLine, flags, IntPtr.Zero, currentDirectory, ref startup, out created))
           throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessWithTokenW failed.");
         IntPtr processToken;
@@ -140,14 +143,17 @@ namespace HydraMsixStandardUserController {
         if (child.UserSid != expectedSid || child.Elevated || child.Administrator ||
             child.IntegrityRid < 0x2000 || child.IntegrityRid >= 0x3000)
           throw new InvalidOperationException("Child process is not the expected standard-user medium process.");
-        if (ResumeThread(created.hThread) == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed.");
+        uint resumeCount = ResumeThread(created.hThread);
+        if (resumeCount == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed.");
+        if (resumeCount != 1) throw new InvalidOperationException("Child thread suspend count was " + resumeCount + " before resume; expected 1.");
         uint wait = WaitForSingleObject(created.hProcess, timeoutMilliseconds);
         if (wait == WAIT_TIMEOUT) throw new TimeoutException("Standard-user MSIX child timed out.");
         if (wait != WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject failed.");
         finished = true;
         uint exitCode;
         if (!GetExitCodeProcess(created.hProcess, out exitCode)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        return new ProcessResult { ProcessId = created.dwProcessId, ExitCode = unchecked((int)exitCode), Token = child };
+        return new ProcessResult { ProcessId = created.dwProcessId, ExitCode = unchecked((int)exitCode),
+          ResumeCount = resumeCount, Token = child };
       } finally {
         if (created.hProcess != IntPtr.Zero && !finished) TerminateProcess(created.hProcess, 124);
         if (created.hThread != IntPtr.Zero) CloseHandle(created.hThread);
@@ -310,6 +316,7 @@ try {
 
   $standardResultPath = Join-Path $run 'standard-user-report.json'
   $standardRequestPath = Join-Path $run 'standard-user-request.json'
+  $childScript = Join-Path $repository 'scripts\desktop-msix-standard-user-test.ps1'
   [ordered]@{
     repository = $repository
     expectedUserSid = $fixtureUserSid
@@ -317,6 +324,7 @@ try {
     packageName = $packageName
     expectedVersion = ($product.hydraVersion + '.0')
     workflowScript = (Join-Path $repository 'scripts\desktop-msix-workflow-test.ps1')
+    childScript = $childScript
     runDirectory = $run
     resultPath = $standardResultPath
     environment = [ordered]@{
@@ -326,10 +334,48 @@ try {
     }
   } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $standardRequestPath -Encoding utf8
 
+  $nativeMarker = Join-Path $run 'standard-user-native-probe.txt'
+  $nativeProbe = Join-Path $run 'standard-user-native-probe.cmd'
+  Set-Content -LiteralPath $nativeProbe -Encoding ascii -Value "@echo passed>`"$nativeMarker`""
+  $cmd = (Get-Command cmd.exe).Source
+  $nativeArguments = Join-WindowsArguments @('/d', '/c', $nativeProbe)
+  $nativeCommandLine = (ConvertTo-WindowsArgument $cmd) + ' ' + $nativeArguments
+  try {
+    $nativeChild = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
+      $cmd, $nativeCommandLine, $run, 30000)
+  } catch { throw "Standard-user native launch probe failed: $($_.Exception.Message)" }
+  if ($nativeChild.ExitCode -ne 0 -or (Get-Content -LiteralPath $nativeMarker -Raw -ErrorAction SilentlyContinue).Trim() -ne 'passed') {
+    throw "Standard-user native launch probe returned exit code $($nativeChild.ExitCode)."
+  }
+
+  $powershellMarker = Join-Path $run 'standard-user-powershell-probe.txt'
+  $powershellProbe = Join-Path $run 'standard-user-powershell-probe.ps1'
+  Set-Content -LiteralPath $powershellProbe -Encoding utf8 -Value @'
+param([string]$RequestPath, [string]$MarkerPath)
+$ErrorActionPreference = 'Stop'
+$request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+Get-Content -LiteralPath ([string]$request.workflowScript) -TotalCount 1 | Out-Null
+Get-Content -LiteralPath ([string]$request.childScript) -TotalCount 1 | Out-Null
+Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
+'@
+  $powershell = (Get-Command powershell.exe).Source
+  $powershellProbeArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $powershellProbe, '-RequestPath', $standardRequestPath, '-MarkerPath', $powershellMarker)
+  $powershellProbeCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $powershellProbeArguments
+  try {
+    $powershellChild = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
+      $powershell, $powershellProbeCommandLine, $run, 30000)
+  } catch { throw "Standard-user PowerShell launch probe failed: $($_.Exception.Message)" }
+  if ($powershellChild.ExitCode -ne 0 -or (Get-Content -LiteralPath $powershellMarker -Raw -ErrorAction SilentlyContinue).Trim() -ne 'passed') {
+    throw "Standard-user PowerShell launch probe returned exit code $($powershellChild.ExitCode)."
+  }
+  $report.checks.standardUserLaunchPreflight = [ordered]@{
+    nativeResumeCount = $nativeChild.ResumeCount
+    powershellResumeCount = $powershellChild.ResumeCount
+  }
+
   $existingProcessIds = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   $activationAttempted = $true
-  $powershell = (Get-Command powershell.exe).Source
-  $childScript = Join-Path $repository 'scripts\desktop-msix-standard-user-test.ps1'
   $childArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', $childScript, '-RequestPath', $standardRequestPath)
   $childCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $childArguments

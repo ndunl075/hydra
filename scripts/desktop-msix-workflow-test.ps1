@@ -209,6 +209,7 @@ $workspace = Join-Path $workflowRoot ('workspace ' + $unicodeSuffix)
 $userData = Join-Path $workflowRoot 'user data'
 $extensions = Join-Path $workflowRoot 'extensions'
 $fixture = Join-Path $repository 'tests\fixtures\msix-workflow-extension'
+$standalone = Join-Path $repository '.desktop\VSCode-win32-x64'
 $vsix = Join-Path $workflowRoot 'hydra-msix-workflow-1.0.0.vsix'
 $cliProvisionScript = Join-Path $workflowRoot 'provision-extension.ps1'
 $cliProvisionReportPath = Join-Path $workflowRoot 'provision-extension.json'
@@ -236,12 +237,12 @@ try {
   } finally { Pop-Location }
   if (-not (Test-Path -LiteralPath $vsix)) { throw 'Workflow fixture VSIX is missing.' }
 
-  $report.phase = 'provisioning-extension-through-packaged-cli'
+  $report.phase = 'provisioning-extension-through-version-matched-standalone-cli'
   Save-WorkflowReport
   Set-Content -LiteralPath $cliProvisionScript -Encoding utf8 -Value @'
 param([string]$Hydra, [string]$Arguments, [string]$ReportPath)
 $ErrorActionPreference = 'Stop'
-$result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'shipped-cli-install-extension';
+$result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'version-matched-shipped-cli-install-extension';
   processId = $null; exitCode = $null; stdout = ''; stderr = ''; error = $null }
 try {
   $env:ELECTRON_RUN_AS_NODE = '1'
@@ -277,16 +278,20 @@ try {
 if ($result.status -ne 'passed') { exit 1 }
 '@
   $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
-  $installedCliArguments = Join-WindowsArguments @((Join-Path $install 'resources\app\out\cli.js'),
+  $standaloneProduct = Get-Content -LiteralPath (Join-Path $standalone 'resources\app\product.json') -Raw | ConvertFrom-Json
+  $installedProduct = Get-Content -LiteralPath (Join-Path $install 'resources\app\product.json') -Raw | ConvertFrom-Json
+  if ($standaloneProduct.hydraVersion -ne $installedProduct.hydraVersion -or
+      $standaloneProduct.commit -ne $installedProduct.commit) {
+    throw 'Standalone fixture provisioner does not match the installed package runtime.'
+  }
+  $standaloneCliArguments = Join-WindowsArguments @((Join-Path $standalone 'resources\app\out\cli.js'),
     '--install-extension', $vsix, '--force', '--user-data-dir', $userData, '--extensions-dir', $extensions)
-  $cliArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', $cliProvisionScript, '-Hydra', (Join-Path $install 'Hydra.exe'),
-    '-Arguments', $installedCliArguments, '-ReportPath', $cliProvisionReportPath)
-  Invoke-CommandInDesktopPackage -PackageFamilyName $PackageFamilyName -AppId 'HydraProbe' -Command $powershell `
-    -Args $cliArguments -PreventBreakaway
-  $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 150
-  if ($cliProvisionReport.status -ne 'passed' -or $cliProvisionReport.exitCode -ne 0) {
-    throw "Packaged Hydra shipped CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.stdout) $($cliProvisionReport.stderr)"
+  & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $cliProvisionScript `
+    -Hydra (Join-Path $standalone 'Hydra.exe') -Arguments $standaloneCliArguments -ReportPath $cliProvisionReportPath
+  $cliProvisionExit = $LASTEXITCODE
+  $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 10
+  if ($cliProvisionExit -ne 0 -or $cliProvisionReport.status -ne 'passed' -or $cliProvisionReport.exitCode -ne 0) {
+    throw "Version-matched standalone Hydra CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.stdout) $($cliProvisionReport.stderr)"
   }
   $report.phase = 'waiting-installed-extension'
   Save-WorkflowReport
@@ -317,8 +322,9 @@ if ($result.status -ne 'passed') { exit 1 }
       (Get-FileHash -LiteralPath $installedEntrypoint -Algorithm SHA256).Hash) {
     throw 'Installed fixture extension entrypoint bytes changed.'
   }
-  $report.checks.userExtensionInstall = [ordered]@{ invocation = 'Invoke-CommandInDesktopPackage';
-    packageContext = 'debugger-context'; command = 'Hydra.exe resources\app\out\cli.js --install-extension';
+  $report.checks.userExtensionProvisioning = [ordered]@{ invocation = 'version-matched-standalone-cli';
+    hydraVersion = $standaloneProduct.hydraVersion; commit = $standaloneProduct.commit;
+    command = 'Hydra.exe resources\app\out\cli.js --install-extension';
     path = $installedFixture[0].FullName; publisher = $installedMetadata.publisher; name = $installedMetadata.name;
     version = $installedMetadata.version; installMetadata = $installMetadata;
     sourceManifestSha256 = (Get-FileHash $fixtureManifest -Algorithm SHA256).Hash.ToLowerInvariant();

@@ -29,8 +29,12 @@ namespace HydraMsixStandardUserController {
   }
   public static class Native {
     const uint TOKEN_QUERY = 0x0008;
+    const int TokenUser = 1;
+    const int TokenGroups = 2;
     const int TokenElevation = 20;
     const int TokenIntegrityLevel = 25;
+    const uint SE_GROUP_ENABLED = 0x00000004;
+    const uint SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
     const uint CREATE_SUSPENDED = 0x00000004;
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     const uint CREATE_NO_WINDOW = 0x08000000;
@@ -38,6 +42,7 @@ namespace HydraMsixStandardUserController {
     const uint WAIT_TIMEOUT = 258;
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_GROUPS { public uint GroupCount; public SID_AND_ATTRIBUTES Groups; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
       public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
@@ -83,11 +88,31 @@ namespace HydraMsixStandardUserController {
         byte count = Marshal.ReadByte(GetSidSubAuthorityCount(label.Label.Sid));
         rid = Marshal.ReadInt32(GetSidSubAuthority(label.Label.Sid, (uint)(count - 1)));
       } finally { Marshal.FreeHGlobal(integrity); }
-      using (var identity = new WindowsIdentity(token)) {
-        var principal = new WindowsPrincipal(identity);
-        return new TokenEvidence { UserSid = identity.User.Value, Elevated = elevated, IntegrityRid = rid,
-          Administrator = principal.IsInRole(WindowsBuiltInRole.Administrator) };
-      }
+      GetTokenInformation(token, TokenUser, IntPtr.Zero, 0, out returned);
+      IntPtr userBuffer = Marshal.AllocHGlobal(returned);
+      string userSid;
+      try {
+        if (!GetTokenInformation(token, TokenUser, userBuffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenUser failed.");
+        var user = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(userBuffer, typeof(SID_AND_ATTRIBUTES));
+        userSid = new SecurityIdentifier(user.Sid).Value;
+      } finally { Marshal.FreeHGlobal(userBuffer); }
+      GetTokenInformation(token, TokenGroups, IntPtr.Zero, 0, out returned);
+      IntPtr groupsBuffer = Marshal.AllocHGlobal(returned);
+      bool administrator = false;
+      try {
+        if (!GetTokenInformation(token, TokenGroups, groupsBuffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenGroups failed.");
+        uint count = unchecked((uint)Marshal.ReadInt32(groupsBuffer));
+        int offset = Marshal.OffsetOf(typeof(TOKEN_GROUPS), "Groups").ToInt32();
+        int size = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+        for (uint index = 0; index < count; index++) {
+          var group = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(IntPtr.Add(groupsBuffer, offset + (int)index * size), typeof(SID_AND_ATTRIBUTES));
+          if ((group.Attributes & SE_GROUP_ENABLED) != 0 && (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0 &&
+              new SecurityIdentifier(group.Sid).Value == "S-1-5-32-544") { administrator = true; break; }
+        }
+      } finally { Marshal.FreeHGlobal(groupsBuffer); }
+      return new TokenEvidence { UserSid = userSid, Elevated = elevated, IntegrityRid = rid, Administrator = administrator };
     }
 
     public static ProcessResult Run(string username, string password, string expectedSid, string executable,

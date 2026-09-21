@@ -243,3 +243,300 @@ A concise Hydra version:
 > If one coding agent runs out of usage, keep the same worktree and continue with another available provider.
 
 The product concept is stronger when framed as **provider continuity**, with Freebuff as one possible destination rather than the entire feature.
+
+
+---
+
+# Additional Ninebrains-Inspired Plans
+
+These are product patterns worth considering after reviewing Ninebrains' repository and landing page. They should be implemented in Hydra's existing architecture rather than copied literally. Hydra should preserve its deterministic scheduler, explicit provider ownership, bounded context, isolated worktrees, and token-efficiency goals.
+
+## 1. Project Packs / Profiles
+
+### Goal
+
+Let a repository define reusable project-specific bundles of:
+
+- agent roles
+- skills/instructions
+- MCP servers/tools
+- model/provider preferences
+- verification requirements
+- setup/resource defaults
+
+Ninebrains calls this concept **Packs**. Hydra should use a project-profile abstraction that fits its own task/scheduler model.
+
+### Example profiles
+
+```text
+Frontend
+  role: UI builder
+  provider: user/default
+  tools: browser + frontend MCPs
+  checks: focused tests + screenshot when UI changed
+
+Backend
+  role: backend builder
+  tools: database/service MCPs
+  checks: focused tests + integration tests
+
+Research
+  role: researcher
+  tools: web/research MCPs
+  checks: citation/fact verification
+```
+
+### Behavior
+
+- Profiles are **off unless explicitly enabled** for a project.
+- A task can inherit a profile or override individual fields.
+- Missing tools/credentials should disable only the affected capability and explain why.
+- Profiles must not silently add expensive model calls.
+- Profile activation must not make a provider request by itself.
+- Project profile configuration should be inspectable before launch.
+
+### Suggested schema
+
+```yaml
+profile: frontend
+roles:
+  - ui-builder
+provider: default
+skills:
+  - hydra/frontend
+mcp:
+  - browser
+  - github
+verification:
+  preset: standard
+resources:
+  setup: npm ci
+```
+
+### Acceptance criteria
+
+- enabling/disabling a profile survives restart
+- task inheritance is deterministic
+- per-task overrides are explicit
+- unavailable MCP/tool dependencies degrade safely
+- opening profile settings makes zero model requests
+- profile changes after task launch cannot silently mutate a running task contract
+
+## 2. Editable Visual Planner Before Dispatch
+
+### Goal
+
+Hydra already has delegation proposals, child dependencies, scoped worktrees, and deterministic scheduling. Add a visual review surface before dispatch so users can inspect or edit the proposed graph.
+
+### Proposed flow
+
+```text
+User task
+   ↓
+Hydra/agent proposes decomposition
+   ↓
+Visual plan preview
+   ├─ child tasks
+   ├─ dependencies
+   ├─ write scopes
+   ├─ provider/model
+   ├─ acceptance checks
+   └─ expected validation
+   ↓
+User chooses:
+   Run plan / Edit / Run solo / Cancel
+```
+
+### Editable fields
+
+For each proposed child:
+
+- title / goal
+- dependency edges
+- write scope
+- relevant context
+- provider/model/effort
+- acceptance criteria
+- verification preset
+
+### Guardrails
+
+The host remains authoritative.
+
+- cycle detection stays deterministic
+- invalid or overlapping write scopes are rejected or serialized
+- provider/model choices require existing capability checks
+- edits cannot bypass task budgets, ownership, or dependency safety
+- merely opening/navigating the planner makes zero provider requests
+- the final accepted plan is persisted before any child launches
+
+### Important UX distinction
+
+Hydra should keep **Auto** available for users who want immediate orchestration, but visual review should be available when the user wants control. The planner is not a requirement for every task.
+
+### Acceptance criteria
+
+- accepted plan survives restart exactly
+- editing a dependency changes scheduler behavior deterministically
+- cycles refuse before dispatch
+- no child is created before plan acceptance unless Auto mode explicitly authorizes it
+- duplicate clicks cannot dispatch the same child twice
+- plan navigation/zoom/selection makes zero model requests
+- task graph reflects persisted state, not inferred activity
+
+## 3. Verification Presets
+
+### Goal
+
+Expose Hydra's verification infrastructure through understandable project/task presets without turning every task into an expensive multi-agent review.
+
+Suggested presets:
+
+| Preset | Intended behavior |
+| --- | --- |
+| **Fast** | deterministic/local checks only unless a required task-specific gate says otherwise |
+| **Standard** | focused deterministic checks; model review only for risk/ambiguity that justifies it |
+| **Strict** | deterministic checks + independent model review + relevant visual/security checks |
+| **Custom** | explicit per-gate configuration |
+
+Avoid an arbitrary numeric rigor slider if named policies communicate the actual behavior more clearly.
+
+### Gate categories
+
+Hydra can compose from:
+
+- test command
+- lint/typecheck
+- build
+- changed-path/scope validation
+- screenshot/visual check
+- security/static checks
+- independent model review
+- citation/fact check
+- integration acceptance
+
+Every gate should expose whether it is:
+
+- deterministic / local
+- model-backed
+- potentially token-consuming
+- required or advisory
+
+### Token-efficiency rule
+
+**More verification infrastructure must not automatically mean more model tokens.**
+
+The majority of verification should be host-side and deterministic:
+
+- Git checks: 0 model tokens
+- test/lint/build commands: 0 model tokens
+- file/scope validation: 0 model tokens
+- screenshot capture: 0 model tokens
+- artifact hashing/evidence storage: 0 model tokens
+
+Model tokens are consumed only when Hydra deliberately launches or resumes an agent/reviewer to interpret evidence or review code.
+
+### Risk-based verification
+
+Use the cheapest valid check first.
+
+Suggested policy:
+
+```text
+trivial/local change
+  -> deterministic checks
+  -> done if required gates pass
+
+normal feature/fix
+  -> deterministic checks
+  -> model review only when configured or risk warrants it
+
+high-risk / cross-cutting / security / migration
+  -> deterministic checks
+  -> independent model review
+  -> relevant specialized gates
+```
+
+Do not launch an independent reviewer for every trivial edit.
+
+### Retry policy
+
+Verification can become expensive if a reviewer repeatedly sends work back to an agent.
+
+Default behavior should therefore be bounded:
+
+- deterministic failures return concise failure evidence
+- one targeted fix/retry where appropriate
+- repeated unchanged failures become a blocker
+- additional retries require explicit policy/user approval
+- retry counts remain part of the same task/run budget
+
+Hydra should not copy a blanket "three model attempts for everything" rule.
+
+### Context policy for model-backed review
+
+When an independent reviewer is required, send only:
+
+- task goal and acceptance criteria
+- reviewed diff / changed paths
+- relevant surrounding code
+- deterministic check results
+- concise failure evidence
+
+Do not send:
+
+- the entire repository by default
+- the full worker transcript
+- full raw test logs when a short failure excerpt + artifact path is sufficient
+- unrelated agent history
+
+### Usage visibility
+
+Before a token-consuming verification action, the UI should make the cost class clear:
+
+```text
+Tests            local
+Typecheck        local
+Screenshot       local
+Independent review   model usage
+Security reviewer    model usage
+```
+
+Task/project usage accounting should attribute reviewer turns separately from implementation turns.
+
+### Acceptance criteria
+
+- Fast preset can complete supported tasks with zero verification model turns
+- deterministic checks never trigger a model call indirectly
+- Standard does not imply an independent reviewer on every task
+- Strict clearly identifies model-backed gates before launch
+- retries are bounded and persisted
+- opening verification results makes zero model requests
+- evidence is reused across review/integration when still fresh
+- stale evidence is rejected instead of silently rerunning a model
+- usage accounting distinguishes implementation vs verification usage
+
+## 4. What Not to Copy: Free-Form Agent Mailbox
+
+Ninebrains includes a mailbox-style communication mechanism between lanes. Hydra already has structured context requests, dependency bindings, result receipts, and persisted orchestration events.
+
+Prefer those structured paths over unrestricted agent-to-agent chat.
+
+Reasons:
+
+- less duplicated context
+- lower token overhead
+- clearer provenance
+- easier restart recovery
+- fewer hidden coordination loops
+- deterministic dependency handling
+
+If future agent-to-agent messaging is added, messages should be typed, bounded, persisted, and tied to a task/dependency event rather than becoming an open-ended conversation channel.
+
+# Combined Product Principle
+
+Hydra should borrow the useful product abstractions from Ninebrains while keeping a different optimization target:
+
+> **Parallel when useful, deterministic whenever possible, and model tokens only where reasoning adds value.**
+
+The target is not maximum agent activity. It is maximum accepted work per unit of time and provider usage.

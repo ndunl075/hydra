@@ -120,7 +120,7 @@ try {
   if ((Get-Item -LiteralPath $installedExecutable).VersionInfo.ProductVersion -ne $product.hydraVersion) {
     throw 'Installed Hydra executable did not retain its packaged PE version.'
   }
-  $existingProcessIds = @((Get-Process -Name Hydra -ErrorAction SilentlyContinue).Id)
+  $existingProcessIds = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   $applicationId = 'shell:AppsFolder\' + $package.PackageFamilyName + '!HydraProbe'
   $activationAttempted = $true
   Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') -ArgumentList $applicationId
@@ -130,7 +130,7 @@ try {
     $launched = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $existingProcessIds })
   } while ($launched.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
   if ($launched.Count -eq 0) { throw 'Registered MSIX application did not launch.' }
-  $launchedProcessIds = @($launched.Id)
+  $launchedProcessIds = @($launched | ForEach-Object { $_.Id })
   Start-Sleep -Seconds 3
   $remaining = @(Get-Process -Id $launchedProcessIds -ErrorAction SilentlyContinue)
   if ($remaining.Count -eq 0 -or -not ($remaining | Where-Object { $_.Path -eq $installedExecutable })) {

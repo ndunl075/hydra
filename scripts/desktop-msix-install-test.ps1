@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$BuiltAppPath)
+param([string]$BuiltAppPath, [switch]$TokenPreflightOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -21,12 +21,16 @@ namespace HydraMsixStandardUserController {
     public bool Elevated { get; set; }
     public int IntegrityRid { get; set; }
     public bool Administrator { get; set; }
+    public uint SessionId { get; set; }
+    public string AuthenticationId { get; set; }
   }
   public sealed class ProcessResult {
     public uint ProcessId { get; set; }
     public int ExitCode { get; set; }
     public uint ResumeCount { get; set; }
     public TokenEvidence Token { get; set; }
+    public TokenEvidence SourceToken { get; set; }
+    public TokenEvidence DerivedToken { get; set; }
   }
   sealed class UserObjectGrant {
     public IntPtr Handle; public IntPtr OldDacl; public IntPtr SecurityDescriptor;
@@ -34,8 +38,13 @@ namespace HydraMsixStandardUserController {
   }
   public static class Native {
     const uint TOKEN_QUERY = 0x0008;
+    const uint TOKEN_DUPLICATE = 0x0002;
+    const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
+    const uint TOKEN_ADJUST_DEFAULT = 0x0080;
     const int TokenUser = 1;
     const int TokenGroups = 2;
+    const int TokenStatistics = 10;
+    const int TokenSessionId = 12;
     const int TokenElevation = 20;
     const int TokenIntegrityLevel = 25;
     const uint SE_GROUP_ENABLED = 0x00000004;
@@ -53,10 +62,18 @@ namespace HydraMsixStandardUserController {
     const int TRUSTEE_IS_USER = 1;
     const uint WINSTA_ALL_ACCESS = 0x0000037F;
     const uint DESKTOP_ALL_ACCESS = 0x000001FF;
+    const uint DISABLE_MAX_PRIVILEGE = 0x00000001;
+    const uint SE_GROUP_INTEGRITY = 0x00000020;
+    [StructLayout(LayoutKind.Sequential)] struct LUID { public uint LowPart; public int HighPart; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_GROUPS { public uint GroupCount; public SID_AND_ATTRIBUTES Groups; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_STATISTICS {
+      public LUID TokenId; public LUID AuthenticationId; public long ExpirationTime;
+      public int TokenType; public int ImpersonationLevel; public uint DynamicCharged;
+      public uint DynamicAvailable; public uint GroupCount; public uint PrivilegeCount; public LUID ModifiedId;
+    }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
       public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
       public uint dwX; public uint dwY; public uint dwXSize; public uint dwYSize;
@@ -80,6 +97,19 @@ namespace HydraMsixStandardUserController {
       string username, string domain, string password, uint logonFlags, string applicationName, StringBuilder commandLine,
       uint creationFlags, IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo,
       out PROCESS_INFORMATION processInformation);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessAsUserW(
+      IntPtr token, string applicationName, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes,
+      bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo,
+      out PROCESS_INFORMATION processInformation);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(
+      IntPtr existingToken, uint flags, uint disableSidCount, IntPtr sidsToDisable,
+      uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictedSidCount,
+      IntPtr sidsToRestrict, out IntPtr newToken);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSidW(
+      string stringSid, out IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(
+      IntPtr token, int tokenInformationClass, IntPtr tokenInformation, int tokenInformationLength);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern int GetLengthSid(IntPtr sid);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenClass, IntPtr information, int length, out int returnLength);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
@@ -89,6 +119,7 @@ namespace HydraMsixStandardUserController {
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
@@ -186,7 +217,23 @@ namespace HydraMsixStandardUserController {
               new SecurityIdentifier(group.Sid).Value == "S-1-5-32-544") { administrator = true; break; }
         }
       } finally { Marshal.FreeHGlobal(groupsBuffer); }
-      return new TokenEvidence { UserSid = userSid, Elevated = elevated, IntegrityRid = rid, Administrator = administrator };
+      IntPtr sessionBuffer = Marshal.AllocHGlobal(sizeof(uint));
+      uint sessionId;
+      try {
+        if (!GetTokenInformation(token, TokenSessionId, sessionBuffer, sizeof(uint), out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenSessionId failed.");
+        sessionId = unchecked((uint)Marshal.ReadInt32(sessionBuffer));
+      } finally { Marshal.FreeHGlobal(sessionBuffer); }
+      IntPtr statisticsBuffer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(TOKEN_STATISTICS)));
+      string authenticationId;
+      try {
+        if (!GetTokenInformation(token, TokenStatistics, statisticsBuffer, Marshal.SizeOf(typeof(TOKEN_STATISTICS)), out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenStatistics failed.");
+        var statistics = (TOKEN_STATISTICS)Marshal.PtrToStructure(statisticsBuffer, typeof(TOKEN_STATISTICS));
+        authenticationId = statistics.AuthenticationId.HighPart.ToString("x8") + ":" + statistics.AuthenticationId.LowPart.ToString("x8");
+      } finally { Marshal.FreeHGlobal(statisticsBuffer); }
+      return new TokenEvidence { UserSid = userSid, Elevated = elevated, IntegrityRid = rid, Administrator = administrator,
+        SessionId = sessionId, AuthenticationId = authenticationId };
     }
 
     public static ProcessResult Run(string username, string password, string expectedSid, string executable,
@@ -243,6 +290,81 @@ namespace HydraMsixStandardUserController {
         if (userToken != IntPtr.Zero) CloseHandle(userToken);
       }
     }
+
+    public static ProcessResult RunRestricted(string expectedSid, string executable, string commandLine,
+        string currentDirectory, uint timeoutMilliseconds) {
+      IntPtr sourceToken = IntPtr.Zero, restrictedToken = IntPtr.Zero;
+      IntPtr administratorSid = IntPtr.Zero, mediumSid = IntPtr.Zero;
+      IntPtr disabledGroups = IntPtr.Zero, integrityLabel = IntPtr.Zero;
+      PROCESS_INFORMATION created = new PROCESS_INFORMATION();
+      bool finished = false;
+      try {
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT, out sourceToken))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcessToken source failed.");
+        var source = InspectToken(sourceToken);
+        if (source.UserSid != expectedSid) throw new InvalidOperationException("Interactive source token SID changed.");
+        if (!ConvertStringSidToSidW("S-1-5-32-544", out administratorSid))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "Administrators SID conversion failed.");
+        int groupSize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+        disabledGroups = Marshal.AllocHGlobal(groupSize);
+        Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = administratorSid, Attributes = 0 }, disabledGroups, false);
+        if (!CreateRestrictedToken(sourceToken, DISABLE_MAX_PRIVILEGE, 1, disabledGroups,
+            0, IntPtr.Zero, 0, IntPtr.Zero, out restrictedToken) || restrictedToken == IntPtr.Zero)
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateRestrictedToken failed.");
+        if (!ConvertStringSidToSidW("S-1-16-8192", out mediumSid))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "Medium integrity SID conversion failed.");
+        var label = new TOKEN_MANDATORY_LABEL {
+          Label = new SID_AND_ATTRIBUTES { Sid = mediumSid, Attributes = SE_GROUP_INTEGRITY }
+        };
+        integrityLabel = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)));
+        Marshal.StructureToPtr(label, integrityLabel, false);
+        if (!SetTokenInformation(restrictedToken, TokenIntegrityLevel, integrityLabel,
+            Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + GetLengthSid(mediumSid)))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "SetTokenInformation medium integrity failed.");
+        var restricted = InspectToken(restrictedToken);
+        if (restricted.UserSid != source.UserSid || restricted.SessionId != source.SessionId ||
+            restricted.AuthenticationId != source.AuthenticationId || restricted.Elevated || restricted.Administrator ||
+            restricted.IntegrityRid < 0x2000 || restricted.IntegrityRid >= 0x3000)
+          throw new InvalidOperationException("SAFER token is not the expected same-session normal-user medium token.");
+        var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = 0;
+        var mutableCommandLine = new StringBuilder(commandLine);
+        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE;
+        if (!CreateProcessAsUserW(restrictedToken, executable, mutableCommandLine, IntPtr.Zero, IntPtr.Zero, false,
+            flags, IntPtr.Zero, currentDirectory, ref startup, out created))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessAsUserW restricted child failed.");
+        IntPtr processToken;
+        if (!OpenProcessToken(created.hProcess, TOKEN_QUERY, out processToken))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcessToken restricted child failed.");
+        TokenEvidence child;
+        try { child = InspectToken(processToken); } finally { CloseHandle(processToken); }
+        if (child.UserSid != restricted.UserSid || child.SessionId != restricted.SessionId ||
+            child.AuthenticationId != restricted.AuthenticationId || child.Elevated || child.Administrator ||
+            child.IntegrityRid < 0x2000 || child.IntegrityRid >= 0x3000)
+          throw new InvalidOperationException("Restricted child token changed before resume.");
+        uint resumeCount = ResumeThread(created.hThread);
+        if (resumeCount == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread restricted child failed.");
+        if (resumeCount != 1) throw new InvalidOperationException("Restricted child thread suspend count was " + resumeCount + " before resume; expected 1.");
+        uint wait = WaitForSingleObject(created.hProcess, timeoutMilliseconds);
+        if (wait == WAIT_TIMEOUT) throw new TimeoutException("Restricted interactive MSIX child timed out.");
+        if (wait != WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject restricted child failed.");
+        finished = true;
+        uint exitCode;
+        if (!GetExitCodeProcess(created.hProcess, out exitCode)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return new ProcessResult { ProcessId = created.dwProcessId, ExitCode = unchecked((int)exitCode),
+          ResumeCount = resumeCount, Token = child, SourceToken = source, DerivedToken = restricted };
+      } finally {
+        if (created.hProcess != IntPtr.Zero && !finished) TerminateProcess(created.hProcess, 124);
+        if (created.hThread != IntPtr.Zero) CloseHandle(created.hThread);
+        if (created.hProcess != IntPtr.Zero) CloseHandle(created.hProcess);
+        if (restrictedToken != IntPtr.Zero) CloseHandle(restrictedToken);
+        if (integrityLabel != IntPtr.Zero) Marshal.FreeHGlobal(integrityLabel);
+        if (disabledGroups != IntPtr.Zero) Marshal.FreeHGlobal(disabledGroups);
+        if (mediumSid != IntPtr.Zero) LocalFree(mediumSid);
+        if (administratorSid != IntPtr.Zero) LocalFree(administratorSid);
+        if (sourceToken != IntPtr.Zero) CloseHandle(sourceToken);
+      }
+    }
   }
 }
 '@
@@ -256,6 +378,17 @@ function ConvertTo-WindowsArgument([string]$Value) {
 function Join-WindowsArguments([string[]]$Values) {
   return (($Values | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' ')
 }
+if ($TokenPreflightOnly) {
+  $cmd = (Get-Command cmd.exe).Source
+  $commandLine = (ConvertTo-WindowsArgument $cmd) + ' /d /c exit 0'
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $preflight = [HydraMsixStandardUserController.Native]::RunRestricted($sid, $cmd, $commandLine,
+    (Resolve-Path '.').Path, 30000)
+  if ($preflight.ExitCode -ne 0) { throw "Restricted interactive token preflight exited with code $($preflight.ExitCode)." }
+  $preflight | ConvertTo-Json -Depth 6
+  exit 0
+}
+if ([string]::IsNullOrWhiteSpace($BuiltAppPath)) { throw 'BuiltAppPath is required outside token preflight mode.' }
 $repository = (Resolve-Path -LiteralPath $env:GITHUB_WORKSPACE).Path
 $workspacePrefix = $repository.TrimEnd('\') + '\'
 $builtApp = (Resolve-Path -LiteralPath $BuiltAppPath).Path
@@ -463,14 +596,9 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   $childCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $childArguments
   try {
     $child = [HydraMsixStandardUserController.Native]::Run($fixtureUserName, $fixturePassword, $fixtureUserSid,
-      $powershell, $childCommandLine, $run, 600000)
+      $powershell, $childCommandLine, $run, 180000)
   } catch {
-    $workflowPhase = 'unavailable'
-    $partialWorkflowPath = Join-Path $run 'workflow-report.json'
-    if (Test-Path -LiteralPath $partialWorkflowPath) {
-      try { $workflowPhase = (Get-Content -LiteralPath $partialWorkflowPath -Raw | ConvertFrom-Json).phase } catch { }
-    }
-    throw "Standard-user MSIX controller failed during workflow phase '$workflowPhase': $($_.Exception.Message)"
+    throw "Standard-account package registration failed: $($_.Exception.Message)"
   }
   if ($child.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $standardResultPath)) {
     throw "Standard-user MSIX controller failed with exit code $($child.ExitCode)."
@@ -479,10 +607,30 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   $standardUserReport.token = $child.Token
   $standardUserReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $standardResultPath -Encoding utf8
   if ($standardUserReport.status -ne 'passed' -or -not $standardUserReport.packageRemoved) {
-    throw "Standard-user packaged workflow failed: $($standardUserReport.error)"
+    throw "Standard-account package registration failed: $($standardUserReport.error)"
   }
   if (Get-AppxPackage -User $fixtureUserSid -Name $packageName) {
     throw 'Standard-user package registration survived child cleanup.'
+  }
+  $workflowScript = Join-Path $repository 'scripts\desktop-msix-workflow-test.ps1'
+  $workflowArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', $workflowScript, '-PackageFullName', $package.PackageFullName,
+    '-PackageFamilyName', $package.PackageFamilyName, '-InstallLocation', $installLocation, '-RunDirectory', $run)
+  $workflowCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $workflowArguments
+  $interactiveSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  try {
+    $restrictedWorkflow = [HydraMsixStandardUserController.Native]::RunRestricted($interactiveSid,
+      $powershell, $workflowCommandLine, $run, 600000)
+  } catch {
+    $workflowPhase = 'unavailable'
+    $partialWorkflowPath = Join-Path $run 'workflow-report.json'
+    if (Test-Path -LiteralPath $partialWorkflowPath) {
+      try { $workflowPhase = (Get-Content -LiteralPath $partialWorkflowPath -Raw | ConvertFrom-Json).phase } catch { }
+    }
+    throw "Restricted interactive workflow failed during phase '$workflowPhase': $($_.Exception.Message)"
+  }
+  if ($restrictedWorkflow.ExitCode -ne 0) {
+    throw "Restricted interactive workflow exited with code $($restrictedWorkflow.ExitCode)."
   }
   $workflowReport = Get-Content -LiteralPath (Join-Path $run 'workflow-report.json') -Raw | ConvertFrom-Json
   if ($workflowReport.status -ne 'passed') { throw 'Packaged MSIX workflow report did not pass.' }
@@ -494,8 +642,19 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   $report.checks.protectedNewFile = 'refused'
   $report.checks.protectedExistingFileWrite = 'refused'
   $report.checks.executablePeVersion = $product.hydraVersion
-  $report.checks.standardUserToken = $child.Token
-  $report.checks.registeredApplicationLaunch = 'passed as a standard local user with explicit arguments and process identity attestation'
+  $report.checks.standardAccountRegistration = [ordered]@{
+    token = $child.Token
+    packageFullName = $standardUserReport.packageFullName
+    packageFamilyName = $standardUserReport.packageFamilyName
+    packageRemoved = $standardUserReport.packageRemoved
+  }
+  $report.checks.restrictedInteractiveWorkflow = [ordered]@{
+    derivation = 'CreateRestrictedToken with the administrators group disabled, maximum privileges disabled, and medium integrity'
+    resumeCount = $restrictedWorkflow.ResumeCount
+    sourceToken = $restrictedWorkflow.SourceToken
+    derivedToken = $restrictedWorkflow.DerivedToken
+    childToken = $restrictedWorkflow.Token
+  }
   $report.checks.packagedWorkflows = $workflowReport.checks
   $report.status = 'passed'
 } finally {

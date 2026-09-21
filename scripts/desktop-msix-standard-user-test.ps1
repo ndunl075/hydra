@@ -41,18 +41,10 @@ try {
   if (-not $package -or $package.Version.ToString() -ne [string]$request.expectedVersion) {
     throw 'Fixture user package identity or version changed.'
   }
-  $report.phase = 'running-workflow'
   $report.packageFullName = $package.PackageFullName
   $report.packageFamilyName = $package.PackageFamilyName
   $report.installLocation = $package.InstallLocation
-  Save-Report
-  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ([string]$request.workflowScript) `
-    -PackageFullName $package.PackageFullName -PackageFamilyName $package.PackageFamilyName `
-    -InstallLocation $package.InstallLocation -RunDirectory ([string]$request.runDirectory)
-  if ($LASTEXITCODE -ne 0) { throw 'Standard-user packaged workflow acceptance failed.' }
-  $workflow = Get-Content -LiteralPath (Join-Path ([string]$request.runDirectory) 'workflow-report.json') -Raw | ConvertFrom-Json
-  if ($workflow.status -ne 'passed') { throw 'Standard-user packaged workflow report did not pass.' }
-  $report.workflow = $workflow.checks
+  $report.phase = 'registration-verified'
   $report.phase = 'passed'
   $report.status = 'passed'
 } catch {

@@ -14,9 +14,17 @@ The signed fixture was not trusted by the host. A temporary import to CurrentUse
 
 An isolated attempt to build current Hydra 0.22.0 reached the pinned Code OSS `npm ci` step, then stopped in `@vscode/windows-registry` with MSBuild `MSB8040`: Spectre-mitigated C++ libraries are missing from this host's Visual Studio Build Tools. That is a local toolchain prerequisite, not an MSIX package failure. Do not relabel the older package as current to bypass it.
 
+## Version-matched packaging evidence — 2026-09-21
+
+The successful [Windows desktop run 35554305650](https://github.com/ndunl075/hydra/actions/runs/35554305650) built a standalone Hydra runtime at source head `83187af6b26d383a92bcf7be3ca101066e80ce97`. Its `Hydra-win32-x64` artifact (ID `10619828982`, archive SHA-256 `cfe8828a73ce0547a3f8d8fd99762c8795f9fc7414b2a55fc36c4be2976e64e4`) supplied the runtime for a second local probe. The extracted `product.json`, executable PE ProductVersion/FileVersion, and this source's `package.json` all report Hydra `0.22.0`; `product.json` retains the pinned Code OSS commit `cfbea10c5ffb233ea9177d34726e6056e89913dc`.
+
+Windows SDK 10.0.26100.0 packaged those 4,811 runtime files into a 207,592,916-byte unsigned `0.22.0.0` MSIX (SHA-256 `815cfff9389cf48e8ae26f2c109fbf9a067205be4aade67151db5646823ec6cd`). `MakeAppx unpack` succeeded. The probe's separate fixture signer produced an untrusted signed copy (SHA-256 `a9dc8613357dae2b6a379cde6053e4b55a3f67ea04702aee327db2b2f2f21640`) and removed its private-key and PFX files. No package or fixture certificate was installed on this host. The successful CI artifact expires; these digests and the run ID preserve provenance, not future artifact availability.
+
+This closes only the version-matched **packaging** prerequisite in acceptance step 1. A complete local build toolchain, standard-user fixture trust/install, launch and workflow checks, protected-file refusal, publisher mismatch, upgrade behavior, and update consent remain unverified. The Inno installer and disabled production update channel are unchanged.
+
 ## Required acceptance before an installer decision
 
-1. Build and verify a version-matched Hydra desktop runtime with the pinned Node and Code OSS revisions on a complete Windows build host.
+1. Build and verify a version-matched Hydra desktop runtime with the pinned Node and Code OSS revisions on a complete Windows build host. The CI-built 0.22.0 runtime above satisfies this for the packaging study; a fresh local build remains blocked by missing Spectre libraries.
 2. In a disposable Windows user/VM, create a short-lived fixture publisher, trust it there, install the signed package as a standard user, and prove the installed executable, built-in extension, and native DLL cannot be modified from Hydra's ordinary token. Remove fixture trust and installation afterward.
 3. Launch with an isolated profile and check Hydra activation, editor, terminal, native modules, user extension install, external tools, CLI, restart, and settings persistence.
 4. Verify modified package bytes and a wrong-publisher replacement refuse. Upgrade an installed version N to a correctly signed N+1 package and prove user data retention, shortcuts, CLI registration, and downgrade refusal.

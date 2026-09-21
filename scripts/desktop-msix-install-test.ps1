@@ -182,8 +182,10 @@ $workflowReport = $null
 $standardUserReport = $null
 $fixtureUser = $null
 $fixtureUserSid = $null
+$fixtureSecurityIdentifier = $null
 $fixtureAclRule = $null
 $fixturePassword = $null
+$fixtureAclRemoved = $true
 $report = [ordered]@{
   schemaVersion = 1
   status = 'started'
@@ -268,6 +270,7 @@ try {
   $fixtureUser = New-LocalUser -Name $fixtureUserName -Password $securePassword -AccountNeverExpires `
     -PasswordNeverExpires -UserMayNotChangePassword -Description 'Disposable Hydra MSIX acceptance user'
   $fixtureUserSid = $fixtureUser.SID.Value
+  $fixtureSecurityIdentifier = [Security.Principal.SecurityIdentifier]::new($fixtureUserSid)
   if (-not (Get-LocalGroupMember -SID 'S-1-5-32-545' | Where-Object SID -eq $fixtureUserSid)) {
     Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $fixtureUser
   }
@@ -276,7 +279,7 @@ try {
   }
   $runAcl = Get-Acl -LiteralPath $run
   $fixtureAclRule = New-Object Security.AccessControl.FileSystemAccessRule(
-    $fixtureUserSid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $fixtureSecurityIdentifier, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
   [void]$runAcl.AddAccessRule($fixtureAclRule)
   Set-Acl -LiteralPath $run -AclObject $runAcl
 
@@ -342,9 +345,15 @@ try {
       Remove-AppxPackage -Package $_.PackageFullName -User $fixtureUserSid -ErrorAction Continue
     }
     if ($fixtureAclRule) {
-      $cleanupAcl = Get-Acl -LiteralPath $run
-      [void]$cleanupAcl.RemoveAccessRuleSpecific($fixtureAclRule)
-      Set-Acl -LiteralPath $run -AclObject $cleanupAcl -ErrorAction Continue
+      try {
+        $cleanupAcl = Get-Acl -LiteralPath $run
+        $cleanupAcl.PurgeAccessRules($fixtureSecurityIdentifier)
+        Set-Acl -LiteralPath $run -AclObject $cleanupAcl -ErrorAction Stop
+        $fixtureAclRemoved = -not [bool](@((Get-Acl -LiteralPath $run).Access |
+          Where-Object { $_.IdentityReference.Value -eq $fixtureUserSid }))
+      } catch {
+        $fixtureAclRemoved = $false
+      }
     }
     Get-CimInstance Win32_UserProfile -Filter "SID='$fixtureUserSid'" -ErrorAction SilentlyContinue |
       Remove-CimInstance -ErrorAction Continue
@@ -364,6 +373,7 @@ try {
     standardUserPackageRemoved = -not $fixtureUserSid -or -not [bool](Get-AppxPackage -User $fixtureUserSid -Name $packageName -ErrorAction SilentlyContinue)
     standardUserProfileRemoved = -not $fixtureUserSid -or -not [bool](Get-CimInstance Win32_UserProfile -Filter "SID='$fixtureUserSid'" -ErrorAction SilentlyContinue)
     standardUserRemoved = -not $fixtureUserSid -or -not [bool](Get-LocalUser -SID $fixtureUserSid -ErrorAction SilentlyContinue)
+    standardUserAclRemoved = $fixtureAclRemoved
   }
   $logRoot = Join-Path $repository '.desktop\msix-test-logs'
   New-Item -ItemType Directory -Path $logRoot -Force | Out-Null

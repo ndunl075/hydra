@@ -60,8 +60,16 @@ try {
   const assets = path.join(stage, 'Assets');
   await fs.mkdir(assets);
   await fs.copyFile(path.join(root, 'hydra-logo.png'), path.join(assets, 'Logo.png'));
-  const packageVersion = `${product.hydraVersion}.0`;
-  const publisher = 'CN=Hydra Fixture';
+  // The hosted acceptance runner may build a second disposable fixture with a
+  // higher MSIX version or a different fixture publisher. These are package
+  // metadata values only: Hydra's embedded application version remains the
+  // version of the copied runtime and is checked independently by the test.
+  const packageVersion = process.env.HYDRA_MSIX_FIXTURE_VERSION ?? `${product.hydraVersion}.0`;
+  const publisher = process.env.HYDRA_MSIX_FIXTURE_PUBLISHER ?? 'CN=Hydra Fixture';
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(packageVersion))
+    throw new Error('HYDRA_MSIX_FIXTURE_VERSION must be a four-part numeric MSIX version.');
+  if (!/^CN=[A-Za-z0-9 ._-]+$/.test(publisher))
+    throw new Error('HYDRA_MSIX_FIXTURE_PUBLISHER must be a simple CN fixture publisher.');
   const packageIdentity = 'NicoDunlap.Hydra.Probe';
   const appxManifest = `<?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"

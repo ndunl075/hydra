@@ -1,4 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$RunDirectory)
+param(
+  [Parameter(Mandatory = $true)][string]$RunDirectory,
+  [string]$Publisher = 'CN=Hydra Fixture'
+)
 $ErrorActionPreference = 'Stop'
 
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -14,6 +17,12 @@ if ($report.status -ne 'unsigned-packaged' -or -not [IO.Path]::IsPathRooted($rep
   throw 'Probe report does not identify an unsigned package in this run.'
 }
 $unsigned = (Resolve-Path -LiteralPath $report.package).Path
+if ($Publisher -notmatch '^CN=[A-Za-z0-9 ._-]+$') { throw 'Fixture publisher must be a simple CN value.' }
+$manifest = [xml](Get-Content -LiteralPath (Join-Path $run 'stage\AppxManifest.xml') -Raw)
+$identity = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Identity"]')
+if (-not $identity -or $identity.Publisher -ne $Publisher) {
+  throw 'Fixture certificate publisher must exactly match the staged MSIX manifest publisher.'
+}
 $signed = Join-Path $run 'HydraProbe-fixture-signed.msix'
 $key = Join-Path $run 'fixture-signing.key'
 $certificate = Join-Path $run 'fixture-signing.crt'
@@ -35,7 +44,7 @@ try {
   try {
     $ErrorActionPreference = 'Continue'
     & $openssl req -quiet -batch -new -x509 -newkey rsa:2048 -nodes -keyout $key -out $certificate -days 1 `
-      -subj '/CN=Hydra Fixture' -addext 'basicConstraints=critical,CA:FALSE' `
+      -subj ('/' + $Publisher) -addext 'basicConstraints=critical,CA:FALSE' `
       -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=codeSigning' 2>$null
     $certificateExit = $LASTEXITCODE
   } finally {
@@ -47,7 +56,7 @@ try {
   & $signtool sign /fd SHA256 /f $pfx $signed
   if ($LASTEXITCODE -ne 0) { throw 'Fixture MSIX signing failed.' }
   $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificate)
-  if ($cert.Subject -ne 'CN=Hydra Fixture') { throw 'Fixture certificate subject changed.' }
+  if ($cert.Subject -ne $Publisher) { throw 'Fixture certificate subject changed.' }
   $record = [ordered]@{
     schemaVersion = 1
     status = 'fixture-signed-untrusted'
@@ -55,6 +64,7 @@ try {
     packageSha256 = (Get-FileHash -LiteralPath $signed -Algorithm SHA256).Hash.ToLowerInvariant()
     certificate = $certificate
     thumbprint = $cert.Thumbprint
+    publisher = $Publisher
     sourceHydraVersion = $report.sourceHydraVersion
     currentSourceMatch = $report.currentSourceMatch
     installed = $false

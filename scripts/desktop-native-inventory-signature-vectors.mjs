@@ -70,6 +70,8 @@ const schemaCase = async (name, bytes) => {
 const file = inventory.files[0];
 await schemaCase('valid-unicode', Buffer.from(JSON.stringify({ ...inventory,
   files: [{ ...file, path: 'Résumé.txt' }] })));
+await schemaCase('valid-nested', Buffer.from(JSON.stringify({ ...inventory,
+  files: [file, { path: 'bin/hydra.cmd', bytes: 3, sha256: sha256(Buffer.from('cmd')).toString('hex') }] })));
 await schemaCase('wrong-target', Buffer.from(JSON.stringify({ ...inventory,
   target: { ...inventory.target, installTarget: 'system' } })));
 await schemaCase('bad-version', Buffer.from(JSON.stringify({ ...inventory, version: '01.2.3' })));

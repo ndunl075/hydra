@@ -94,6 +94,9 @@ jobs:
       - name: Verify native installed-inventory schema after signature
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-inventory-schema-test.ps1
+      - name: Verify native installed-payload tree under retained handles
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-inventory-tree-test.ps1
       - name: Verify native operation path and replacement locks
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-locked-path-test.ps1

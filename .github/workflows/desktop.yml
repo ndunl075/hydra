@@ -88,6 +88,12 @@ jobs:
       - name: Verify native Authenticode boundary with signed Windows fixture
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-verifier-test.ps1
+      - name: Verify native installed-inventory signature bytes
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-inventory-signature-test.ps1
+      - name: Verify native installed-inventory schema after signature
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-inventory-schema-test.ps1
       - name: Verify native operation path and replacement locks
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop-native-locked-path-test.ps1

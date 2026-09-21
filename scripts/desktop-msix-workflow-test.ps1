@@ -252,21 +252,12 @@ try {
   $start.Arguments = $Arguments
   $start.UseShellExecute = $false
   $start.CreateNoWindow = $true
-  $start.RedirectStandardOutput = $true
-  $start.RedirectStandardError = $true
   $process = New-Object Diagnostics.Process
   $process.StartInfo = $start
   if (-not $process.Start()) { throw 'Installed Hydra CLI process did not start.' }
-  $stdout = $process.StandardOutput.ReadToEndAsync()
-  $stderr = $process.StandardError.ReadToEndAsync()
   if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Installed Hydra CLI process timed out.' }
-  if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout, $stderr), 10000)) {
-    throw 'Installed Hydra CLI output drain timed out.'
-  }
   $result.processId = $process.Id
   $result.exitCode = $process.ExitCode
-  $result.stdout = $stdout.Result.Trim()
-  $result.stderr = $stderr.Result.Trim()
   $result.status = if ($process.ExitCode -eq 0) { 'passed' } else { 'failed' }
   if ($process.ExitCode -ne 0) { $result.error = "Installed Hydra CLI exited with code $($process.ExitCode)." }
 } catch {

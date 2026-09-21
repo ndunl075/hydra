@@ -331,7 +331,7 @@ namespace HydraMsixStandardUserController {
         var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = 0;
         var mutableCommandLine = new StringBuilder(commandLine);
-        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE;
+        uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
         if (!CreateProcessAsUserW(restrictedToken, executable, mutableCommandLine, IntPtr.Zero, IntPtr.Zero, false,
             flags, IntPtr.Zero, currentDirectory, ref startup, out created))
           throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessAsUserW restricted child failed.");

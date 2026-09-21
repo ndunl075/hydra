@@ -9,11 +9,13 @@ import { NtExecutable, NtExecutableResource } from 'resedit';
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = path.join(repository, '.test-build', 'asar-compatibility');
 const source = process.argv[2];
-if (process.platform !== 'win32' || !source || !path.isAbsolute(source) || process.argv.length !== 3)
-  throw new Error('Use on Windows with one absolute path to a disposable built Hydra runtime.');
+const experimentalFs = process.argv[3] === '--experimental-electron-fs';
+if (process.platform !== 'win32' || !source || !path.isAbsolute(source) ||
+    process.argv.length !== (experimentalFs ? 4 : 3))
+  throw new Error('Use on Windows with an absolute built runtime path and optional --experimental-electron-fs.');
 
 const report = { schemaVersion: 1, source, generatedAt: new Date().toISOString(),
-  status: 'started', steps: [], blockers: [] };
+  status: 'started', experimentalElectronFs: experimentalFs, steps: [], blockers: [] };
 const writeReport = async directory => fs.writeFile(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 const step = (name, details = {}) => { report.steps.push({ name, ...details }); console.log(name); };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -45,6 +47,17 @@ try {
 
   const resources = path.join(output, 'resources');
   const app = path.join(resources, 'app');
+  if (experimentalFs) {
+    for (const name of ['main.js', 'bootstrap-fork.js', 'cli.js']) {
+      const file = path.join(app, 'out', name);
+      const before = await fs.readFile(file, 'utf8');
+      const needle = "url: 'node:original-fs'";
+      if (before.split(needle).length !== 2)
+        throw new Error(`Pinned ${name} fs loader contract changed.`);
+      await fs.writeFile(file, before.replace(needle, "url: 'node:fs'"));
+    }
+    step('replaced packaged fs loader hooks in disposable copy');
+  }
   const legacy = path.join(app, 'node_modules.asar');
   const legacyHeader = getRawHeader(legacy).header;
   if (Object.keys(legacyHeader.files ?? {}).length !== 0) throw new Error('Nonempty legacy node_modules.asar requires normalization before this probe.');
@@ -109,12 +122,13 @@ try {
     throw new Error('Loose application directory is outside the disposable runtime.');
   await fs.rm(appReal, { recursive: true });
   step('removed loose application fallback');
-  // Code OSS routes bare fs imports to original-fs. Its built-in extension
-  // scanner therefore cannot traverse app.asar/extensions. A loose directory
-  // override starts the extension host but removes integrity coverage for
-  // bundled extension code. Keep this probe explicitly diagnostic until the
-  // archive-aware scanner and extension-host paths are adapted and tested.
-  report.blockers.push('Code OSS original-fs cannot scan built-in extensions in app.asar; a loose --builtin-extensions-dir override is not an integrity-preserving release fix.');
+  // The normal original-fs hook cannot scan packed built-ins. The optional
+  // node:fs substitution is a compatibility experiment, not fail-closed
+  // code-load proof; a tampered built-in logged a mismatch and still reached
+  // extension activation in the disposable old-version runtime.
+  report.blockers.push(experimentalFs
+    ? 'Experimental global fs hook substitution changes workspace ASAR handling; in a disposable runtime, altered packed Hydra code reached activation after an integrity-mismatch log, so fail-closed code loading is unproven.'
+    : 'Code OSS original-fs cannot scan built-in extensions in app.asar; a loose --builtin-extensions-dir override is not an integrity-preserving release fix.');
   report.blockers.push('Unpacked native binaries and scripts are outside Electron ASAR integrity and need a separate code-load trust boundary.');
   report.status = 'diagnostic-blocked';
   await writeReport(run);

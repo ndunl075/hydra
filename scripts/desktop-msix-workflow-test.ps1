@@ -201,6 +201,98 @@ function Start-HydraApplication([string]$Arguments, [string]$Role) {
   return [ordered]@{ launchMethod = $method; arguments = $Arguments; commandLine = $commandLine;
     process = (Assert-ProcessEvidence $processId $Role) }
 }
+function Get-HydraProcessSnapshot([uint32]$TargetProcessId) {
+  $snapshot = [ordered]@{ capturedAtUtc = [DateTime]::UtcNow.ToString('o'); processId = $TargetProcessId }
+  try {
+    $process = Get-Process -Id $TargetProcessId -ErrorAction Stop
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $TargetProcessId" -ErrorAction Stop
+    $snapshot.exited = $process.HasExited
+    $snapshot.startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
+    $snapshot.sessionId = $process.SessionId
+    $snapshot.parentProcessId = [uint32]$cim.ParentProcessId
+    $snapshot.commandLine = $cim.CommandLine
+    $snapshot.handleCount = $process.HandleCount
+    $snapshot.threadCount = $process.Threads.Count
+    $snapshot.totalProcessorMilliseconds = [math]::Round($process.TotalProcessorTime.TotalMilliseconds, 3)
+    $snapshot.workingSetBytes = $process.WorkingSet64
+    $snapshot.privateMemoryBytes = $process.PrivateMemorySize64
+    $snapshot.responding = $process.Responding
+    $snapshot.mainWindowHandle = $process.MainWindowHandle.ToInt64()
+    $snapshot.threads = @($process.Threads | ForEach-Object {
+      $thread = $_
+      $waitReason = $null
+      if ($thread.ThreadState -eq [Diagnostics.ThreadState]::Wait) {
+        try { $waitReason = $thread.WaitReason.ToString() } catch { $waitReason = 'unavailable' }
+      }
+      [ordered]@{ id = $thread.Id; state = $thread.ThreadState.ToString(); waitReason = $waitReason;
+        startAddress = ('0x{0:x}' -f $thread.StartAddress.ToInt64()); totalProcessorMilliseconds = [math]::Round($thread.TotalProcessorTime.TotalMilliseconds, 3) }
+    })
+    try {
+      $snapshot.modules = @($process.Modules | ForEach-Object { [ordered]@{ name = $_.ModuleName; path = $_.FileName } })
+    } catch { $snapshot.moduleError = $_.Exception.Message }
+    $snapshot.children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $TargetProcessId" -ErrorAction Stop |
+      ForEach-Object { [ordered]@{ processId = [uint32]$_.ProcessId; name = $_.Name; commandLine = $_.CommandLine } })
+  } catch {
+    $snapshot.captureError = $_.Exception.ToString()
+  }
+  return $snapshot
+}
+function Get-ActivationEvents([DateTime]$StartedAtUtc, [uint32]$TargetProcessId) {
+  $events = [ordered]@{}
+  foreach ($logName in @('Microsoft-Windows-AppModel-Runtime/Admin', 'Microsoft-Windows-TWinUI/Operational',
+      'Microsoft-Windows-CodeIntegrity/Operational', 'Application')) {
+    try {
+      $matching = @(Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $StartedAtUtc.ToLocalTime() } -ErrorAction Stop |
+        Where-Object { $_.Message -match [regex]::Escape($PackageFullName) -or $_.Message -match "(?<!\d)$TargetProcessId(?!\d)" } |
+        Select-Object -First 50 | ForEach-Object { [ordered]@{ timeCreatedUtc = $_.TimeCreated.ToUniversalTime().ToString('o');
+          id = $_.Id; level = $_.LevelDisplayName; provider = $_.ProviderName; message = $_.Message } })
+      $events[$logName] = $matching
+    } catch { $events[$logName] = [ordered]@{ captureError = $_.Exception.Message } }
+  }
+  return $events
+}
+function New-HydraProcessDump([uint32]$TargetProcessId, [string]$Label,
+    [string]$ExpectedStartTimeUtc, [string]$ExpectedExecutablePath) {
+  $process = $null
+  try {
+    $target = Get-Process -Id $TargetProcessId -ErrorAction Stop
+    $actualStartTimeUtc = $target.StartTime.ToUniversalTime().ToString('o')
+    if ($actualStartTimeUtc -ne $ExpectedStartTimeUtc -or
+        -not [string]::Equals($target.Path, $ExpectedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to dump reused or changed process ID $TargetProcessId."
+    }
+    $dumpPath = Join-Path $run ($Label + '-' + $TargetProcessId + '.dmp')
+    $helper = Join-Path $repository 'scripts\desktop-msix-dump-process.ps1'
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $start.Arguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', $helper, '-TargetProcessId', ([string]$TargetProcessId), '-DumpPath', $dumpPath)
+    $start.WorkingDirectory = $repository
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $start
+    if (-not $process.Start()) { throw 'Dump helper did not start.' }
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit(30000)) {
+      $process.Kill()
+      $process.WaitForExit()
+      return [ordered]@{ status = 'timed-out'; processId = $TargetProcessId; timeoutMilliseconds = 30000 }
+    }
+    $stdout.Wait()
+    $stderr.Wait()
+    if ($process.ExitCode -ne 0) {
+      return [ordered]@{ status = 'failed'; processId = $TargetProcessId; exitCode = $process.ExitCode;
+        error = (($stdout.Result, $stderr.Result | Where-Object { $_ }) -join [Environment]::NewLine) }
+    }
+    return ($stdout.Result | ConvertFrom-Json)
+  } catch {
+    return [ordered]@{ status = 'failed'; processId = $TargetProcessId; error = $_.Exception.ToString() }
+  } finally { if ($process) { $process.Dispose() } }
+}
 
 $applicationUserModelId = $PackageFamilyName + '!HydraProbe'
 $unicodeSuffix = [string][char]0x00FC
@@ -318,17 +410,39 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust',
     '--log', 'trace', '--enable-logging=file', $electronLogArgument)
+  $phaseOneStartedAtUtc = [DateTime]::UtcNow
   $phaseOneLaunch = Start-HydraApplication $workflowArguments 'Phase 1 main process'
   $report.checks.phaseOneMain = $phaseOneLaunch
+  $report.checks.phaseOneStartupSnapshot = Get-HydraProcessSnapshot ([uint32]$phaseOneLaunch.process.ProcessId)
   $report.phase = 'waiting-phase-one-report'
   Save-WorkflowReport
   try {
     $phaseOne = Wait-ForJson $phaseOnePath 150
   } catch {
-    if (Test-Path -LiteralPath $phaseOneProgressPath) {
-      $report.checks.phaseOneProgress = Get-Content -LiteralPath $phaseOneProgressPath -Raw | ConvertFrom-Json
+    $phaseOneFailure = $_
+    try {
+      if (Test-Path -LiteralPath $phaseOneProgressPath) {
+        $report.checks.phaseOneProgress = Get-Content -LiteralPath $phaseOneProgressPath -Raw | ConvertFrom-Json
+      }
+      $phaseOneProcessId = [uint32]$phaseOneLaunch.process.ProcessId
+      $report.checks.phaseOneTimeoutSnapshot = Get-HydraProcessSnapshot $phaseOneProcessId
+      $report.checks.phaseOneActivationEvents = Get-ActivationEvents $phaseOneStartedAtUtc $phaseOneProcessId
+      $dumpArguments = @{
+        TargetProcessId = $phaseOneProcessId
+        Label = 'phase-1-main'
+        ExpectedStartTimeUtc = [string]$report.checks.phaseOneStartupSnapshot.startTimeUtc
+        ExpectedExecutablePath = [string]$phaseOneLaunch.process.ExecutablePath
+      }
+      $report.checks.phaseOneDump = New-HydraProcessDump @dumpArguments
+    } catch {
+      $report.checks.phaseOneDiagnosticsError = $_.Exception.ToString()
     }
-    throw
+    try {
+      Save-WorkflowReport
+    } catch {
+      Write-Warning "Failed to persist phase-one diagnostics: $($_.Exception.Message)"
+    }
+    throw $phaseOneFailure
   }
   if ($phaseOne.status -ne 'passed') { throw "Packaged workflow phase 1 failed: $($phaseOne.error)" }
   if ($phaseOne.appName -ne 'Hydra' -or $phaseOne.workspace -ne $workspace -or

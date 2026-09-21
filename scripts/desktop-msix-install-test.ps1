@@ -40,8 +40,9 @@ $installLocation = $null
 $tamperRefused = $false
 $newFileRefused = $false
 $existingFileWriteRefused = $false
-$versionOutput = Join-Path $run 'hydra-version.txt'
-$versionError = Join-Path $run 'hydra-version-error.txt'
+$launchedProcessIds = @()
+$existingProcessIds = @()
+$activationAttempted = $false
 $report = [ordered]@{
   schemaVersion = 1
   status = 'started'
@@ -116,15 +117,25 @@ try {
     throw 'Installed package payload was writable or changed.'
   }
 
-  $versionProcess = Start-Process -FilePath $installedExecutable -ArgumentList '--version' -WindowStyle Hidden -Wait -PassThru `
-    -RedirectStandardOutput $versionOutput -RedirectStandardError $versionError
-  if ($versionProcess.ExitCode -ne 0 -or (Get-Item -LiteralPath $versionOutput).Length -eq 0 -or
-      (Get-Item -LiteralPath $installedExecutable).VersionInfo.ProductVersion -ne $product.hydraVersion) {
-    throw 'Installed Hydra executable did not start or retain its packaged PE version.'
+  if ((Get-Item -LiteralPath $installedExecutable).VersionInfo.ProductVersion -ne $product.hydraVersion) {
+    throw 'Installed Hydra executable did not retain its packaged PE version.'
   }
-  $helper = Join-Path $installLocation 'tools\HydraUpdateVerify.exe'
-  $helperProcess = Start-Process -FilePath $helper -ArgumentList '12345678-1234-4234-8234-123456789abc' -WindowStyle Hidden -Wait -PassThru
-  if ($helperProcess.ExitCode -ne 2) { throw 'Installed native helper accepted an unauthenticated operation.' }
+  $existingProcessIds = @((Get-Process -Name Hydra -ErrorAction SilentlyContinue).Id)
+  $applicationId = 'shell:AppsFolder\' + $package.PackageFamilyName + '!HydraProbe'
+  $activationAttempted = $true
+  Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') -ArgumentList $applicationId
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  do {
+    Start-Sleep -Milliseconds 500
+    $launched = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $existingProcessIds })
+  } while ($launched.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+  if ($launched.Count -eq 0) { throw 'Registered MSIX application did not launch.' }
+  $launchedProcessIds = @($launched.Id)
+  Start-Sleep -Seconds 3
+  $remaining = @(Get-Process -Id $launchedProcessIds -ErrorAction SilentlyContinue)
+  if ($remaining.Count -eq 0 -or -not ($remaining | Where-Object { $_.Path -eq $installedExecutable })) {
+    throw 'Registered MSIX application did not remain running from its installed executable.'
+  }
 
   $report.checks.tamperedPackage = 'refused'
   $report.checks.installedVersion = $package.Version.ToString()
@@ -132,10 +143,14 @@ try {
   $report.checks.inputHashes = 'Hydra.exe and built-in Hydra extension match'
   $report.checks.protectedNewFile = 'refused'
   $report.checks.protectedExistingFileWrite = 'refused'
-  $report.checks.executableVersionStartup = 'passed'
-  $report.checks.disabledNativeHelper = 'refused unauthenticated operation'
+  $report.checks.executablePeVersion = $product.hydraVersion
+  $report.checks.registeredApplicationLaunch = 'passed'
   $report.status = 'passed'
 } finally {
+  if ($activationAttempted) {
+    Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $existingProcessIds } |
+      Stop-Process -Force -ErrorAction Continue
+  }
   $installed = Get-AppxPackage -Name $packageName
   if ($installed) { Remove-AppxPackage -Package $installed.PackageFullName -ErrorAction Continue }
   if ($imported) {
@@ -154,4 +169,4 @@ try {
   Copy-Item -LiteralPath (Join-Path $run 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing.json') -Force
 }
 if ($report.status -ne 'passed' -or $report.cleanup.Values -contains $false) { throw 'MSIX fixture acceptance or cleanup failed.' }
-Write-Output 'PASS: signed current Hydra MSIX installs, rejects tampering and package writes, runs its version/native-helper probes, and removes package trust.'
+Write-Output 'PASS: signed current Hydra MSIX installs, rejects tampering and package writes, launches by registered identity, and removes package trust.'

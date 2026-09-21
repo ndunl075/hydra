@@ -467,6 +467,8 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     throw "Standard-user MSIX controller failed with exit code $($child.ExitCode)."
   }
   $standardUserReport = Get-Content -LiteralPath $standardResultPath -Raw | ConvertFrom-Json
+  $standardUserReport.token = $child.Token
+  $standardUserReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $standardResultPath -Encoding utf8
   if ($standardUserReport.status -ne 'passed' -or -not $standardUserReport.packageRemoved) {
     throw "Standard-user packaged workflow failed: $($standardUserReport.error)"
   }
@@ -483,7 +485,7 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   $report.checks.protectedNewFile = 'refused'
   $report.checks.protectedExistingFileWrite = 'refused'
   $report.checks.executablePeVersion = $product.hydraVersion
-  $report.checks.standardUserToken = $standardUserReport.token
+  $report.checks.standardUserToken = $child.Token
   $report.checks.registeredApplicationLaunch = 'passed as a standard local user with explicit arguments and process identity attestation'
   $report.checks.packagedWorkflows = $workflowReport.checks
   $report.status = 'passed'

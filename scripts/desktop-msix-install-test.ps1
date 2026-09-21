@@ -765,6 +765,39 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     throw "Restricted interactive workflow failed during phase '$workflowPhase': $($_.Exception.Message)"
   }
   if ($restrictedWorkflow.ExitCode -ne 0) {
+    $controlProcess = $null
+    try {
+      $controlArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $workflowScript, '-PackageFullName', $package.PackageFullName,
+        '-PackageFamilyName', $package.PackageFamilyName, '-InstallLocation', $installLocation,
+        '-RunDirectory', $run, '-ParentTokenControl')
+      $controlStart = New-Object Diagnostics.ProcessStartInfo
+      $controlStart.FileName = $powershell
+      $controlStart.Arguments = $controlArguments
+      $controlStart.WorkingDirectory = $run
+      $controlStart.UseShellExecute = $false
+      $controlStart.CreateNoWindow = $true
+      $controlStart.RedirectStandardOutput = $true
+      $controlStart.RedirectStandardError = $true
+      $controlProcess = New-Object Diagnostics.Process
+      $controlProcess.StartInfo = $controlStart
+      if (-not $controlProcess.Start()) { throw 'Parent-token packaged control did not start.' }
+      $controlStdout = $controlProcess.StandardOutput.ReadToEndAsync()
+      $controlStderr = $controlProcess.StandardError.ReadToEndAsync()
+      if (-not $controlProcess.WaitForExit(90000)) {
+        $controlProcess.Kill()
+        $controlProcess.WaitForExit()
+        throw 'Parent-token packaged control timed out after 90 seconds.'
+      }
+      $controlStdout.Wait()
+      $controlStderr.Wait()
+      $report.checks.parentTokenControlInvocation = [ordered]@{ exitCode = $controlProcess.ExitCode;
+        output = (($controlStdout.Result, $controlStderr.Result | Where-Object { $_ }) -join [Environment]::NewLine) }
+    } catch {
+      $report.checks.parentTokenControlInvocation = [ordered]@{ error = $_.Exception.ToString() }
+    } finally {
+      if ($controlProcess) { $controlProcess.Dispose() }
+    }
     throw "Restricted interactive workflow exited with code $($restrictedWorkflow.ExitCode)."
   }
   $workflowReport = Get-Content -LiteralPath (Join-Path $run 'workflow-report.json') -Raw | ConvertFrom-Json
@@ -842,6 +875,9 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   if (Test-Path -LiteralPath (Join-Path $run 'workflow-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'workflow-report.json') -Destination (Join-Path $logRoot 'workflow-report.json') -Force
   }
+  if (Test-Path -LiteralPath (Join-Path $run 'parent-token-control-report.json')) {
+    Copy-Item -LiteralPath (Join-Path $run 'parent-token-control-report.json') -Destination (Join-Path $logRoot 'parent-token-control-report.json') -Force
+  }
   if (Test-Path -LiteralPath (Join-Path $run 'workflow-provision-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'workflow-provision-report.json') -Destination (Join-Path $logRoot 'workflow-provision-report.json') -Force
   }
@@ -855,6 +891,15 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   $workflowElectronLog = Join-Path (Join-Path $run ('workflow spaces ' + [string][char]0x00FC)) 'electron.log'
   if (Test-Path -LiteralPath $workflowElectronLog) {
     Copy-Item -LiteralPath $workflowElectronLog -Destination (Join-Path $logRoot 'workflow-electron.log') -Force
+  }
+  $controlRoot = Join-Path $run ('parent token control ' + [string][char]0x00FC)
+  $controlUserDataLogs = Join-Path $controlRoot 'user data\logs'
+  if (Test-Path -LiteralPath $controlUserDataLogs) {
+    Copy-Item -LiteralPath $controlUserDataLogs -Destination (Join-Path $logRoot 'parent-token-control-user-data-logs') -Recurse -Force
+  }
+  $controlElectronLog = Join-Path $controlRoot 'electron.log'
+  if (Test-Path -LiteralPath $controlElectronLog) {
+    Copy-Item -LiteralPath $controlElectronLog -Destination (Join-Path $logRoot 'parent-token-control-electron.log') -Force
   }
   Get-ChildItem -LiteralPath $run -File -Filter 'phase-*-*.dmp' -ErrorAction SilentlyContinue | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $logRoot $_.Name) -Force

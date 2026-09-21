@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)][string]$PackageFullName,
   [Parameter(Mandatory = $true)][string]$PackageFamilyName,
   [Parameter(Mandatory = $true)][string]$InstallLocation,
-  [Parameter(Mandatory = $true)][string]$RunDirectory
+  [Parameter(Mandatory = $true)][string]$RunDirectory,
+  [switch]$ParentTokenControl
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -19,7 +20,8 @@ if (-not $run.StartsWith((Join-Path $repository '.test-build\msix-compatibility'
 if (-not $install.StartsWith((Join-Path $env:ProgramFiles 'WindowsApps') + '\', [StringComparison]::OrdinalIgnoreCase)) {
   throw 'Workflow install location is outside WindowsApps.'
 }
-$reportPath = Join-Path $run 'workflow-report.json'
+$reportName = if ($ParentTokenControl) { 'parent-token-control-report.json' } else { 'workflow-report.json' }
+$reportPath = Join-Path $run $reportName
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 [ordered]@{ schemaVersion = 1; status = 'started'; phase = 'compiling-native-helper';
   updatedAtUtc = [DateTime]::UtcNow.ToString('o'); elapsedMilliseconds = $stopwatch.ElapsedMilliseconds } |
@@ -31,6 +33,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 
@@ -60,6 +63,23 @@ namespace HydraMsixFixture {
     public string UserSid { get; set; }
     public bool Elevated { get; set; }
     public int IntegrityRid { get; set; }
+    public string OwnerSid { get; set; }
+    public string DefaultDaclSddl { get; set; }
+    public bool IsAppContainer { get; set; }
+    public string ProcessDaclSddl { get; set; }
+    public string ProcessDaclError { get; set; }
+    public string TokenSecurityError { get; set; }
+  }
+  public sealed class SelfAccessEvidence {
+    public bool FullAccessReopen { get; set; }
+    public int Win32Error { get; set; }
+    public bool CrashpadAccessReopen { get; set; }
+    public int CrashpadWin32Error { get; set; }
+    public string OwnerSid { get; set; }
+    public string DefaultDaclSddl { get; set; }
+    public bool IsAppContainer { get; set; }
+    public string ProcessDaclSddl { get; set; }
+    public string ProcessDaclError { get; set; }
   }
   public sealed class ProcessObservation {
     public uint ProcessId { get; private set; }
@@ -70,17 +90,27 @@ namespace HydraMsixFixture {
 
   public static class Native {
     const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    const uint PROCESS_ALL_ACCESS = 0x001FFFFF;
+    const uint CRASHPAD_PROCESS_ALL_ACCESS = 0x001F0FFF;
+    const uint READ_CONTROL = 0x00020000;
     const uint SYNCHRONIZE = 0x00100000;
     const uint WAIT_OBJECT_0 = 0;
     const uint WAIT_TIMEOUT = 258;
     const uint TOKEN_QUERY = 0x0008;
     const int TokenElevation = 20;
     const int TokenIntegrityLevel = 25;
+    const int TokenOwner = 4;
+    const int TokenDefaultDacl = 6;
+    const int TokenIsAppContainer = 29;
     const int ERROR_INSUFFICIENT_BUFFER = 122;
+    const int SE_KERNEL_OBJECT = 6;
+    const uint DACL_SECURITY_INFORMATION = 0x00000004;
 
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public int TokenIsElevated; }
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_OWNER { public IntPtr Owner; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_DEFAULT_DACL { public IntPtr DefaultDacl; }
 
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
@@ -88,11 +118,91 @@ namespace HydraMsixFixture {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(
       IntPtr process, out long creationTime, out long exitTime, out long kernelTime, out long userTime);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenClass, IntPtr information, int length, out int returnLength);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint subAuthority);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern uint GetSecurityInfo(IntPtr handle, int objectType,
+      uint securityInformation, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl,
+      out IntPtr securityDescriptor);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(
+      IntPtr securityDescriptor, uint requestedStringSDRevision, uint securityInformation,
+      out IntPtr stringSecurityDescriptor, out uint stringSecurityDescriptorLen);
+
+    static int ReadIntToken(IntPtr token, int tokenClass) {
+      int returned;
+      GetTokenInformation(token, tokenClass, IntPtr.Zero, 0, out returned);
+      IntPtr buffer = Marshal.AllocHGlobal(returned);
+      try {
+        if (!GetTokenInformation(token, tokenClass, buffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "GetTokenInformation class " + tokenClass + " failed.");
+        return Marshal.ReadInt32(buffer);
+      } finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    static string ReadTokenOwner(IntPtr token) {
+      int returned;
+      GetTokenInformation(token, TokenOwner, IntPtr.Zero, 0, out returned);
+      IntPtr buffer = Marshal.AllocHGlobal(returned);
+      try {
+        if (!GetTokenInformation(token, TokenOwner, buffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenOwner failed.");
+        var owner = (TOKEN_OWNER)Marshal.PtrToStructure(buffer, typeof(TOKEN_OWNER));
+        return new SecurityIdentifier(owner.Owner).Value;
+      } finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    static string ReadTokenDefaultDacl(IntPtr token, string ownerSid) {
+      int returned;
+      GetTokenInformation(token, TokenDefaultDacl, IntPtr.Zero, 0, out returned);
+      IntPtr buffer = Marshal.AllocHGlobal(returned);
+      try {
+        if (!GetTokenInformation(token, TokenDefaultDacl, buffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenDefaultDacl failed.");
+        var value = (TOKEN_DEFAULT_DACL)Marshal.PtrToStructure(buffer, typeof(TOKEN_DEFAULT_DACL));
+        if (value.DefaultDacl == IntPtr.Zero) return "NO_ACCESS_CONTROL";
+        int aclSize = unchecked((ushort)Marshal.ReadInt16(value.DefaultDacl, 2));
+        var aclBytes = new byte[aclSize];
+        Marshal.Copy(value.DefaultDacl, aclBytes, 0, aclSize);
+        var acl = new RawAcl(aclBytes, 0);
+        var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent,
+          new SecurityIdentifier(ownerSid), null, null, acl);
+        return descriptor.GetSddlForm(AccessControlSections.Access);
+      } finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    static string ReadProcessDacl(IntPtr process) {
+      IntPtr owner, group, dacl, sacl, descriptor;
+      uint result = GetSecurityInfo(process, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+        out owner, out group, out dacl, out sacl, out descriptor);
+      if (result != 0) throw new Win32Exception(unchecked((int)result), "GetSecurityInfo process DACL failed.");
+      try {
+        IntPtr text;
+        uint textLength;
+        if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, DACL_SECURITY_INFORMATION,
+            out text, out textLength))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "Convert process DACL to SDDL failed.");
+        try { return Marshal.PtrToStringUni(text); } finally { LocalFree(text); }
+      } finally { LocalFree(descriptor); }
+    }
+
+    static void AddTokenSecurity(ProcessEvidence evidence, IntPtr token, uint processId) {
+      evidence.OwnerSid = ReadTokenOwner(token);
+      evidence.DefaultDaclSddl = ReadTokenDefaultDacl(token, evidence.OwnerSid);
+      evidence.IsAppContainer = ReadIntToken(token, TokenIsAppContainer) != 0;
+      IntPtr securityProcess = OpenProcess(READ_CONTROL | PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+      if (securityProcess == IntPtr.Zero) {
+        evidence.ProcessDaclError = new Win32Exception(Marshal.GetLastWin32Error()).Message;
+      } else {
+        try {
+          try { evidence.ProcessDaclSddl = ReadProcessDacl(securityProcess); }
+          catch (Exception error) { evidence.ProcessDaclError = error.ToString(); }
+        } finally { CloseHandle(securityProcess); }
+      }
+    }
 
     static ProcessObservation Observe(uint processId) {
       IntPtr handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
@@ -183,13 +293,48 @@ namespace HydraMsixFixture {
         } finally { Marshal.FreeHGlobal(integrityBuffer); }
 
         using (var identity = new WindowsIdentity(token)) {
-          return new ProcessEvidence { ProcessId = processId, PackageFullName = package.ToString(),
+          var evidence = new ProcessEvidence { ProcessId = processId, PackageFullName = package.ToString(),
             UserSid = identity.User.Value, Elevated = elevated, IntegrityRid = integrityRid };
+          try { AddTokenSecurity(evidence, token, processId); }
+          catch (Exception error) { evidence.TokenSecurityError = error.ToString(); }
+          return evidence;
         }
       } finally {
         if (token != IntPtr.Zero) CloseHandle(token);
         CloseHandle(process);
       }
+    }
+
+    public static SelfAccessEvidence ProbeSelfAccess() {
+      IntPtr current = GetCurrentProcess();
+      IntPtr token;
+      if (!OpenProcessToken(current, TOKEN_QUERY, out token))
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "Open current process token failed.");
+      try {
+        string ownerSid = ReadTokenOwner(token);
+        var evidence = new SelfAccessEvidence { OwnerSid = ownerSid,
+          DefaultDaclSddl = ReadTokenDefaultDacl(token, ownerSid),
+          IsAppContainer = ReadIntToken(token, TokenIsAppContainer) != 0 };
+        try { evidence.ProcessDaclSddl = ReadProcessDacl(current); }
+        catch (Exception error) { evidence.ProcessDaclError = error.ToString(); }
+        IntPtr reopened = OpenProcess(PROCESS_ALL_ACCESS, true, unchecked((uint)Process.GetCurrentProcess().Id));
+        if (reopened == IntPtr.Zero) {
+          evidence.FullAccessReopen = false;
+          evidence.Win32Error = Marshal.GetLastWin32Error();
+        } else {
+          evidence.FullAccessReopen = true;
+          CloseHandle(reopened);
+        }
+        reopened = OpenProcess(CRASHPAD_PROCESS_ALL_ACCESS, true, unchecked((uint)Process.GetCurrentProcess().Id));
+        if (reopened == IntPtr.Zero) {
+          evidence.CrashpadAccessReopen = false;
+          evidence.CrashpadWin32Error = Marshal.GetLastWin32Error();
+        } else {
+          evidence.CrashpadAccessReopen = true;
+          CloseHandle(reopened);
+        }
+        return evidence;
+      } finally { CloseHandle(token); }
     }
   }
 }
@@ -235,11 +380,11 @@ function Get-HydraExitEvidence([HydraMsixFixture.ProcessObservation]$Observation
     exitCodeUnsigned = [uint64]$unsignedExitCode; exitCodeHex = ('0x{0:x8}' -f $unsignedExitCode);
     exitTimeUtc = [HydraMsixFixture.Native]::GetExitTimeUtc($Observation) }
 }
-function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role) {
+function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role, [bool]$RequireMedium = $true) {
   $evidence = [HydraMsixFixture.Native]::Inspect($ProcessId)
   if ($evidence.PackageFullName -ne $PackageFullName) { throw "$Role package identity changed." }
   if ($evidence.UserSid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) { throw "$Role user SID changed." }
-  if ($evidence.Elevated -or $evidence.IntegrityRid -lt 0x2000 -or $evidence.IntegrityRid -ge 0x3000) {
+  if ($RequireMedium -and ($evidence.Elevated -or $evidence.IntegrityRid -lt 0x2000 -or $evidence.IntegrityRid -ge 0x3000)) {
     throw "$Role did not run as a non-elevated medium-integrity process."
   }
   $processPath = (Get-Process -Id $ProcessId -ErrorAction Stop).Path
@@ -258,11 +403,11 @@ function Start-HydraApplication([string]$Arguments, [string]$Role) {
   }
   return [pscustomobject]@{ launchMethod = $method; arguments = $Arguments; observation = $observation; role = $Role }
 }
-function Get-HydraApplicationEvidence($Activation) {
+function Get-HydraApplicationEvidence($Activation, [bool]$RequireMedium = $true) {
   $processId = $Activation.observation.ProcessId
   $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop).CommandLine
   return [ordered]@{ launchMethod = $Activation.launchMethod; arguments = $Activation.arguments; commandLine = $commandLine;
-    process = (Assert-ProcessEvidence $processId $Activation.role) }
+    process = (Assert-ProcessEvidence $processId $Activation.role $RequireMedium) }
 }
 function Get-HydraProcessSnapshot([uint32]$TargetProcessId) {
   $snapshot = [ordered]@{ capturedAtUtc = [DateTime]::UtcNow.ToString('o'); processId = $TargetProcessId }
@@ -394,7 +539,60 @@ function Save-WorkflowReport {
   $report.elapsedMilliseconds = $stopwatch.ElapsedMilliseconds
   $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding utf8
 }
+try { $report.checks.callerSelfAccess = [HydraMsixFixture.Native]::ProbeSelfAccess() }
+catch { $report.checks.callerSelfAccess = [ordered]@{ captureError = $_.Exception.ToString() } }
 Save-WorkflowReport
+
+if ($ParentTokenControl) {
+  $controlRoot = Join-Path $run ('parent token control ' + $unicodeSuffix)
+  $controlWorkspace = Join-Path $controlRoot ('workspace ' + $unicodeSuffix)
+  $controlUserData = Join-Path $controlRoot 'user data'
+  $controlExtensions = Join-Path $controlRoot 'extensions'
+  $controlElectronLog = Join-Path $controlRoot 'electron.log'
+  $controlObservation = $null
+  $report.phase = 'activating-parent-token-control'
+  try {
+    New-Item -ItemType Directory -Path $controlWorkspace, $controlUserData, $controlExtensions -Force | Out-Null
+    $controlArguments = Join-WindowsArguments @($controlWorkspace, '--new-window', '--user-data-dir', $controlUserData,
+      '--extensions-dir', $controlExtensions, '--skip-welcome', '--skip-release-notes',
+      '--disable-workspace-trust', '--log', 'trace', '--enable-logging=file', ('--log-file=' + $controlElectronLog))
+    $controlStartedAtUtc = [DateTime]::UtcNow
+    $controlActivation = Start-HydraApplication $controlArguments 'Parent-token control main process'
+    $controlObservation = $controlActivation.observation
+    $controlLaunch = Get-HydraApplicationEvidence $controlActivation $false
+    $report.checks.parentTokenControlMain = $controlLaunch
+    $report.checks.parentTokenControlStartupSnapshot = Get-HydraProcessSnapshot ([uint32]$controlObservation.ProcessId)
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $deadline -and -not [HydraMsixFixture.Native]::HasExited($controlObservation)) {
+      Start-Sleep -Milliseconds 250
+    }
+    if ([HydraMsixFixture.Native]::HasExited($controlObservation)) {
+      $report.checks.parentTokenControlExit = Get-HydraExitEvidence $controlObservation
+      $report.status = 'diagnostic-complete'
+      $report.outcome = 'exited-before-10s'
+      $report.phase = 'parent-token-control-exited'
+    } else {
+      $report.checks.parentTokenControlTenSecondSnapshot = Get-HydraProcessSnapshot ([uint32]$controlObservation.ProcessId)
+      $report.status = 'diagnostic-complete'
+      $report.outcome = 'survived-10s'
+      $report.phase = 'parent-token-control-survived-10s'
+    }
+    $report.checks.parentTokenControlEvents = Get-ActivationEvents $controlStartedAtUtc ([uint32]$controlObservation.ProcessId)
+  } catch {
+    $report.status = 'failed'
+    $report.phase = 'parent-token-control-error'
+    $report.error = $_.Exception.ToString()
+  } finally {
+    if ($controlObservation) { [HydraMsixFixture.Native]::CloseObservation($controlObservation) }
+    Get-Process -Name Hydra -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $baseline } |
+      Stop-Process -Force -ErrorAction Continue
+    $report.cleanup = [ordered]@{ packagedProcessesAbsent = @(Get-Process -Name Hydra -ErrorAction SilentlyContinue |
+      Where-Object { $_.Id -notin $baseline }).Count -eq 0 }
+    Save-WorkflowReport
+  }
+  Write-Output "Parent-token packaged control status: $($report.status)"
+  exit 0
+}
 
 try {
   New-Item -ItemType Directory -Path $workspace, $userData, $extensions -Force | Out-Null

@@ -224,7 +224,7 @@ try {
   $editorFile = Join-Path $workspace 'editor result.txt'
   $terminalScript = Join-Path $workspace 'terminal fixture.ps1'
   $terminalOutput = Join-Path $workspace 'terminal-result.json'
-  $fixtureCli = Join-Path $workspace 'fixture-cli.cmd'
+  $fixtureCli = Join-Path $workspace 'fixture-cli.ps1'
   $cliOutput = Join-Path $workspace 'cli-result.txt'
   Set-Content -LiteralPath $editorFile -Value "before`n" -Encoding utf8
   Set-Content -LiteralPath $terminalScript -Value @'
@@ -233,8 +233,8 @@ param([string]$OutputPath, [string]$Nonce)
   ConvertTo-Json | Set-Content -LiteralPath $OutputPath -Encoding utf8
 '@ -Encoding utf8
   Set-Content -LiteralPath $fixtureCli -Value @'
-@echo off
-> "%~1" echo %~2
+param([string]$OutputPath, [string]$Nonce)
+Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
 '@ -Encoding ascii
 
   $dll = Get-ChildItem -LiteralPath $install -Recurse -File -Filter '*.dll' |

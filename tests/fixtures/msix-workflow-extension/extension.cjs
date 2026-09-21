@@ -78,8 +78,9 @@ async function runFirstPhase(context, config, workspace) {
 
   const git = await execute('git.exe', ['--version'], { cwd: workspace, windowsHide: true, timeout: 20_000 });
   if (!/^git version /i.test(git.stdout.trim())) throw new Error('External Git invocation returned unexpected output.');
-  await execute('cmd.exe', ['/d', '/s', '/c', `""${config.fixtureCli}" "${config.cliOutput}" "${config.nonce}""`],
-    { cwd: workspace, windowsHide: true, timeout: 20_000 });
+  await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', config.fixtureCli, '-OutputPath', config.cliOutput, '-Nonce', config.nonce],
+  { cwd: workspace, windowsHide: true, timeout: 20_000 });
   if ((await fs.readFile(config.cliOutput, 'utf8')).trim() !== config.nonce) throw new Error('Local fixture CLI result changed.');
 
   const protectedWrites = [];

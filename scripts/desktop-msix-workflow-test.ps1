@@ -735,15 +735,23 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
     }
     throw $phaseOneFailure
   }
+  $report.checks.phaseOne = $phaseOne
+  Save-WorkflowReport
   if ($phaseOne.status -ne 'passed') { throw "Packaged workflow phase 1 failed: $($phaseOne.error)" }
-  if ($phaseOne.appName -ne 'Hydra' -or $phaseOne.workspace -ne $workspace -or
-      -not $phaseOne.extensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase) -or
-      -not $phaseOne.checks.editorSaved -or $phaseOne.checks.userSetting -ne 17 -or
-      $phaseOne.checks.globalState -ne $nonce -or @($phaseOne.checks.protectedWrites).Count -ne 4) {
-    throw 'Packaged workflow phase 1 identity, editor, setting, or extension state evidence changed.'
+  $phaseOneMismatches = @()
+  if ($phaseOne.appName -ne 'Hydra') { $phaseOneMismatches += 'appName' }
+  if ($phaseOne.workspace -ne $workspace) { $phaseOneMismatches += 'workspace' }
+  if (-not $phaseOne.extensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    $phaseOneMismatches += 'extensionPath'
+  }
+  if (-not $phaseOne.checks.editorSaved) { $phaseOneMismatches += 'editorSaved' }
+  if ($phaseOne.checks.userSetting -ne 17) { $phaseOneMismatches += 'userSetting' }
+  if ($phaseOne.checks.globalState -ne $nonce) { $phaseOneMismatches += 'globalState' }
+  if (@($phaseOne.checks.protectedWrites).Count -ne 4) { $phaseOneMismatches += 'protectedWrites' }
+  if ($phaseOneMismatches.Count -ne 0) {
+    throw "Packaged workflow phase 1 evidence changed: $($phaseOneMismatches -join ', ')."
   }
   $report.checks.phaseOneExtensionHost = Assert-ProcessEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
-  $report.checks.phaseOne = $phaseOne
   $report.phase = 'waiting-phase-one-exit'
   Save-WorkflowReport
   Wait-ForHydraExit $baseline
@@ -784,15 +792,20 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
     try { Save-WorkflowReport } catch { Write-Warning "Failed to persist phase-two diagnostics: $($_.Exception.Message)" }
     throw $phaseTwoFailure
   }
-  if ($phaseTwo.status -ne 'passed' -or -not $phaseTwo.checks.editorPersisted -or
-      $phaseTwo.checks.userSetting -ne 17 -or $phaseTwo.checks.globalState -ne $nonce) {
-    throw 'Packaged workflow restart did not preserve editor, setting, or extension state.'
+  $report.checks.phaseTwo = $phaseTwo
+  Save-WorkflowReport
+  if ($phaseTwo.status -ne 'passed') { throw "Packaged workflow phase 2 failed: $($phaseTwo.error)" }
+  $phaseTwoMismatches = @()
+  if (-not $phaseTwo.checks.editorPersisted) { $phaseTwoMismatches += 'editorPersisted' }
+  if ($phaseTwo.checks.userSetting -ne 17) { $phaseTwoMismatches += 'userSetting' }
+  if ($phaseTwo.checks.globalState -ne $nonce) { $phaseTwoMismatches += 'globalState' }
+  if ($phaseTwoMismatches.Count -ne 0) {
+    throw "Packaged workflow restart evidence changed: $($phaseTwoMismatches -join ', ')."
   }
   if (-not $phaseTwo.checks.installedExtensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Workflow fixture did not activate from the isolated user extension directory.'
   }
   $report.checks.phaseTwoExtensionHost = Assert-ProcessEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
-  $report.checks.phaseTwo = $phaseTwo
   $report.phase = 'waiting-phase-two-exit'
   Save-WorkflowReport
   Wait-ForHydraExit $baseline

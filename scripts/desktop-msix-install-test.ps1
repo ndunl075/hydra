@@ -53,6 +53,7 @@ namespace HydraMsixStandardUserController {
     const int TokenUser = 1;
     const int TokenGroups = 2;
     const int TokenPrivileges = 3;
+    const int TokenDefaultDacl = 6;
     const int TokenStatistics = 10;
     const int TokenRestrictedSids = 11;
     const int TokenSessionId = 12;
@@ -77,6 +78,7 @@ namespace HydraMsixStandardUserController {
     const int TRUSTEE_IS_USER = 1;
     const uint WINSTA_ALL_ACCESS = 0x0000037F;
     const uint DESKTOP_ALL_ACCESS = 0x000001FF;
+    const uint PROCESS_ALL_ACCESS = 0x001FFFFF;
     const uint LUA_TOKEN = 0x00000004;
     const uint SE_GROUP_INTEGRITY = 0x00000020;
     [StructLayout(LayoutKind.Sequential)] struct LUID { public uint LowPart; public int HighPart; }
@@ -86,6 +88,7 @@ namespace HydraMsixStandardUserController {
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_GROUPS { public uint GroupCount; public SID_AND_ATTRIBUTES Groups; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_DEFAULT_DACL { public IntPtr DefaultDacl; }
     [StructLayout(LayoutKind.Sequential)] struct TOKEN_STATISTICS {
       public LUID TokenId; public LUID AuthenticationId; public long ExpirationTime;
       public int TokenType; public int ImpersonationLevel; public uint DynamicCharged;
@@ -190,6 +193,36 @@ namespace HydraMsixStandardUserController {
         if (grant.NewDacl != IntPtr.Zero) LocalFree(grant.NewDacl);
         if (grant.SecurityDescriptor != IntPtr.Zero) LocalFree(grant.SecurityDescriptor);
         if (grant.Sid != IntPtr.Zero) Marshal.FreeHGlobal(grant.Sid);
+      }
+    }
+
+    static void GrantTokenDefaultDacl(IntPtr token, string sidValue) {
+      int returned;
+      GetTokenInformation(token, TokenDefaultDacl, IntPtr.Zero, 0, out returned);
+      IntPtr currentBuffer = Marshal.AllocHGlobal(returned);
+      IntPtr sidMemory = IntPtr.Zero, newDacl = IntPtr.Zero, defaultDaclBuffer = IntPtr.Zero;
+      try {
+        if (!GetTokenInformation(token, TokenDefaultDacl, currentBuffer, returned, out returned))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "TokenDefaultDacl failed.");
+        var current = (TOKEN_DEFAULT_DACL)Marshal.PtrToStructure(currentBuffer, typeof(TOKEN_DEFAULT_DACL));
+        var sid = new SecurityIdentifier(sidValue);
+        byte[] sidBytes = new byte[sid.BinaryLength]; sid.GetBinaryForm(sidBytes, 0);
+        sidMemory = Marshal.AllocHGlobal(sidBytes.Length); Marshal.Copy(sidBytes, 0, sidMemory, sidBytes.Length);
+        var trustee = new TRUSTEE { pMultipleTrustee = IntPtr.Zero, MultipleTrusteeOperation = 0,
+          TrusteeForm = TRUSTEE_IS_SID, TrusteeType = TRUSTEE_IS_USER, ptstrName = sidMemory };
+        var entry = new EXPLICIT_ACCESS { grfAccessPermissions = PROCESS_ALL_ACCESS, grfAccessMode = GRANT_ACCESS,
+          grfInheritance = 0, Trustee = trustee };
+        uint result = SetEntriesInAclW(1, ref entry, current.DefaultDacl, out newDacl);
+        if (result != 0) throw new Win32Exception(unchecked((int)result), "SetEntriesInAcl token default DACL failed.");
+        defaultDaclBuffer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(TOKEN_DEFAULT_DACL)));
+        Marshal.StructureToPtr(new TOKEN_DEFAULT_DACL { DefaultDacl = newDacl }, defaultDaclBuffer, false);
+        if (!SetTokenInformation(token, TokenDefaultDacl, defaultDaclBuffer, Marshal.SizeOf(typeof(TOKEN_DEFAULT_DACL))))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "SetTokenInformation default DACL failed.");
+      } finally {
+        if (defaultDaclBuffer != IntPtr.Zero) Marshal.FreeHGlobal(defaultDaclBuffer);
+        if (newDacl != IntPtr.Zero) LocalFree(newDacl);
+        if (sidMemory != IntPtr.Zero) Marshal.FreeHGlobal(sidMemory);
+        Marshal.FreeHGlobal(currentBuffer);
       }
     }
 
@@ -402,6 +435,7 @@ namespace HydraMsixStandardUserController {
         if (!CreateRestrictedToken(sourceToken, LUA_TOKEN, 1, disabledGroups,
             0, IntPtr.Zero, 0, IntPtr.Zero, out restrictedToken) || restrictedToken == IntPtr.Zero)
           throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateRestrictedToken failed.");
+        GrantTokenDefaultDacl(restrictedToken, source.UserSid);
         if (!ConvertStringSidToSidW("S-1-16-8192", out mediumSid))
           throw new Win32Exception(Marshal.GetLastWin32Error(), "Medium integrity SID conversion failed.");
         var label = new TOKEN_MANDATORY_LABEL {
@@ -817,7 +851,7 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     packageRemoved = $standardUserReport.packageRemoved
   }
   $report.checks.restrictedInteractiveWorkflow = [ordered]@{
-    derivation = 'CreateRestrictedToken LUA token with the administrators group disabled and medium integrity'
+    derivation = 'CreateRestrictedToken LUA token with administrators deny-only, medium integrity, and a token default DACL granting the current user full access'
     resumeCount = $restrictedWorkflow.ResumeCount
     sourceToken = $restrictedWorkflow.SourceToken
     derivedToken = $restrictedWorkflow.DerivedToken

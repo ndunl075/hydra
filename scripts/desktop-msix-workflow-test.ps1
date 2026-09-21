@@ -241,7 +241,8 @@ try {
   Set-Content -LiteralPath $cliProvisionScript -Encoding utf8 -Value @'
 param([string]$Hydra, [string]$Arguments, [string]$ReportPath)
 $ErrorActionPreference = 'Stop'
-$result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'shipped-cli-install-extension' }
+$result = [ordered]@{ schemaVersion = 1; status = 'started'; command = 'shipped-cli-install-extension';
+  processId = $null; exitCode = $null; stdout = ''; stderr = ''; error = $null }
 try {
   $env:ELECTRON_RUN_AS_NODE = '1'
   Remove-Item Env:VSCODE_DEV -ErrorAction SilentlyContinue
@@ -258,12 +259,15 @@ try {
   $stdout = $process.StandardOutput.ReadToEndAsync()
   $stderr = $process.StandardError.ReadToEndAsync()
   if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Installed Hydra CLI process timed out.' }
-  [Threading.Tasks.Task]::WaitAll(@($stdout, $stderr))
+  if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout, $stderr), 10000)) {
+    throw 'Installed Hydra CLI output drain timed out.'
+  }
   $result.processId = $process.Id
   $result.exitCode = $process.ExitCode
   $result.stdout = $stdout.Result.Trim()
   $result.stderr = $stderr.Result.Trim()
   $result.status = if ($process.ExitCode -eq 0) { 'passed' } else { 'failed' }
+  if ($process.ExitCode -ne 0) { $result.error = "Installed Hydra CLI exited with code $($process.ExitCode)." }
 } catch {
   $result.status = 'failed'
   $result.error = $_.Exception.ToString()
@@ -280,7 +284,7 @@ if ($result.status -ne 'passed') { exit 1 }
     '-Arguments', $installedCliArguments, '-ReportPath', $cliProvisionReportPath)
   Invoke-CommandInDesktopPackage -PackageFamilyName $PackageFamilyName -AppId 'HydraProbe' -Command $powershell `
     -Args $cliArguments -PreventBreakaway
-  $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 120
+  $cliProvisionReport = Wait-ForJson $cliProvisionReportPath 150
   if ($cliProvisionReport.status -ne 'passed' -or $cliProvisionReport.exitCode -ne 0) {
     throw "Packaged Hydra shipped CLI extension provisioning failed: $($cliProvisionReport.error) $($cliProvisionReport.stdout) $($cliProvisionReport.stderr)"
   }

@@ -28,6 +28,8 @@ $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
@@ -86,6 +88,18 @@ namespace HydraMsixFixture {
       if (result < 0) Marshal.ThrowExceptionForHR(result);
       if (processId == 0) throw new InvalidOperationException("Package activation returned no process ID.");
       return processId;
+    }
+
+    public static uint StartDirect(string executable, string arguments) {
+      var start = new ProcessStartInfo {
+        FileName = executable,
+        Arguments = arguments,
+        WorkingDirectory = Path.GetDirectoryName(executable),
+        UseShellExecute = false
+      };
+      var process = Process.Start(start);
+      if (process == null) throw new InvalidOperationException("Direct packaged executable launch returned no process.");
+      return (uint)process.Id;
     }
 
     public static ProcessEvidence Inspect(uint processId) {
@@ -174,6 +188,17 @@ function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role) {
   $evidence | Add-Member -NotePropertyName ExecutablePath -NotePropertyValue $processPath
   return $evidence
 }
+function Start-HydraApplication([string]$Arguments, [string]$Role) {
+  $method = 'application-activation-manager'
+  try {
+    $processId = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $Arguments)
+  } catch {
+    if ($_.Exception.ToString() -notmatch '0x80070520') { throw }
+    $method = 'direct-installed-executable'
+    $processId = [HydraMsixFixture.Native]::StartDirect((Join-Path $install 'Hydra.exe'), $Arguments)
+  }
+  return [ordered]@{ launchMethod = $method; process = (Assert-ProcessEvidence $processId $Role) }
+}
 
 $applicationUserModelId = $PackageFamilyName + '!HydraProbe'
 $unicodeSuffix = [string][char]0x00FC
@@ -217,8 +242,9 @@ try {
   $installArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--extensionDevelopmentPath', $bootstrap,
     '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
-  $installPid = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $installArguments)
-  $report.checks.installProcess = Assert-ProcessEvidence $installPid 'VSIX install process'
+  $installLaunch = Start-HydraApplication $installArguments 'VSIX install process'
+  $installPid = [uint32]$installLaunch.process.ProcessId
+  $report.checks.installProcess = $installLaunch
   $report.phase = 'waiting-install-bootstrap'
   Save-WorkflowReport
   $bootstrapReport = Wait-ForJson $bootstrapReportPath
@@ -283,7 +309,8 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   Save-WorkflowReport
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
-  $phaseOnePid = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $workflowArguments)
+  $phaseOneLaunch = Start-HydraApplication $workflowArguments 'Phase 1 main process'
+  $phaseOnePid = [uint32]$phaseOneLaunch.process.ProcessId
   $report.phase = 'waiting-phase-one-report'
   Save-WorkflowReport
   $phaseOne = Wait-ForJson $phaseOnePath
@@ -294,7 +321,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
       $phaseOne.checks.globalState -ne $nonce -or @($phaseOne.checks.protectedWrites).Count -ne 4) {
     throw 'Packaged workflow phase 1 identity, editor, setting, or extension state evidence changed.'
   }
-  $report.checks.phaseOneMain = Assert-ProcessEvidence $phaseOnePid 'Phase 1 main process'
+  $report.checks.phaseOneMain = $phaseOneLaunch
   $report.checks.phaseOneExtensionHost = Assert-ProcessEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
   $report.checks.phaseOne = $phaseOne
   $report.phase = 'waiting-phase-one-exit'
@@ -306,7 +333,8 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $configuration.phase = 2
   $configuration.reportPath = $phaseTwoPath
   $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
-  $phaseTwoPid = [HydraMsixFixture.Native]::Activate($applicationUserModelId, $workflowArguments)
+  $phaseTwoLaunch = Start-HydraApplication $workflowArguments 'Phase 2 main process'
+  $phaseTwoPid = [uint32]$phaseTwoLaunch.process.ProcessId
   $report.phase = 'waiting-phase-two-report'
   Save-WorkflowReport
   $phaseTwo = Wait-ForJson $phaseTwoPath
@@ -317,7 +345,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   if (-not $phaseTwo.checks.installedExtensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Workflow fixture did not activate from the isolated user extension directory.'
   }
-  $report.checks.phaseTwoMain = Assert-ProcessEvidence $phaseTwoPid 'Phase 2 main process'
+  $report.checks.phaseTwoMain = $phaseTwoLaunch
   $report.checks.phaseTwoExtensionHost = Assert-ProcessEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
   $report.checks.phaseTwo = $phaseTwo
   $report.phase = 'waiting-phase-two-exit'

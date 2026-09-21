@@ -311,7 +311,8 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   $report.phase = 'activating-phase-one'
   Save-WorkflowReport
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
-    '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust')
+    '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust',
+    '--log', 'trace')
   $phaseOneLaunch = Start-HydraApplication $workflowArguments 'Phase 1 main process'
   $report.checks.phaseOneMain = $phaseOneLaunch
   $report.phase = 'waiting-phase-one-report'

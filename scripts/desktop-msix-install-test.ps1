@@ -754,6 +754,10 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   if (Test-Path -LiteralPath (Join-Path $run 'standard-user-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'standard-user-report.json') -Destination (Join-Path $logRoot 'standard-user-report.json') -Force
   }
+  $workflowUserDataLogs = Join-Path (Join-Path $run ('workflow spaces ' + [string][char]0x00FC)) 'user data\logs'
+  if (Test-Path -LiteralPath $workflowUserDataLogs) {
+    Copy-Item -LiteralPath $workflowUserDataLogs -Destination (Join-Path $logRoot 'workflow-user-data-logs') -Recurse -Force
+  }
 }
 if ($report.status -ne 'passed' -or $report.cleanup.Values -contains $false) { throw 'MSIX fixture acceptance or cleanup failed.' }
 Write-Output 'PASS: signed current Hydra MSIX installs, rejects tampering and package writes, passes packaged workflows, and removes package trust.'

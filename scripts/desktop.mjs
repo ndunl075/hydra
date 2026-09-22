@@ -221,9 +221,45 @@ export function brandedEditorGroupWatermark(text) {
   replaceOnce(
     '\t\t@IStorageService private readonly storageService: IStorageService\n\t) {',
     '\t\t@IStorageService private readonly storageService: IStorageService,\n\t\t@ICommandService private readonly commandService: ICommandService,\n\t\t@IWorkspacesService private readonly workspacesService: IWorkspacesService,\n\t\t@IHostService private readonly hostService: IHostService,\n\t\t@IProductService private readonly productService: IProductService\n\t) {');
-  replaceOnce(
-    '\tprivate render(): void {\n\t\tthis.enabled = this.configurationService.getValue<boolean>(EditorGroupWatermark.SETTINGS_KEY);\n\n\t\tclearNode(this.shortcuts);\n\t\tthis.transientDisposables.clear();\n\n\t\tif (!this.enabled) {\n\t\t\treturn;\n\t\t}',
-    '\tprivate render(): void {\n\t\tthis.enabled = this.configurationService.getValue<boolean>(EditorGroupWatermark.SETTINGS_KEY);\n\n\t\tclearNode(this.shortcuts);\n\t\tthis.transientDisposables.clear();\n\n\t\tif (this.workbenchState === WorkbenchState.EMPTY) {\n\t\t\trenderHydraStartSurface(this.shortcuts, this.commandService, this.workspacesService, this.hostService, this.productService);\n\t\t\treturn;\n\t\t}\n\n\t\tif (!this.enabled) {\n\t\t\treturn;\n\t\t}');
+  const originalRender = '\tprivate render(): void {\n' +
+    '\t\tthis.enabled = this.configurationService.getValue<boolean>(EditorGroupWatermark.SETTINGS_KEY);\n\n' +
+    '\t\tclearNode(this.shortcuts);\n' +
+    '\t\tthis.transientDisposables.clear();\n\n' +
+    '\t\tif (!this.enabled) {\n' +
+    '\t\t\treturn;\n' +
+    '\t\t}\n\n' +
+    '\t\tconst entries = this.filterEntries(this.workbenchState !== WorkbenchState.EMPTY ? workspaceEntries : emptyWindowEntries);\n' +
+    '\t\tif (entries.length < EditorGroupWatermark.MINIMUM_ENTRIES) {\n' +
+    '\t\t\tconst additionalEntries = this.filterEntries(otherEntries);\n' +
+    '\t\t\tshuffle(additionalEntries);\n' +
+    '\t\t\tentries.push(...additionalEntries.slice(0, EditorGroupWatermark.MINIMUM_ENTRIES - entries.length));\n' +
+    '\t\t}\n\n' +
+    "\t\tconst box = append(this.shortcuts, $('.watermark-box'));\n\n" +
+    '\t\tconst update = () => {\n' +
+    '\t\t\tclearNode(box);\n' +
+    '\t\t\tthis.keybindingLabels.clear();\n\n' +
+    '\t\t\tfor (const entry of entries) {\n' +
+    '\t\t\t\tconst keys = this.keybindingService.lookupKeybinding(entry.id);\n' +
+    '\t\t\t\tif (!keys) {\n' +
+    '\t\t\t\t\tcontinue;\n' +
+    '\t\t\t\t}\n\n' +
+    "\t\t\t\tconst dl = append(box, $('dl'));\n" +
+    "\t\t\t\tconst dt = append(dl, $('dt'));\n" +
+    '\t\t\t\tdt.textContent = entry.text;\n\n' +
+    "\t\t\t\tconst dd = append(dl, $('dd'));\n\n" +
+    '\t\t\t\tconst label = this.keybindingLabels.add(new KeybindingLabel(dd, OS, { renderUnboundKeybindings: true, ...defaultKeybindingLabelStyles }));\n' +
+    '\t\t\t\tlabel.set(keys);\n' +
+    '\t\t\t}\n' +
+    '\t\t};\n\n' +
+    '\t\tupdate();\n' +
+    '\t\tthis.transientDisposables.add(this.keybindingService.onDidUpdateKeybindings(update));\n' +
+    '\t}';
+  const newRender = '\tprivate render(): void {\n' +
+    '\t\tclearNode(this.shortcuts);\n' +
+    '\t\tthis.transientDisposables.clear();\n\n' +
+    '\t\trenderHydraStartSurface(this.shortcuts, this.commandService, this.workspacesService, this.hostService, this.productService);\n' +
+    '\t}';
+  replaceOnce(originalRender, newRender);
   return text;
 }
 const hydraStartSurfaceCss = `

@@ -263,6 +263,10 @@ export function brandedEditorGroupWatermark(text) {
   return text;
 }
 const hydraStartSurfaceCss = `
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts:has(.hydra-start-surface) {
+	display: block !important;
+}
+
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface {
 	display: flex;
 	flex-direction: column;

@@ -187,7 +187,6 @@
     ],
     "configurationDefaults": {
       "workbench.activityBar.location": "top",
-      "workbench.startupEditor": "agentSessionsWelcomePage",
       "workbench.editor.tabHeight": "compact",
       "window.commandCenter": false,
       "workbench.layoutControl.type": "menu"

@@ -209,12 +209,139 @@ export function brandedThemeStartup(text) {
   return text.replace(constructor, 'new ThemeConfiguration(configurationService, hostColorService, false);')
     .replace(migration, '// Hydra honors its dark default without writing a system-theme preference for new users.');
 }
+export function brandedEditorGroupWatermark(text) {
+  if (text.includes('renderHydraStartSurface')) throw new Error('Pinned watermark changed: Hydra start surface already exists.');
+  const replaceOnce = (before, after) => {
+    if (text.split(before).length !== 2) throw new Error(`Pinned watermark changed: ${before}`);
+    text = text.replace(before, after);
+  };
+  replaceOnce(
+    "import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';",
+    "import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';\nimport { ICommandService } from '../../../../platform/commands/common/commands.js';\nimport { IProductService } from '../../../../platform/product/common/productService.js';\nimport { IWorkspacesService } from '../../../../platform/workspaces/common/workspaces.js';\nimport { IHostService } from '../../../services/host/browser/host.js';\nimport { renderHydraStartSurface } from './hydraStartSurface.js';");
+  replaceOnce(
+    '\t\t@IStorageService private readonly storageService: IStorageService\n\t) {',
+    '\t\t@IStorageService private readonly storageService: IStorageService,\n\t\t@ICommandService private readonly commandService: ICommandService,\n\t\t@IWorkspacesService private readonly workspacesService: IWorkspacesService,\n\t\t@IHostService private readonly hostService: IHostService,\n\t\t@IProductService private readonly productService: IProductService\n\t) {');
+  replaceOnce(
+    '\tprivate render(): void {\n\t\tthis.enabled = this.configurationService.getValue<boolean>(EditorGroupWatermark.SETTINGS_KEY);\n\n\t\tclearNode(this.shortcuts);\n\t\tthis.transientDisposables.clear();\n\n\t\tif (!this.enabled) {\n\t\t\treturn;\n\t\t}',
+    '\tprivate render(): void {\n\t\tthis.enabled = this.configurationService.getValue<boolean>(EditorGroupWatermark.SETTINGS_KEY);\n\n\t\tclearNode(this.shortcuts);\n\t\tthis.transientDisposables.clear();\n\n\t\tif (this.workbenchState === WorkbenchState.EMPTY) {\n\t\t\trenderHydraStartSurface(this.shortcuts, this.commandService, this.workspacesService, this.hostService, this.productService);\n\t\t\treturn;\n\t\t}\n\n\t\tif (!this.enabled) {\n\t\t\treturn;\n\t\t}');
+  return text;
+}
+const hydraStartSurfaceCss = `
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 20px;
+	width: 100%;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-title {
+	font-size: 15px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-actions {
+	display: flex;
+	gap: 12px;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-card {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 14px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: 6px;
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-card:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-card .codicon {
+	color: inherit !important;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recents {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	width: 100%;
+	max-width: 320px;
+	gap: 6px;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recents-title {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 2px;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recents-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 6px;
+	border: none;
+	border-radius: 4px;
+	background-color: transparent;
+	color: var(--vscode-foreground);
+	text-align: left;
+	cursor: pointer;
+	overflow: hidden;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item .codicon {
+	color: var(--vscode-descriptionForeground) !important;
+	flex-shrink: 0;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item-text {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item-label {
+	font-size: 13px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item-path {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+`;
 export function brandedWatermarkLayout(text) {
   const container = '\tmax-width: 272px;';
   const logo = '\tmax-width: 256px;';
   if (text.split(container).length !== 2 || text.split(logo).length !== 2) throw new Error('Pinned watermark layout contract changed.');
+  if (text.includes('.hydra-start-surface')) throw new Error('Pinned watermark layout already has Hydra start surface styles.');
   // Native group sizing still constrains narrow/split editors; only the full empty editor grows.
-  return text.replace(container, '\twidth: 100%;\n\tmax-width: 380px;').replace(logo, '\tmax-width: 360px;');
+  const sized = text.replace(container, '\twidth: 100%;\n\tmax-width: 380px;').replace(logo, '\tmax-width: 360px;');
+  return `${sized}\n${hydraStartSurfaceCss}`;
 }
 export function brandedNativeThemeStartup(text) {
   const method = /(isAutoDetectColorScheme\(\)(?:: boolean)? \{)\s*if \(Setting\.DETECT_COLOR_SCHEME\.getValue\(this\.configurationService\)\) \{[\s\S]*?return false;\s*\}/g;
@@ -265,6 +392,10 @@ export async function prepare() {
   await stageWatermarks(path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
   const watermarkCss = 'src/vs/workbench/browser/parts/editor/media/editorgroupview.css';
   await fs.writeFile(path.join(source, watermarkCss), brandedWatermarkLayout(await git(['show', `${pin.commit}:${watermarkCss}`])));
+  const editorPartsDir = path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor');
+  await fs.copyFile(path.join(root, 'desktop', 'workbench', 'hydraStartSurface.ts'), path.join(editorPartsDir, 'hydraStartSurface.ts'));
+  const editorGroupWatermarkPath = 'src/vs/workbench/browser/parts/editor/editorGroupWatermark.ts';
+  await fs.writeFile(path.join(source, editorGroupWatermarkPath), brandedEditorGroupWatermark(await git(['show', `${pin.commit}:${editorGroupWatermarkPath}`])));
   console.log(`Prepared Hydra ${manifest.version}: Code - OSS ${pin.tag} at ${pin.commit}.`);
 }
 export async function stageHydra(destination) {

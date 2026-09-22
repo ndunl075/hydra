@@ -1,4 +1,4 @@
-param([string]$BuiltAppPath, [switch]$TokenPreflightOnly, [switch]$Upgrade)
+param([string]$BuiltAppPath, [switch]$TokenPreflightOnly, [switch]$Upgrade, [switch]$WrongPublisher)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -551,6 +551,7 @@ $runNPlus1 = $null
 $upgradeVersion = $null
 $signingNPlus1 = $null
 $signedPackageNPlus1 = $null
+$runAlternate = $null
 if ($Upgrade) {
   $upgradeVersion = $product.hydraVersion + '.1'
   $beforeUpgrade = @{}
@@ -956,6 +957,54 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
     if (-not $report.checks.upgrade.sharedThumbprint) { throw 'N and N+1 fixtures were not signed with the shared batch certificate.' }
   }
 
+  if ($WrongPublisher) {
+    if (-not $Upgrade) { throw 'WrongPublisher requires Upgrade to establish an N+1 baseline to compare against.' }
+    $alternatePublisher = 'CN=Hydra Alternate'
+    $beforeAlternate = @{}
+    Get-ChildItem -LiteralPath $scratch -Directory -Filter 'run-*' | ForEach-Object { $beforeAlternate[$_.FullName] = $true }
+    $priorFixturePublisher = $env:HYDRA_MSIX_FIXTURE_PUBLISHER
+    try {
+      $env:HYDRA_MSIX_FIXTURE_PUBLISHER = $alternatePublisher
+      & (Get-Command node.exe).Source (Join-Path $repository 'scripts\desktop-msix-compatibility-probe.mjs') $builtApp
+      if ($LASTEXITCODE -ne 0) { throw 'MSIX alternate-publisher packaging probe failed.' }
+    } finally {
+      if ($null -eq $priorFixturePublisher) { Remove-Item Env:\HYDRA_MSIX_FIXTURE_PUBLISHER -ErrorAction SilentlyContinue }
+      else { $env:HYDRA_MSIX_FIXTURE_PUBLISHER = $priorFixturePublisher }
+    }
+    $createdAlternate = @(Get-ChildItem -LiteralPath $scratch -Directory -Filter 'run-*' | Where-Object { -not $beforeAlternate.ContainsKey($_.FullName) })
+    if ($createdAlternate.Count -ne 1) { throw 'MSIX alternate-publisher probe did not create exactly one isolated run.' }
+    $runAlternate = $createdAlternate[0].FullName
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repository 'scripts\desktop-msix-fixture-sign.ps1') -RunDirectory $runAlternate -Publisher $alternatePublisher
+    if ($LASTEXITCODE -ne 0) { throw 'MSIX alternate-publisher fixture signing failed.' }
+    $signingAlternate = Get-Content -LiteralPath (Join-Path $runAlternate 'fixture-signing.json') -Raw | ConvertFrom-Json
+    $signedPackageAlternate = (Resolve-Path -LiteralPath $signingAlternate.package).Path
+    # Deliberately never imported into any trust store: this proves refusal of an
+    # untrusted alternate-publisher package, not a trusted wrong-publisher install.
+
+    $alternateInstallRefused = $false
+    $alternateInstallError = $null
+    try {
+      Add-AppxPackage -Path $signedPackageAlternate -ErrorAction Stop
+    } catch {
+      $alternateInstallRefused = $true
+      $alternateInstallError = $_.Exception.Message
+    }
+    $postAlternatePackages = @(Get-AppxPackage -Name $packageName)
+    if ($postAlternatePackages.Count -ne 1) { throw 'Alternate-publisher attempt changed the installed Hydra probe package count.' }
+    $familyUnchangedAfterAlternate = ($postAlternatePackages[0].PackageFamilyName -eq $upgraded.PackageFamilyName)
+    if (-not $alternateInstallRefused -or -not $familyUnchangedAfterAlternate -or
+        $postAlternatePackages[0].Version.ToString() -ne $upgradeVersion) {
+      throw 'Untrusted alternate-publisher MSIX package was not refused.'
+    }
+    $report.checks.wrongPublisher = [ordered]@{
+      alternatePublisher = $alternatePublisher
+      alternateThumbprint = $signingAlternate.thumbprint
+      installRefused = $alternateInstallRefused
+      error = $alternateInstallError
+      familyUnchanged = $familyUnchangedAfterAlternate
+    }
+  }
+
   $report.status = 'passed'
 } finally {
   if ($activationAttempted) {
@@ -1014,6 +1063,12 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   }
   if (Test-Path -LiteralPath (Join-Path $run 'workflow-upgrade-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'workflow-upgrade-report.json') -Destination (Join-Path $logRoot 'workflow-upgrade-report.json') -Force
+  }
+  if ($WrongPublisher -and $runAlternate -and (Test-Path -LiteralPath (Join-Path $runAlternate 'report.json'))) {
+    Copy-Item -LiteralPath (Join-Path $runAlternate 'report.json') -Destination (Join-Path $logRoot 'packaging-report-wrong-publisher.json') -Force
+  }
+  if ($WrongPublisher -and $runAlternate -and (Test-Path -LiteralPath (Join-Path $runAlternate 'fixture-signing.json'))) {
+    Copy-Item -LiteralPath (Join-Path $runAlternate 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing-wrong-publisher.json') -Force
   }
   if (Test-Path -LiteralPath (Join-Path $run 'parent-token-control-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'parent-token-control-report.json') -Destination (Join-Path $logRoot 'parent-token-control-report.json') -Force

@@ -1,4 +1,4 @@
-param([string]$BuiltAppPath, [switch]$TokenPreflightOnly)
+param([string]$BuiltAppPath, [switch]$TokenPreflightOnly, [switch]$Upgrade)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -546,11 +546,44 @@ if ($LASTEXITCODE -ne 0) { throw 'MSIX packaging probe failed.' }
 $created = @(Get-ChildItem -LiteralPath $scratch -Directory -Filter 'run-*' | Where-Object { -not $before.ContainsKey($_.FullName) })
 if ($created.Count -ne 1) { throw 'MSIX probe did not create exactly one isolated run.' }
 $run = $created[0].FullName
-& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repository 'scripts\desktop-msix-fixture-sign.ps1') -RunDirectory $run
-if ($LASTEXITCODE -ne 0) { throw 'MSIX fixture signing failed.' }
+
+$runNPlus1 = $null
+$upgradeVersion = $null
+$signingNPlus1 = $null
+$signedPackageNPlus1 = $null
+if ($Upgrade) {
+  $upgradeVersion = $product.hydraVersion + '.1'
+  $beforeUpgrade = @{}
+  Get-ChildItem -LiteralPath $scratch -Directory -Filter 'run-*' | ForEach-Object { $beforeUpgrade[$_.FullName] = $true }
+  $priorFixtureVersion = $env:HYDRA_MSIX_FIXTURE_VERSION
+  try {
+    $env:HYDRA_MSIX_FIXTURE_VERSION = $upgradeVersion
+    & (Get-Command node.exe).Source (Join-Path $repository 'scripts\desktop-msix-compatibility-probe.mjs') $builtApp
+    if ($LASTEXITCODE -ne 0) { throw 'MSIX N+1 packaging probe failed.' }
+  } finally {
+    if ($null -eq $priorFixtureVersion) { Remove-Item Env:\HYDRA_MSIX_FIXTURE_VERSION -ErrorAction SilentlyContinue }
+    else { $env:HYDRA_MSIX_FIXTURE_VERSION = $priorFixtureVersion }
+  }
+  $createdUpgrade = @(Get-ChildItem -LiteralPath $scratch -Directory -Filter 'run-*' | Where-Object { -not $beforeUpgrade.ContainsKey($_.FullName) })
+  if ($createdUpgrade.Count -ne 1) { throw 'MSIX N+1 probe did not create exactly one isolated run.' }
+  $runNPlus1 = $createdUpgrade[0].FullName
+}
+
+if ($Upgrade) {
+  # Direct in-process invocation so the batch signer's [string[]] parameter binds
+  # both run directories; -File re-parses the command line and only keeps one value.
+  & (Join-Path $repository 'scripts\desktop-msix-fixture-sign-batch.ps1') -RunDirectories $run, $runNPlus1
+} else {
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repository 'scripts\desktop-msix-fixture-sign.ps1') -RunDirectory $run
+  if ($LASTEXITCODE -ne 0) { throw 'MSIX fixture signing failed.' }
+}
 $signing = Get-Content -LiteralPath (Join-Path $run 'fixture-signing.json') -Raw | ConvertFrom-Json
 $signedPackage = (Resolve-Path -LiteralPath $signing.package).Path
 $certificate = (Resolve-Path -LiteralPath $signing.certificate).Path
+if ($Upgrade) {
+  $signingNPlus1 = Get-Content -LiteralPath (Join-Path $runNPlus1 'fixture-signing.json') -Raw | ConvertFrom-Json
+  $signedPackageNPlus1 = (Resolve-Path -LiteralPath $signingNPlus1.package).Path
+}
 $packageName = 'NicoDunlap.Hydra.Probe'
 $package = $null
 $imported = $null
@@ -859,6 +892,70 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   }
   $report.checks.workflowFixtureProvisioning = $provisionReport
   $report.checks.packagedWorkflows = $workflowReport.checks
+
+  if ($Upgrade) {
+    $priorInstallLocation = $installLocation
+    Add-AppxPackage -Path $signedPackageNPlus1 -ErrorAction Stop
+    $upgradedPackages = @(Get-AppxPackage -Name $packageName)
+    if ($upgradedPackages.Count -ne 1) { throw 'Upgrade did not result in exactly one installed Hydra probe package.' }
+    $upgraded = $upgradedPackages[0]
+    if ($upgraded.Version.ToString() -ne $upgradeVersion) { throw 'Upgraded MSIX package version does not match the N+1 fixture.' }
+    if ($upgraded.PackageFamilyName -ne $package.PackageFamilyName) { throw 'Upgraded MSIX package family name changed.' }
+    if ($upgraded.Publisher -ne $package.Publisher) { throw 'Upgraded MSIX package publisher changed.' }
+    $upgradedInstallLocation = $upgraded.InstallLocation
+    if ($upgradedInstallLocation -eq $priorInstallLocation) { throw 'Upgraded MSIX package reused the prior InstallLocation.' }
+    if (-not $upgradedInstallLocation.StartsWith((Join-Path $env:ProgramFiles 'WindowsApps') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Upgraded MSIX payload was not installed in the protected WindowsApps location.'
+    }
+    $upgradedExecutable = Join-Path $upgradedInstallLocation 'Hydra.exe'
+    $upgradedExtension = Join-Path $upgradedInstallLocation 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs'
+    foreach ($pair in @(@((Join-Path $builtApp 'Hydra.exe'), $upgradedExecutable), @((Join-Path $builtApp 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs'), $upgradedExtension))) {
+      if ((Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash) {
+        throw "Upgraded installed payload differs from packaged input: $($pair[1])"
+      }
+    }
+
+    $upgradeWorkflowArguments = Join-WindowsArguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', $workflowScript, '-PackageFullName', $upgraded.PackageFullName,
+      '-PackageFamilyName', $upgraded.PackageFamilyName, '-InstallLocation', $upgradedInstallLocation,
+      '-RunDirectory', $run, '-Phase', 'two')
+    $upgradeWorkflowCommandLine = (ConvertTo-WindowsArgument $powershell) + ' ' + $upgradeWorkflowArguments
+    try {
+      $restrictedUpgradeWorkflow = [HydraMsixStandardUserController.Native]::RunRestricted($interactiveSid,
+        $powershell, $upgradeWorkflowCommandLine, $run, 600000)
+    } catch {
+      throw "Restricted interactive upgrade workflow failed: $($_.Exception.Message)"
+    }
+    if ($restrictedUpgradeWorkflow.ExitCode -ne 0) {
+      throw "Restricted interactive upgrade workflow exited with code $($restrictedUpgradeWorkflow.ExitCode)."
+    }
+    $upgradeWorkflowReport = Get-Content -LiteralPath (Join-Path $run 'workflow-upgrade-report.json') -Raw | ConvertFrom-Json
+    if ($upgradeWorkflowReport.status -ne 'passed') { throw 'Packaged MSIX upgrade workflow report did not pass.' }
+
+    $downgradeRefused = $false
+    try {
+      Add-AppxPackage -Path $signedPackage -ErrorAction Stop
+    } catch {
+      $downgradeRefused = $true
+      $report.checks.downgradeError = $_.Exception.Message
+    }
+    $postDowngradePackages = @(Get-AppxPackage -Name $packageName)
+    if (-not $downgradeRefused -or $postDowngradePackages.Count -ne 1 -or $postDowngradePackages[0].Version.ToString() -ne $upgradeVersion) {
+      throw 'Downgrade to the prior MSIX version was not refused.'
+    }
+
+    $report.checks.upgrade = [ordered]@{
+      priorFullName = $package.PackageFullName
+      upgradedFullName = $upgraded.PackageFullName
+      familyNameUnchanged = ($upgraded.PackageFamilyName -eq $package.PackageFamilyName)
+      publisherUnchanged = ($upgraded.Publisher -eq $package.Publisher)
+      sharedThumbprint = ($signingNPlus1.thumbprint -eq $signing.thumbprint)
+      phaseTwoAfterUpgrade = $upgradeWorkflowReport.status
+      downgradeRefused = $downgradeRefused
+    }
+    if (-not $report.checks.upgrade.sharedThumbprint) { throw 'N and N+1 fixtures were not signed with the shared batch certificate.' }
+  }
+
   $report.status = 'passed'
 } finally {
   if ($activationAttempted) {
@@ -908,6 +1005,15 @@ Set-Content -LiteralPath $MarkerPath -Value 'passed' -Encoding ascii
   Copy-Item -LiteralPath (Join-Path $run 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing.json') -Force
   if (Test-Path -LiteralPath (Join-Path $run 'workflow-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'workflow-report.json') -Destination (Join-Path $logRoot 'workflow-report.json') -Force
+  }
+  if ($Upgrade -and $runNPlus1 -and (Test-Path -LiteralPath (Join-Path $runNPlus1 'report.json'))) {
+    Copy-Item -LiteralPath (Join-Path $runNPlus1 'report.json') -Destination (Join-Path $logRoot 'packaging-report-upgrade.json') -Force
+  }
+  if ($Upgrade -and $runNPlus1 -and (Test-Path -LiteralPath (Join-Path $runNPlus1 'fixture-signing.json'))) {
+    Copy-Item -LiteralPath (Join-Path $runNPlus1 'fixture-signing.json') -Destination (Join-Path $logRoot 'fixture-signing-upgrade.json') -Force
+  }
+  if (Test-Path -LiteralPath (Join-Path $run 'workflow-upgrade-report.json')) {
+    Copy-Item -LiteralPath (Join-Path $run 'workflow-upgrade-report.json') -Destination (Join-Path $logRoot 'workflow-upgrade-report.json') -Force
   }
   if (Test-Path -LiteralPath (Join-Path $run 'parent-token-control-report.json')) {
     Copy-Item -LiteralPath (Join-Path $run 'parent-token-control-report.json') -Destination (Join-Path $logRoot 'parent-token-control-report.json') -Force

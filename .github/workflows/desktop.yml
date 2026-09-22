@@ -116,7 +116,7 @@ jobs:
       - run: npm.cmd run desktop:smoke
       - name: Verify fixture MSIX install and protected payload
         shell: pwsh
-        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\scripts\desktop-msix-install-test.ps1 -BuiltAppPath .desktop\VSCode-win32-x64
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\scripts\desktop-msix-install-test.ps1 -BuiltAppPath .desktop\VSCode-win32-x64 -Upgrade
       - run: npm.cmd run desktop:installer
       - name: Verify built installer PE identity with native handle reader
         shell: pwsh

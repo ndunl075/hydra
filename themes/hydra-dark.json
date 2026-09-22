@@ -7,7 +7,7 @@
     "sideBar.background": "#111111", "sideBar.foreground": "#C8C8C8",
     "activityBar.background": "#111111", "activityBar.foreground": "#F5F5F5",
     "activityBarBadge.background": "#173C2C", "activityBarBadge.foreground": "#FFFFFF",
-    "titleBar.activeBackground": "#141414", "titleBar.activeForeground": "#F5F5F5",
+    "titleBar.activeBackground": "#141414", "titleBar.activeForeground": "#B8B8B8", "titleBar.inactiveForeground": "#7A7A7A",
     "statusBar.background": "#141414", "statusBar.foreground": "#C8C8C8",
     "statusBar.noFolderBackground": "#141414", "statusBar.debuggingBackground": "#173C2C",
     "tab.activeBackground": "#141414", "tab.inactiveBackground": "#111111", "tab.activeForeground": "#F5F5F5",

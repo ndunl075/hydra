@@ -15,15 +15,34 @@ function NewConversation({ snapshot, send }: { snapshot: Snapshot; send: Send })
   const [repository, setRepository] = useState(snapshot.repositories[0] || '');
   useEffect(() => { setRepository(current => snapshot.repositories.includes(current) ? current : snapshot.repositories[0] || ''); }, [snapshot.repositories.join('\0')]);
   const update = (partial: Partial<Draft>) => { const next = { ...draft, ...partial }; setDraft(next); send({ type: 'draft', ...next }); };
+  // One prompt creates and starts the task; the branch name comes from the first
+  // line of the prompt, which createWorktree slugifies and bounds on its own.
+  const title = (draft.prompt.trim().split('\n')[0] || '').slice(0, 120).trim();
+  const ready = !snapshot.busy && !!draft.prompt.trim() && !!repository;
+  const submit = () => { if (ready) send({ type: 'create', ...draft, title: title || 'New task', repository, autoStart: true }); };
   return <section className="chat-start">
     <div className="chat-introduction"><span className="section-label">NEW AGENT TASK</span><h2>Start from the editor.</h2><p>Give Hydra a focused task. The agent works in its own isolated worktree while your editor stays untouched.</p></div>
-    <form onSubmit={event => { event.preventDefault(); if (!snapshot.busy && draft.title.trim() && draft.prompt.trim() && repository) send({ type: 'create', ...draft, repository }); }}>
-      <label>Task name<input autoFocus maxLength={120} value={draft.title} onChange={event => update({ title: event.target.value })} placeholder="A precise task name" disabled={snapshot.busy} /></label>
-      <label>Task brief<textarea rows={5} maxLength={32000} value={draft.prompt} onChange={event => update({ prompt: event.target.value, brief: undefined })} placeholder="Describe the change, constraints, and desired result..." disabled={snapshot.busy} /></label>
-      <div className="chat-create-options"><label>Provider<select value={draft.provider} onChange={event => update({ provider: event.target.value as Provider })} disabled={snapshot.busy}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label>Repository<select value={repository} onChange={event => setRepository(event.target.value)} disabled={snapshot.busy}>{!snapshot.repositories.length && <option value="">No repository</option>}{snapshot.repositories.map(root => <option key={root} value={root}>{basename(root)}</option>)}</select></label></div>
-      <fieldset className="delegation-control"><legend>Agent delegation</legend><div role="group" aria-label="Delegation mode"><button type="button" className="secondary" aria-pressed={(snapshot.delegation?.mode || 'solo') === 'solo'} onClick={() => send({ type: 'setDelegationMode', mode: 'solo' })}>Solo</button><button type="button" className="secondary" aria-pressed={snapshot.delegation?.mode === 'auto'} onClick={() => send({ type: 'setDelegationMode', mode: 'auto' })}>Auto</button></div><p>Auto planning is being prepared. This task still runs solo.</p></fieldset>
-      <button className="primary" disabled={snapshot.busy || !draft.title.trim() || !draft.prompt.trim() || !repository}>Create isolated task</button>
-      <p className="form-note">Creates a worktree only. Start the task when you are ready to send the brief.</p>
+    <form className="task-prompt-form" onSubmit={event => { event.preventDefault(); submit(); }}>
+      <div className="task-prompt-box">
+        <textarea className="task-prompt-textarea" autoFocus rows={4} maxLength={32000} value={draft.prompt}
+          onChange={event => update({ prompt: event.target.value, brief: undefined })}
+          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); } }}
+          placeholder="Describe the change, constraints, and desired result..." aria-label="Task prompt" disabled={snapshot.busy} />
+        <div className="task-prompt-toolbar">
+          <div className="task-prompt-toolbar-group">
+            <select className="compact-select" aria-label="Provider" value={draft.provider} onChange={event => update({ provider: event.target.value as Provider })} disabled={snapshot.busy}><option value="claude">Claude Code</option><option value="codex">Codex</option></select>
+            <select className="compact-select" aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} disabled={snapshot.busy}>{!snapshot.repositories.length && <option value="">No repository</option>}{snapshot.repositories.map(root => <option key={root} value={root}>{basename(root)}</option>)}</select>
+          </div>
+          <div className="task-prompt-toolbar-group">
+            <div role="group" aria-label="Delegation mode" className="delegation-pill-group">
+              <button type="button" className="delegation-pill" aria-pressed={(snapshot.delegation?.mode || 'solo') === 'solo'} onClick={() => send({ type: 'setDelegationMode', mode: 'solo' })}>Solo</button>
+              <button type="button" className="delegation-pill" aria-pressed={snapshot.delegation?.mode === 'auto'} title="Auto planning is being prepared. This task still runs solo." onClick={() => send({ type: 'setDelegationMode', mode: 'auto' })}>Auto</button>
+            </div>
+            <button className="task-prompt-send" type="submit" aria-label="Start task" title="Start task" disabled={!ready}>↑</button>
+          </div>
+        </div>
+      </div>
+      <p className="form-note">Enter sends. Shift+Enter adds a line. The agent starts in its own isolated worktree.</p>
       {!snapshot.repositories.length && <p role="status" className="form-note">Open a local Git repository with an initial commit to begin.</p>}
     </form>
   </section>;

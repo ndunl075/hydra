@@ -142,7 +142,7 @@ export type ClientMessage =
   | { type: 'promoteIntegration' | 'reviewIntegrationResolution' | 'copyIntegrationCandidate' | 'showIntegrationLog' | 'cancelIntegration'; id: string; operationId: string }
   | { type: 'acceptIntegrationResolution'; id: string; operationId: string; token: string }
   | { type: 'openIntegrationDiff'; id: string; operationId: string; path: string }
-  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string; brief?: TaskBrief }
+  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string; brief?: TaskBrief; autoStart?: boolean }
   | { type: 'draft'; title: string; prompt: string; provider: Provider; brief?: TaskBrief }
   | { type: 'setDelegationMode'; mode: DelegationMode };
 

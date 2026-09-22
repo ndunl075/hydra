@@ -244,7 +244,7 @@ class Manager {
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
-    command('hydra.openAccounts', () => this.accounts.show());
+    command('hydra.openAccounts', (provider?: 'claude' | 'codex', autoLogin?: boolean) => this.accounts.show(provider, autoLogin));
     command('hydra.getAccountSetupState', () => this.accounts.snapshot());
     command('hydra.openQuotaStatus', () => this.quota.show());
     command('hydra.getQuotaState', () => this.quota.snapshot());
@@ -553,7 +553,20 @@ class Manager {
     }
   }
   async showFirstRun(): Promise<void> {
+    await this.collapseSidebarOnce();
     if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
+  }
+  private async collapseSidebarOnce(): Promise<void> {
+    // The primary side bar has no configurationDefaults-controlled initial
+    // visibility (unlike the secondary side bar), so a one-time explicit
+    // close on first activation is the only extension-level way to start
+    // with a clean, uncluttered layout. Only in the packaged desktop app,
+    // and only once; the user's own later choice to reopen it is not undone.
+    if (!this.settingsImport.available) return;
+    const key = 'hydra.firstRunLayout.v1';
+    if (this.context.globalState.get(key)) return;
+    await this.context.globalState.update(key, true);
+    await Promise.resolve(vscode.commands.executeCommand('workbench.action.closeSidebar')).catch(() => {});
   }
   private async handoffCommand(provider: 'claude' | 'codex', id?: string): Promise<string | undefined> {
     if (!id) {
@@ -1081,6 +1094,7 @@ class Manager {
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
       this.busy = true;
       await this.publish();
+      let createdId: string | undefined;
       try {
         const id = randomBytes(6).toString('hex');
         const worktree = await createWorktree(message.repository, message.title, id, vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), message.startingCommit);
@@ -1088,10 +1102,17 @@ class Manager {
         this.tasks.push({ id, title: message.title.trim(), prompt: message.brief ? buildTaskPrompt(message.brief) : message.prompt.trim(), brief: message.brief, provider: message.provider,
           repository: message.repository, ...worktree, interface: 'interactive-cli', state: 'idle', createdAt: now, updatedAt: now });
         this.selectedId = id;
+        createdId = id;
         this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
         await this.persist();
         await this.broadcast({ type: 'taskCreated' });
       } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+      // A single-prompt send creates the worktree and starts the agent in one step.
+      // The task already exists, so a start failure is reported without discarding it.
+      if (message.autoStart && createdId) {
+        try { await this.handle({ type: 'startManaged', id: createdId }); }
+        catch (error) { this.report(error); }
+      }
       return;
     }
     if (!('id' in message)) throw new Error('Expected a task command.');

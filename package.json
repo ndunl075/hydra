@@ -185,6 +185,11 @@
         "path": "themes/hydra-light.json"
       }
     ],
+    "configurationDefaults": {
+      "workbench.activityBar.location": "top",
+      "workbench.startupEditor": "agentSessionsWelcomePage",
+      "workbench.editor.tabHeight": "compact"
+    },
     "configuration": {
       "title": "Hydra",
       "properties": {

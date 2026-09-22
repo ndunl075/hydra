@@ -66,6 +66,22 @@ body[data-surface="editor"] {
 .editor-conversation .delegation-control { padding: 10px; border: 1px solid var(--border); border-radius: 5px; background: color-mix(in srgb, var(--surface) 70%, var(--primary)); }
 .editor-conversation .delegation-control legend { color: var(--muted); font-size: 9px; letter-spacing: .1em; }
 .editor-conversation .delegation-control .secondary { padding: 5px 8px; }
+.task-prompt-form { gap: 8px; }
+.task-prompt-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border: 1px solid var(--input-border); border-radius: 10px; background: var(--surface); }
+.task-prompt-box:focus-within { border-color: #4f9871; }
+.task-prompt-name { border: 0; background: transparent; padding: 2px 2px 0; font-size: 12px; font-weight: 560; color: var(--text); }
+.task-prompt-name:focus-visible { outline: none; }
+.task-prompt-textarea { resize: vertical; min-height: 84px; max-height: 40vh; border: 0; background: transparent; padding: 2px; font-size: 12px; line-height: 1.6; color: var(--text); }
+.task-prompt-textarea:focus-visible { outline: none; }
+.task-prompt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.task-prompt-toolbar-group { display: flex; align-items: center; gap: 6px; }
+.compact-select { padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 10px; max-width: 120px; }
+.delegation-pill-group { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.delegation-pill { padding: 3px 8px; border-radius: 4px; color: var(--muted); font-size: 10px; line-height: 14px; }
+.delegation-pill[aria-pressed="true"] { color: #fff; background: #285b43; }
+.task-prompt-send { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; background: var(--cursor-green); color: #fff; font-size: 14px; line-height: 1; }
+.task-prompt-send:disabled { opacity: .45; cursor: default; }
+.task-prompt-send:not(:disabled):hover { filter: brightness(1.08); }
 
 .chat-error, .chat-notice { flex-shrink: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
 .chat-error { color: var(--vscode-errorForeground, #e0a090); background: var(--vscode-inputValidation-errorBackground, #302020); }

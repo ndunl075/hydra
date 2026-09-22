@@ -187,6 +187,7 @@
     ],
     "configurationDefaults": {
       "workbench.activityBar.location": "top",
+      "workbench.startupEditor": "none",
       "workbench.editor.tabHeight": "compact",
       "window.commandCenter": false,
       "workbench.layoutControl.type": "menu"

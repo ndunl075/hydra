@@ -262,6 +262,41 @@ export function brandedEditorGroupWatermark(text) {
   replaceOnce(originalRender, newRender);
   return text;
 }
+export function brandedStartupPage(text) {
+  const replaceOnce = (before, after) => {
+    if (text.split(before).length !== 2) throw new Error(`Pinned startup page changed: ${before}`);
+    text = text.replace(before, after);
+  };
+  replaceOnce(
+    "import { IWorkspaceContextService, UNKNOWN_EMPTY_WINDOW_WORKSPACE, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';",
+    "import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';");
+  const originalMethod = '\tprivate tryOpenWalkthroughForFolder(): boolean {\n' +
+    '\t\tconst toRestore = this.storageService.get(restoreWalkthroughsConfigurationKey, StorageScope.PROFILE);\n' +
+    '\t\tif (!toRestore) {\n' +
+    '\t\t\treturn false;\n' +
+    '\t\t}\n' +
+    '\t\telse {\n' +
+    '\t\t\tconst restoreData: RestoreWalkthroughsConfigurationValue = JSON.parse(toRestore);\n' +
+    '\t\t\tconst currentWorkspace = this.contextService.getWorkspace();\n' +
+    '\t\t\tif (restoreData.folder === UNKNOWN_EMPTY_WINDOW_WORKSPACE.id || restoreData.folder === currentWorkspace.folders[0].uri.toString()) {\n' +
+    '\t\t\t\tconst options: GettingStartedEditorOptions = { selectedCategory: restoreData.category, selectedStep: restoreData.step, pinned: false, preserveFocus: this.shouldPreserveFocus() };\n' +
+    '\t\t\t\tthis.editorService.openEditor({\n' +
+    '\t\t\t\t\tresource: GettingStartedInput.RESOURCE,\n' +
+    '\t\t\t\t\toptions\n' +
+    '\t\t\t\t});\n' +
+    '\t\t\t\tthis.storageService.remove(restoreWalkthroughsConfigurationKey, StorageScope.PROFILE);\n' +
+    '\t\t\t\treturn true;\n' +
+    '\t\t\t}\n' +
+    '\t\t}\n' +
+    '\t\treturn false;\n' +
+    '\t}';
+  const newMethod = '\tprivate tryOpenWalkthroughForFolder(): boolean {\n' +
+    '\t\t// Hydra: never auto-reopen a walkthrough over the start surface.\n' +
+    '\t\treturn false;\n' +
+    '\t}';
+  replaceOnce(originalMethod, newMethod);
+  return text;
+}
 const hydraStartSurfaceCss = `
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts:has(.hydra-start-surface) {
 	display: block !important;
@@ -436,6 +471,8 @@ export async function prepare() {
   await fs.copyFile(path.join(root, 'desktop', 'workbench', 'hydraStartSurface.ts'), path.join(editorPartsDir, 'hydraStartSurface.ts'));
   const editorGroupWatermarkPath = 'src/vs/workbench/browser/parts/editor/editorGroupWatermark.ts';
   await fs.writeFile(path.join(source, editorGroupWatermarkPath), brandedEditorGroupWatermark(await git(['show', `${pin.commit}:${editorGroupWatermarkPath}`])));
+  const startupPagePath = 'src/vs/workbench/contrib/welcomeGettingStarted/browser/startupPage.ts';
+  await fs.writeFile(path.join(source, startupPagePath), brandedStartupPage(await git(['show', `${pin.commit}:${startupPagePath}`])));
   console.log(`Prepared Hydra ${manifest.version}: Code - OSS ${pin.tag} at ${pin.commit}.`);
 }
 export async function stageHydra(destination) {

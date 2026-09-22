@@ -8,7 +8,7 @@ $repository = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $scratch = (Resolve-Path (Join-Path $repository '.test-build\msix-compatibility')).Path
 if ($Publisher -notmatch '^CN=[A-Za-z0-9 ._-]+$') { throw 'Fixture publisher must be a simple CN value.' }
 $runs = @($RunDirectories | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
-if ($runs.Count -ne 2 -or ($runs | Select-Object -Unique).Count -ne $runs.Count) {
+if ($runs.Count -ne 2 -or @($runs | Select-Object -Unique).Count -ne $runs.Count) {
   throw 'Batch fixture signing requires exactly two distinct probe runs.'
 }
 $fixtures = @()
@@ -36,10 +36,10 @@ foreach ($run in $runs) {
   }
   $fixtures += [pscustomobject]@{ Run = $run; Report = $report; Unsigned = (Resolve-Path -LiteralPath $report.package).Path; Signed = $signed; Certificate = $certificate; Name = [string]$identity.Name; Version = [string]$identity.Version; Architecture = [string]$identity.ProcessorArchitecture }
 }
-if (($fixtures.Name | Select-Object -Unique).Count -ne 1 -or ($fixtures.Architecture | Select-Object -Unique).Count -ne 1) {
+if (@($fixtures.Name | Select-Object -Unique).Count -ne 1 -or @($fixtures.Architecture | Select-Object -Unique).Count -ne 1) {
   throw 'Batch fixture packages must share their MSIX name and processor architecture.'
 }
-if (($fixtures.Version | Select-Object -Unique).Count -ne 2) { throw 'Batch fixture packages must use distinct MSIX versions.' }
+if (@($fixtures.Version | Select-Object -Unique).Count -ne 2) { throw 'Batch fixture packages must use distinct MSIX versions.' }
 $ordered = @($fixtures | Sort-Object { [Version]$_.Version })
 if ([Version]$ordered[0].Version -ge [Version]$ordered[1].Version) { throw 'Batch fixture versions must increase.' }
 $openssl = (Get-Command openssl.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source

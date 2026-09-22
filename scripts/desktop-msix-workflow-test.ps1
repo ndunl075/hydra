@@ -3,6 +3,7 @@ param(
   [Parameter(Mandatory = $true)][string]$PackageFamilyName,
   [Parameter(Mandatory = $true)][string]$InstallLocation,
   [Parameter(Mandatory = $true)][string]$RunDirectory,
+  [ValidateSet('both', 'one', 'two')][string]$Phase = 'both',
   [switch]$ParentTokenControl
 )
 $ErrorActionPreference = 'Stop'
@@ -20,7 +21,9 @@ if (-not $run.StartsWith((Join-Path $repository '.test-build\msix-compatibility'
 if (-not $install.StartsWith((Join-Path $env:ProgramFiles 'WindowsApps') + '\', [StringComparison]::OrdinalIgnoreCase)) {
   throw 'Workflow install location is outside WindowsApps.'
 }
-$reportName = if ($ParentTokenControl) { 'parent-token-control-report.json' } else { 'workflow-report.json' }
+$reportName = if ($ParentTokenControl) { 'parent-token-control-report.json' }
+  elseif ($Phase -eq 'two') { 'workflow-upgrade-report.json' }
+  else { 'workflow-report.json' }
 $reportPath = Join-Path $run $reportName
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 [ordered]@{ schemaVersion = 1; status = 'started'; phase = 'compiling-native-helper';
@@ -392,6 +395,18 @@ function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role, [bool]$Requir
   $evidence | Add-Member -NotePropertyName ExecutablePath -NotePropertyValue $processPath
   return $evidence
 }
+function Assert-ExtensionHostEvidence([uint32]$ProcessId, [string]$Role) {
+  # The extension host can finish its check and exit on its own between the
+  # report write and this inspection; only a security-relevant failure (the
+  # process is still running but its evidence could not be read) should fail
+  # the gate.
+  try {
+    return Assert-ProcessEvidence $ProcessId $Role
+  } catch {
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) { throw }
+    return [ordered]@{ processId = $ProcessId; exitedBeforeInspection = $true; inspectionError = $_.Exception.Message }
+  }
+}
 function Start-HydraApplication([string]$Arguments, [string]$Role) {
   $method = 'application-activation-manager'
   try {
@@ -542,6 +557,8 @@ function Save-WorkflowReport {
 try { $report.checks.callerSelfAccess = [HydraMsixFixture.Native]::ProbeSelfAccess() }
 catch { $report.checks.callerSelfAccess = [ordered]@{ captureError = $_.Exception.ToString() } }
 Save-WorkflowReport
+$runPhaseOne = $Phase -ne 'two'
+$runPhaseTwo = $Phase -ne 'one'
 
 if ($ParentTokenControl) {
   $controlRoot = Join-Path $run ('parent token control ' + $unicodeSuffix)
@@ -595,7 +612,9 @@ if ($ParentTokenControl) {
 }
 
 try {
-  New-Item -ItemType Directory -Path $workspace, $userData, $extensions -Force | Out-Null
+  if ($runPhaseOne) {
+    New-Item -ItemType Directory -Path $workspace, $userData, $extensions -Force | Out-Null
+  }
   $report.phase = 'validating-provisioned-extension'
   Save-WorkflowReport
   if (-not (Test-Path -LiteralPath $provisionReportPath)) { throw 'Workflow fixture provisioning evidence is missing.' }
@@ -643,24 +662,9 @@ try {
   }
   $report.checks.userExtensionProvisioning = $provisionReport
 
-  $report.phase = 'preparing-workflow'
-  Save-WorkflowReport
-  $editorFile = Join-Path $workspace 'editor result.txt'
-  $terminalScript = Join-Path $workspace 'terminal fixture.ps1'
-  $terminalOutput = Join-Path $workspace 'terminal-result.json'
-  $fixtureCli = Join-Path $workspace 'fixture-cli.ps1'
-  $cliOutput = Join-Path $workspace 'cli-result.txt'
-  Set-Content -LiteralPath $editorFile -Value "before`n" -Encoding utf8
-  Set-Content -LiteralPath $terminalScript -Value @'
-param([string]$OutputPath, [string]$Nonce)
-[ordered]@{ nonce = $Nonce; parentProcessId = $PID; shell = 'powershell.exe' } |
-  ConvertTo-Json | Set-Content -LiteralPath $OutputPath -Encoding utf8
-'@ -Encoding utf8
-  Set-Content -LiteralPath $fixtureCli -Value @'
-param([string]$OutputPath, [string]$Nonce)
-Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
-'@ -Encoding ascii
-
+  $configPath = Join-Path $workspace '.hydra-msix-workflow.json'
+  # N+1 lives in a new WindowsApps folder, so protected-write targets are always
+  # recomputed from the current $install rather than trusted from a prior run.
   $dll = Get-ChildItem -LiteralPath $install -Recurse -File -Filter '*.dll' |
     Sort-Object @{ Expression = { if ($_.Name -eq 'd3dcompiler_47.dll') { 0 } else { 1 } } }, FullName | Select-Object -First 1
   $nativeNode = Get-ChildItem -LiteralPath $install -Recurse -File -Filter '*.node' |
@@ -672,20 +676,39 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
     [ordered]@{ kind = 'Hydra executable'; path = (Join-Path $install 'Hydra.exe'); sha256 = (Get-FileHash -LiteralPath (Join-Path $install 'Hydra.exe') -Algorithm SHA256).Hash.ToLowerInvariant() },
     [ordered]@{ kind = 'built-in Hydra extension'; path = (Join-Path $install 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs'); sha256 = (Get-FileHash -LiteralPath (Join-Path $install 'resources\app\extensions\hydra-agent-manager\dist\extension.cjs') -Algorithm SHA256).Hash.ToLowerInvariant() }
   )
-  $nonce = [guid]::NewGuid().ToString('N')
-  $configPath = Join-Path $workspace '.hydra-msix-workflow.json'
-  $configuration = [ordered]@{ nonce = $nonce; phase = 1; reportPath = $phaseOnePath;
-    progressPath = $phaseOneProgressPath; editorFile = $editorFile;
-    terminalName = 'Hydra MSIX workflow terminal'; terminalScript = $terminalScript; terminalOutput = $terminalOutput;
-    fixtureCli = $fixtureCli; cliOutput = $cliOutput; fontSize = 17; protectedTargets = $targets }
-  $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
-
-  $report.phase = 'activating-phase-one'
-  Save-WorkflowReport
   $electronLogArgument = '--log-file=' + $electronLogPath
   $workflowArguments = Join-WindowsArguments @($workspace, '--new-window', '--user-data-dir', $userData,
     '--extensions-dir', $extensions, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust',
     '--log', 'trace', '--enable-logging=file', $electronLogArgument)
+
+  if ($runPhaseOne) {
+    $report.phase = 'preparing-workflow'
+    Save-WorkflowReport
+    $editorFile = Join-Path $workspace 'editor result.txt'
+    $terminalScript = Join-Path $workspace 'terminal fixture.ps1'
+    $terminalOutput = Join-Path $workspace 'terminal-result.json'
+    $fixtureCli = Join-Path $workspace 'fixture-cli.ps1'
+    $cliOutput = Join-Path $workspace 'cli-result.txt'
+    Set-Content -LiteralPath $editorFile -Value "before`n" -Encoding utf8
+    Set-Content -LiteralPath $terminalScript -Value @'
+param([string]$OutputPath, [string]$Nonce)
+[ordered]@{ nonce = $Nonce; parentProcessId = $PID; shell = 'powershell.exe' } |
+  ConvertTo-Json | Set-Content -LiteralPath $OutputPath -Encoding utf8
+'@ -Encoding utf8
+    Set-Content -LiteralPath $fixtureCli -Value @'
+param([string]$OutputPath, [string]$Nonce)
+Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
+'@ -Encoding ascii
+
+    $nonce = [guid]::NewGuid().ToString('N')
+    $configuration = [ordered]@{ nonce = $nonce; phase = 1; reportPath = $phaseOnePath;
+      progressPath = $phaseOneProgressPath; editorFile = $editorFile;
+      terminalName = 'Hydra MSIX workflow terminal'; terminalScript = $terminalScript; terminalOutput = $terminalOutput;
+      fixtureCli = $fixtureCli; cliOutput = $cliOutput; fontSize = 17; protectedTargets = $targets }
+    $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
+
+    $report.phase = 'activating-phase-one'
+    Save-WorkflowReport
   $phaseOneStartedAtUtc = [DateTime]::UtcNow
   $phaseOneActivation = Start-HydraApplication $workflowArguments 'Phase 1 main process'
   $phaseOneObservation = $phaseOneActivation.observation
@@ -751,11 +774,20 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   if ($phaseOneMismatches.Count -ne 0) {
     throw "Packaged workflow phase 1 evidence changed: $($phaseOneMismatches -join ', ')."
   }
-  $report.checks.phaseOneExtensionHost = Assert-ProcessEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
-  $report.phase = 'waiting-phase-one-exit'
-  Save-WorkflowReport
-  Wait-ForHydraExit $baseline
+    $report.checks.phaseOneExtensionHost = Assert-ExtensionHostEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
+    $report.phase = 'waiting-phase-one-exit'
+    Save-WorkflowReport
+    Wait-ForHydraExit $baseline
+  } else {
+    if (-not (Test-Path -LiteralPath $configPath)) {
+      throw 'Phase 2 requires workflow configuration recorded by a prior phase 1 run.'
+    }
+    $configuration = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $nonce = $configuration.nonce
+    $configuration.protectedTargets = $targets
+  }
 
+  if ($runPhaseTwo) {
   $report.phase = 'activating-phase-two'
   Save-WorkflowReport
   $configuration.phase = 2
@@ -805,10 +837,11 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   if (-not $phaseTwo.checks.installedExtensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Workflow fixture did not activate from the isolated user extension directory.'
   }
-  $report.checks.phaseTwoExtensionHost = Assert-ProcessEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
+  $report.checks.phaseTwoExtensionHost = Assert-ExtensionHostEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
   $report.phase = 'waiting-phase-two-exit'
   Save-WorkflowReport
   Wait-ForHydraExit $baseline
+  }
   $report.phase = 'passed'
   $report.status = 'passed'
 } catch {

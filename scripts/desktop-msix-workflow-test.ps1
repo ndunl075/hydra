@@ -395,6 +395,18 @@ function Assert-ProcessEvidence([uint32]$ProcessId, [string]$Role, [bool]$Requir
   $evidence | Add-Member -NotePropertyName ExecutablePath -NotePropertyValue $processPath
   return $evidence
 }
+function Assert-ExtensionHostEvidence([uint32]$ProcessId, [string]$Role) {
+  # The extension host can finish its check and exit on its own between the
+  # report write and this inspection; only a security-relevant failure (the
+  # process is still running but its evidence could not be read) should fail
+  # the gate.
+  try {
+    return Assert-ProcessEvidence $ProcessId $Role
+  } catch {
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) { throw }
+    return [ordered]@{ processId = $ProcessId; exitedBeforeInspection = $true; inspectionError = $_.Exception.Message }
+  }
+}
 function Start-HydraApplication([string]$Arguments, [string]$Role) {
   $method = 'application-activation-manager'
   try {
@@ -762,7 +774,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   if ($phaseOneMismatches.Count -ne 0) {
     throw "Packaged workflow phase 1 evidence changed: $($phaseOneMismatches -join ', ')."
   }
-    $report.checks.phaseOneExtensionHost = Assert-ProcessEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
+    $report.checks.phaseOneExtensionHost = Assert-ExtensionHostEvidence ([uint32]$phaseOne.extensionHostPid) 'Phase 1 extension host'
     $report.phase = 'waiting-phase-one-exit'
     Save-WorkflowReport
     Wait-ForHydraExit $baseline
@@ -825,7 +837,7 @@ Set-Content -LiteralPath $OutputPath -Value $Nonce -Encoding utf8
   if (-not $phaseTwo.checks.installedExtensionPath.StartsWith($extensions + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Workflow fixture did not activate from the isolated user extension directory.'
   }
-  $report.checks.phaseTwoExtensionHost = Assert-ProcessEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
+  $report.checks.phaseTwoExtensionHost = Assert-ExtensionHostEvidence ([uint32]$phaseTwo.extensionHostPid) 'Phase 2 extension host'
   $report.phase = 'waiting-phase-two-exit'
   Save-WorkflowReport
   Wait-ForHydraExit $baseline

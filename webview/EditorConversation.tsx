@@ -5,6 +5,7 @@ import { ModelControls } from './ModelControls';
 import { TaskContext } from './TaskContext';
 import { pendingSchedule } from '../src/core/scheduler';
 import { CapacityStatus } from './CapacityStatus';
+import { HydraMark } from './HydraMark';
 
 type Send = (message: ClientMessage) => void;
 const empty: Snapshot = { tasks: [], repositories: [], providers: [], files: [], busy: false, mode: 'editor' };
@@ -63,7 +64,7 @@ export function EditorConversation({ send }: { send: Send }) {
   const available = !!snapshot.providers.find(provider => provider.provider === task?.provider)?.available;
   return <main className="editor-conversation" aria-label="Editor agent conversation">
     <header className="chat-toolbar">
-      <div className="chat-brand" aria-label="Hydra"><span className="chat-mark" aria-hidden="true">h</span><span>HYDRA</span></div>
+      <div className="chat-brand" aria-label="Hydra"><HydraMark className="chat-mark" /><span>HYDRA</span></div>
       <div className="mode-switch" aria-label="Workspace mode"><button className="current" aria-current="page">Editor</button><button onClick={() => send({ type: 'agents' })}>Agents</button></div>
       <div className="chat-toolbar-actions"><button className="icon-button" aria-label="New conversation" title="New conversation" onClick={() => setCreating(true)}>+</button><button className="icon-button chat-settings" aria-label="Hydra settings" title="Hydra settings" onClick={() => send({ type: 'settings' })}>...</button></div>
     </header>

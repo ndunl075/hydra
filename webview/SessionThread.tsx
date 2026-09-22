@@ -3,6 +3,7 @@ import type { ClientMessage, Task, SessionView } from '../src/core/model';
 import { receiveConversationDraft, type ConversationDraft, type ConversationDraftState } from '../src/core/conversationDrafts';
 import { pendingSchedule } from '../src/core/scheduler';
 import { TurnModelLabel } from './ModelControls';
+import { HydraMark } from './HydraMark';
 const providerName = (provider: string) => provider === 'claude' ? 'Claude Code' : 'Codex';
 export function SessionThread({ task, session, busy, draft, send, available = true, compact = false }: { task: Task; session: SessionView; busy: boolean; draft?: ConversationDraft; send: (message: ClientMessage) => void; available?: boolean; compact?: boolean }) {
   const messages = useRef<HTMLDivElement>(null);
@@ -37,7 +38,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     {(session.totalTurns || session.turns.length) > 10 && <p className="quiet">Showing the latest ten turns. Full conversation and process events remain in local storage.</p>}
     {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
       <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{turn.prompt}</p></article>
-      <article className="message assistant-message"><div className="message-author"><span className="avatar hydra-avatar">h</span><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div><p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
+      <article className="message assistant-message"><div className="message-author"><HydraMark className="avatar hydra-avatar" /><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div><p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
         <TurnModelLabel turn={turn} />
         {turn.error && <p className="session-error" role="status">{turn.error}</p>}
         {turn.textTruncated && <p className="session-note">Showing the first 50,000 characters here. Full output is retained in local raw diagnostics; model context is unchanged.</p>}

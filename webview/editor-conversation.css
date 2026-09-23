@@ -177,3 +177,7 @@ body.vscode-high-contrast .chat-mark, body.vscode-high-contrast-light .chat-mark
 .context-ring-fill { stroke: var(--cursor-green); stroke-linecap: round; }
 .context-ring-rising .context-ring-fill { stroke: #d9b45f; }
 .context-ring-high .context-ring-fill { stroke: var(--warning, #d98c5f); }
+
+/* A menu opened from a chip on the left of the toolbar grows rightward, so it
+   never runs past the panel's left edge and clips its own labels. */
+.task-prompt-toolbar-group:first-child .mode-picker-body { left: 0; right: auto; }

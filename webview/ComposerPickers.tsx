@@ -10,16 +10,41 @@ import { ComposerIcon } from './ComposerIcons';
 type Send = (message: ClientMessage) => void;
 export const providerLabel: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 
-/** Details menus close on an outside click, like the provider's own menus. */
-function useOutsideClose(ref: React.RefObject<HTMLDetailsElement | null>, onOpen?: () => void) {
+/**
+ * Details menus close when you click away, like the provider's own menus. This
+ * panel is a webview (an iframe): a click on the editor, explorer or anywhere else
+ * in the window never reaches it, so a document click listener alone only catches
+ * clicks inside the panel. Leaving the panel blurs its window, which does fire, so
+ * that closes the menu too, and Escape closes it from the keyboard.
+ */
+export function useOutsideClose(ref: React.RefObject<HTMLDetailsElement | null>, onOpen?: () => void) {
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
-    const onToggle = () => { if (element.open) onOpen?.(); };
+    const close = () => { if (element.open) element.open = false; };
+    const onOutsideClick = (event: MouseEvent) => { if (!element.contains(event.target as Node)) close(); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && element.open) { close(); element.querySelector('summary')?.focus(); } };
+    // A menu anchored to its chip can still overflow a narrow panel on either side,
+    // so once it opens it is measured and nudged back inside the panel's width.
+    const keepInView = () => {
+      const body = element.querySelector<HTMLElement>('.mode-picker-body, .model-picker-body');
+      if (!body) return;
+      body.style.transform = '';
+      const view = element.ownerDocument.defaultView, margin = 8;
+      if (!view) return;
+      body.style.maxWidth = `${view.innerWidth - margin * 2}px`;
+      const rect = body.getBoundingClientRect();
+      let shift = 0;
+      if (rect.right > view.innerWidth - margin) shift = view.innerWidth - margin - rect.right;
+      if (rect.left + shift < margin) shift = margin - rect.left;
+      if (shift) body.style.transform = `translateX(${Math.round(shift)}px)`;
+    };
+    const onToggle = () => { if (element.open) { onOpen?.(); keepInView(); } };
     document.addEventListener('click', onOutsideClick, true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('blur', close);
     element.addEventListener('toggle', onToggle);
-    return () => { document.removeEventListener('click', onOutsideClick, true); element.removeEventListener('toggle', onToggle); };
+    return () => { document.removeEventListener('click', onOutsideClick, true); document.removeEventListener('keydown', onKey); window.removeEventListener('blur', close); element.removeEventListener('toggle', onToggle); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onOpen]);
 }

@@ -7,7 +7,7 @@ import { HydraMark } from './HydraMark';
 import { ComposerIcon } from './ComposerIcons';
 import type { ModelCatalog } from '../src/core/modelSelection';
 import type { Provider, ProviderInfo } from '../src/core/model';
-import { canEditBrief } from '../src/core/taskContext';
+import { canEditBrief, emptyBrief } from '../src/core/taskContext';
 import { latestContextUsage } from '../src/core/contextUsage';
 import { ContextRing, DelegationModePicker, ModelPicker, PermissionModePicker, asTaskPermissionMode, type DelegationMode } from './ComposerPickers';
 
@@ -54,6 +54,20 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compact, prompt]);
   const running = task.state === 'running' || !!session.active;
+  // Before the first launch the box is not dead: what is typed extends the task's
+  // first message (the brief is still editable then), and send starts the task.
+  // saveBrief updates the prompt synchronously on receipt, so the start that
+  // follows it reads the extended message.
+  const submitCompact = () => {
+    if (blocked) return;
+    if (task.sessionId) { if (prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); return; }
+    if (prompt.trim()) {
+      const base = task.brief || { ...emptyBrief(), goal: task.prompt };
+      send({ type: 'saveBrief', id: task.id, brief: { ...base, goal: `${base.goal.trim()}\n\n${prompt.trim()}` } });
+      setPrompt('');
+    }
+    send({ type: 'startManaged', id: task.id });
+  };
   const blocked = busy || pendingSchedule(task) || !available || running || task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>
@@ -78,15 +92,15 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     {/* The sidebar composer is the same shape as the one that starts a task, so the
         input does not change form once a conversation exists. The manager view keeps
         the labelled form, where the surrounding controls explain themselves. */}
-    {compact ? <form className="task-prompt-form chat-start-composer" onSubmit={event => { event.preventDefault(); if (!blocked && prompt.trim() && task.sessionId) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); }}>
+    {compact ? <form className="task-prompt-form chat-start-composer" onSubmit={event => { event.preventDefault(); submitCompact(); }}>
       <div className="task-prompt-box">
-        <textarea className="task-prompt-textarea" rows={3} maxLength={32000} value={prompt} disabled={blocked || !task.sessionId} aria-label="Follow-up"
+        <textarea className="task-prompt-textarea" rows={3} maxLength={32000} value={prompt} disabled={blocked} aria-label={task.sessionId ? 'Follow-up' : 'Add to your first message'}
           onChange={event => setPrompt(event.target.value)}
-          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && task.sessionId) { event.preventDefault(); if (!blocked && prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); } }}
-          placeholder={task.sessionId ? 'Reply to this agent' : 'Start the task to begin a conversation.'} />
+          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCompact(); } }}
+          placeholder={task.sessionId ? 'Reply to this agent' : 'Add to your first message, or send to start'} />
         <div className="task-prompt-toolbar">
           <div className="task-prompt-toolbar-group">
-            <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this reply" disabled={blocked || !task.sessionId} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
+            <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this reply" disabled={blocked} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
             <ContextRing usage={latestContextUsage(session.turns)} />
             <ModelPicker selection={task.modelSelection || null} provider={task.provider} catalogs={composer?.catalogs || {}} providers={composer?.providers || []} busy={busy} send={send} locked={editable ? undefined : locked}
               onSelect={(selection, provider) => send({ type: 'saveProviderSelection', id: task.id, provider, selection })} />
@@ -97,7 +111,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
               onSelect={next => send({ type: 'savePermissionMode', id: task.id, permissionMode: asTaskPermissionMode(task.provider, next) })} />
             {running ? <button className="composer-stop" type="button" disabled={busy} title="Stop process" aria-label="Stop process" onClick={() => send({ type: 'stop', id: task.id })}>■</button>
               : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !prompt.trim()} title="Send" aria-label="Send"><ComposerIcon name="up" /></button>
-              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={() => send({ type: 'startManaged', id: task.id })}><ComposerIcon name="up" /></button>}
+              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={submitCompact}><ComposerIcon name="up" /></button>}
           </div>
         </div>
       </div>

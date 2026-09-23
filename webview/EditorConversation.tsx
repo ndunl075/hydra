@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ClientMessage, Draft, Provider, ProviderInfo, Snapshot } from '../src/core/model';
 import type { ModelCatalog, ModelSelection } from '../src/core/modelSelection';
-import { ModelPicker, DelegationModePicker, PermissionModePicker, asTaskPermissionMode, isPermissionModeFor, type PermissionModeName } from './ComposerPickers';
+import { ModelPicker, DelegationModePicker, PermissionModePicker, asTaskPermissionMode, isPermissionModeFor, useOutsideClose, type PermissionModeName } from './ComposerPickers';
 import { SessionThread } from './SessionThread';
 import { pendingSchedule } from '../src/core/scheduler';
 import { CapacityStatus } from './CapacityStatus';
@@ -65,13 +65,7 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
 // click leaves a focus ring on the control. A details menu matches the pickers.
 function ConversationMenu({ tasks, currentId, onSelect }: { tasks: Snapshot['tasks']; currentId?: string; onSelect: (id: string) => void }) {
   const ref = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
-    document.addEventListener('click', onOutsideClick, true);
-    return () => document.removeEventListener('click', onOutsideClick, true);
-  }, []);
+  useOutsideClose(ref);
   return <details className="conversation-menu" ref={ref}>
     <summary className="composer-icon-button" aria-label="Conversation history" title="Conversation history"><ComposerIcon name="history" /></summary>
     <div className="mode-picker-body conversation-menu-body">

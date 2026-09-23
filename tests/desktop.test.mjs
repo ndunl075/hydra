@@ -5,7 +5,7 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+import { brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
 
 test('pinned Electron app uses only Hydra update service on Windows and refuses source drift', () => {
   const source = "import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';\nservices.set(IUpdateService, new SyncDescriptor(Win32UpdateService));";
@@ -248,4 +248,28 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     if (!fixture.startsWith(parent + path.sep)) throw new Error('Unsafe desktop test cleanup.');
     await fs.rm(fixture, { recursive: true, force: true });
   }
+});
+
+test('the top activity bar shares the sidebar title row instead of stacking a second header; drift refuses', () => {
+  const method = 'protected getCompositeBarPosition(): CompositeBarPosition {';
+  const original = `\t${method}\n\t\tswitch (activityBarPosition) {\n\t\t\tcase ActivityBarPosition.TOP: return CompositeBarPosition.TOP;\n\t\t\tcase ActivityBarPosition.BOTTOM: return CompositeBarPosition.BOTTOM;\n\t\t\tdefault: return CompositeBarPosition.TITLE;\n\t\t}\n\t}\n\tprivate getRememberedActivityBarVisiblePosition() { case ActivityBarPosition.TOP: return ActivityBarPosition.TOP; }`;
+  const branded = brandedSidebarTitleBar(original);
+  assert.match(branded, /case ActivityBarPosition\.TOP: return CompositeBarPosition\.TITLE;/);
+  assert.doesNotMatch(branded, /case ActivityBarPosition\.TOP: return CompositeBarPosition\.TOP;/);
+  // Bottom placement and the remembered-position helper are untouched.
+  assert.match(branded, /case ActivityBarPosition\.BOTTOM: return CompositeBarPosition\.BOTTOM;/);
+  assert.match(branded, /return ActivityBarPosition\.TOP;/);
+  assert.throws(() => brandedSidebarTitleBar(original.replace('CompositeBarPosition.TOP;', 'CompositeBarPosition.TOP_CHANGED;')), /sidebar composite bar position changed/);
+  assert.throws(() => brandedSidebarTitleBar(original.replace(method, 'protected renamed() {')), /sidebar composite bar position changed/);
+});
+
+test('the active sidebar icon gets a pill drawn behind it, never on the icon label, and drift refuses', () => {
+  const original = '.monaco-workbench .part.sidebar > .title { height: 35px; }';
+  const branded = brandedSidebarCss(original);
+  assert.ok(branded.startsWith(original));
+  assert.match(branded, /\.action-item\.icon\.checked \.active-item-indicator::before \{ background:/);
+  // Extension icons are masks over the label background, so the label is never painted.
+  assert.doesNotMatch(branded, /\.action-label \{[^}]*background/);
+  assert.throws(() => brandedSidebarCss(branded), /already has Hydra styles/);
+  assert.throws(() => brandedSidebarCss('.something-else {}'), /sidebar stylesheet changed/);
 });

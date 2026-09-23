@@ -345,6 +345,35 @@ export function brandedGettingStartedContent(text) {
     "\t\tid: 'SetupWeb',\n\t\ttitle: localize('gettingStarted.setupWeb.title', \"Get Started with VS Code for the Web\"),\n\t\tdescription: localize('gettingStarted.setupWeb.description', \"Customize your editor, learn the basics, and start coding\"),\n\t\tisFeatured: false,");
   return text;
 }
+export function brandedSidebarTitleBar(text) {
+  // With the activity bar on top, upstream draws the sidebar's view icons in a
+  // header above a separate "EXPLORER" title row, so the sidebar opens with two
+  // stacked bars. The title position puts the icons in that title row instead,
+  // with the view actions beside them: one bar, as the auxiliary bar already
+  // renders by default. The sidebar's own options anticipate this position (its
+  // context menu adds the Views submenu for it), so no other code changes.
+  const before = '\t\t\tcase ActivityBarPosition.TOP: return CompositeBarPosition.TOP;';
+  if (text.split(before).length !== 2 || !text.includes('protected getCompositeBarPosition(): CompositeBarPosition {')) throw new Error('Pinned sidebar composite bar position changed.');
+  return text.replace(before, '\t\t\tcase ActivityBarPosition.TOP: return CompositeBarPosition.TITLE;');
+}
+// The active view icon sits on a rounded pill rather than an underline. The pill
+// is drawn on each icon's active-item-indicator, which already sits behind the
+// icon, and never on the icon label itself: extension icons such as Hydra's are
+// CSS masks over the label's background, so painting that background would turn
+// the icon into a solid block. Upstream sets `background: none !important` on
+// title-bar icon labels, which is one more reason to leave the label alone.
+const hydraSidebarCss = `
+/* Hydra: rounded pill for the active sidebar view icon. */
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .action-label { position: relative; z-index: 1; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon .active-item-indicator::before { content: '' !important; position: absolute !important; top: 4.5px !important; left: 50% !important; width: 26px !important; height: 26px !important; margin-left: -13px !important; border: 0 !important; border-radius: 6px !important; background: transparent; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon.checked .active-item-indicator::before { background: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.12)) !important; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):hover .active-item-indicator::before { background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.07)) !important; }
+`;
+export function brandedSidebarCss(text) {
+  if (text.includes('Hydra: rounded pill')) throw new Error('Pinned sidebar stylesheet already has Hydra styles.');
+  if (!text.includes('.monaco-workbench .part.sidebar')) throw new Error('Pinned sidebar stylesheet changed.');
+  return `${text}\n${hydraSidebarCss}`;
+}
 export function brandedStartupPage(text) {
   const replaceOnce = (before, after) => {
     if (text.split(before).length !== 2) throw new Error(`Pinned startup page changed: ${before}`);
@@ -589,6 +618,10 @@ export async function prepare() {
   await fs.copyFile(path.join(root, 'desktop', 'workbench', 'hydraStartSurface.ts'), path.join(editorPartsDir, 'hydraStartSurface.ts'));
   const editorGroupWatermarkPath = 'src/vs/workbench/browser/parts/editor/editorGroupWatermark.ts';
   await fs.writeFile(path.join(source, editorGroupWatermarkPath), brandedEditorGroupWatermark(await git(['show', `${pin.commit}:${editorGroupWatermarkPath}`])));
+  const sidebarPartPath = 'src/vs/workbench/browser/parts/sidebar/sidebarPart.ts';
+  await fs.writeFile(path.join(source, sidebarPartPath), brandedSidebarTitleBar(await git(['show', `${pin.commit}:${sidebarPartPath}`])));
+  const sidebarCssPath = 'src/vs/workbench/browser/parts/sidebar/media/sidebarpart.css';
+  await fs.writeFile(path.join(source, sidebarCssPath), brandedSidebarCss(await git(['show', `${pin.commit}:${sidebarCssPath}`])));
   const startupPagePath = 'src/vs/workbench/contrib/welcomeGettingStarted/browser/startupPage.ts';
   await fs.writeFile(path.join(source, startupPagePath), brandedStartupPage(await git(['show', `${pin.commit}:${startupPagePath}`])));
   const gettingStartedContentPath = 'src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts';

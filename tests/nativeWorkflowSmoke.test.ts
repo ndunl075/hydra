@@ -8,6 +8,7 @@ import { FocusedWorkspace } from '../webview/FocusedWorkspace';
 import { DelegationContextInbox } from '../webview/DelegationContextInbox';
 import { DelegationResultInspection } from '../webview/DelegationResultInspection';
 import { DelegationRunBudgetView } from '../webview/DelegationRunBudgetView';
+import { SessionThread } from '../webview/SessionThread';
 import type { Task } from '../src/core/model';
 import type { DelegationRunUsageProjection } from '../src/core/delegationRunAccounting';
 
@@ -105,4 +106,14 @@ test('editor agent panel has the compact Cursor-style conversation hierarchy wit
   assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{ resize: none;/);
   assert.match(css, /body\.vscode-high-contrast/);
   assert.match(css, /prefers-reduced-motion: reduce/);
+});
+
+test('an unstarted task still accepts typing: the box extends the first message and send starts the task', () => {
+  const task: Task = { id: '4'.repeat(12), title: 'hi', prompt: 'hi', repository: 'C:/repo', worktree: 'C:/repo/wt', branch: 'agent/hi', baseCommit: 'a'.repeat(40), integrationTarget: 'main', provider: 'claude', interface: 'interactive-cli', state: 'idle', createdAt: '2026-09-23T00:00:00.000Z', updatedAt: '2026-09-23T00:00:00.000Z' };
+  const html = renderToStaticMarkup(React.createElement(SessionThread, { task, session: { version: 1, turns: [] }, busy: false, send: () => {}, compact: true, composer: { catalogs: {}, providers: [], delegationMode: 'solo' } }));
+  const textarea = html.match(/<textarea[^>]*>/)![0];
+  // It used to be disabled until a session existed, so a never-started task was a dead box.
+  assert.doesNotMatch(textarea, /disabled/);
+  assert.match(textarea, /placeholder="Add to your first message, or send to start"/);
+  assert.match(html, /aria-label="Start task"/);
 });

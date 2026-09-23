@@ -178,9 +178,15 @@ test('Claude cancellation removes pending approval and prevents later consent', 
   const f = await fixture({ cancelApproval: true });
   try {
     await f.manager.start(f.task, f.executable, 'approve:Bash');
-    await waitFor(() => !!f.manager.view(f.task.id)?.approvals?.length);
-    const id = f.manager.view(f.task.id)!.approvals![0]!.id;
+    // The fixture cancels 100ms after raising the approval. Polling for it raced:
+    // when both arrive in one stdout read they are handled back to back, so the
+    // approval is never observable and a busy CI runner timed out. The recorded
+    // evidence proves it was raised, without depending on scheduling.
     await f.manager.finished(f.task.id);
+    const turn = f.manager.view(f.task.id)!.turns.at(-1)!;
+    const raised = (await readFile(f.store.rawPath(f.task.id, turn.id), 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.type === 'approval-request');
+    assert.equal(raised.length, 1);
+    const id = raised[0].data.approval.id;
     assert.deepEqual(f.manager.view(f.task.id)?.approvals, []);
     assert.throws(() => f.manager.approve(f.task.id, id, 'accept'));
     await assert.rejects(readFile(path.join(f.root, 'claude-decisions.jsonl')), { code: 'ENOENT' });

@@ -4,6 +4,8 @@ import type { UsageSummary } from './usage';
 import { parseBudgets, type SoftBudget, type BudgetSettings, type BudgetObservation } from './budgets';
 import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
+import { parseSubmittedPermissionMode, type TaskPermissionMode } from './permissionMode';
+import type { ContextUsage } from './contextUsage';
 import type { CapacityView } from './profileCapacity';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
@@ -35,6 +37,8 @@ export interface Task {
   contextLockedAt?: string;
   handoffSummary?: TaskHandoffSummary;
   modelSelection?: ModelSelection;
+  /** Chosen before the first launch and locked afterwards, like modelSelection. */
+  permissionMode?: TaskPermissionMode;
   schedule?: TaskSchedule;
   delegationExecution?: DelegatedExecutionReceipt;
   /** Opaque, durable approval-pause sources for provenance-backed graph replay. */
@@ -76,6 +80,8 @@ export interface Turn {
   /** Cumulative root-thread snapshot; never sum these across turns. */
   threadUsage?: { sessionId: string; input: number; output: number; cacheRead?: number; cacheCreated?: number };
   modelSettings?: TurnModelSettings;
+  /** Claude only: context-window fill after this turn, for the composer's usage ring. */
+  contextUsage?: ContextUsage;
 }
 export interface Approval { id: string; kind: 'command' | 'file' | 'network'; detail: string }
 export interface SessionView { version: 1; turns: Turn[]; writerUncertain?: boolean; active?: boolean; totalTurns?: number; approvals?: Approval[] }
@@ -102,6 +108,8 @@ export interface Snapshot {
   delegationRunAccounting?: Record<string, DelegationRunUsageProjection>;
   delegationReconciliation?: Record<string, DelegationReconciliationProjection>;
   modelCatalogs?: Record<string, ModelCatalog>;
+  /** Task-independent model discovery for the task-creation picker, keyed by provider. */
+  draftModelCatalogs?: Partial<Record<Provider, ModelCatalog>>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
@@ -115,7 +123,7 @@ export type ClientMessage =
   | { type: 'reviewDelegationResult'; id: string; decision: 'approved' | 'rejected'; reason: string }
   | { type: 'saveResources'; id: string; config: ResourceConfig }
   | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
-  | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' }
+  | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' | 'attachContext' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter' | 'reconcileCapacity'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
@@ -127,9 +135,12 @@ export type ClientMessage =
   | { type: 'showTaskHandoff'; id: string }
   | { type: 'checkModels'; id: string }
   | { type: 'saveModelSelection'; id: string; selection: ModelSelection | null }
+  | { type: 'savePermissionMode'; id: string; permissionMode: TaskPermissionMode | null }
+  | { type: 'saveProviderSelection'; id: string; provider: Provider; selection: ModelSelection | null }
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
+  | { type: 'checkModelsForProvider'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
   | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
@@ -142,7 +153,7 @@ export type ClientMessage =
   | { type: 'promoteIntegration' | 'reviewIntegrationResolution' | 'copyIntegrationCandidate' | 'showIntegrationLog' | 'cancelIntegration'; id: string; operationId: string }
   | { type: 'acceptIntegrationResolution'; id: string; operationId: string; token: string }
   | { type: 'openIntegrationDiff'; id: string; operationId: string; path: string }
-  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string; brief?: TaskBrief }
+  | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string; brief?: TaskBrief; autoStart?: boolean }
   | { type: 'draft'; title: string; prompt: string; provider: Provider; brief?: TaskBrief }
   | { type: 'setDelegationMode'; mode: DelegationMode };
 
@@ -192,8 +203,25 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return type === 'checkModels' ? { type, id } : { type, id, selection: message.selection === null ? null : parseModelSelection(message.selection) };
   }
+  if (type === 'savePermissionMode') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    return { type, id, permissionMode: message.permissionMode === null ? null : parseSubmittedPermissionMode(message.permissionMode) };
+  }
+  if (type === 'saveProviderSelection') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    const provider = string('provider');
+    if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
+    return { type, id, provider, selection: message.selection === null || message.selection === undefined ? null : parseModelSelection(message.selection) };
+  }
   if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['model', 'effort', 'reasoningEffort', 'reasoning_effort'].some(key => key in message)) {
     throw new Error('Direct launch-time model and effort fields are unsupported. Save a verified managed selection before launching; Hydra cannot confirm an Astra High preset unless the exact model and effort are advertised.');
+  }
+  // Permission modes follow the same rule as model settings: they are saved and
+  // verified before a launch, never smuggled in as a launch-time field.
+  if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['permissionMode', 'permission_mode', 'approvalPolicy', 'sandbox', 'sandboxPolicy'].some(key => key in message)) {
+    throw new Error('Direct launch-time permission fields are unsupported. Save a permission mode before launching so Hydra can verify the provider applied it.');
   }
   if (type === 'saveBrief' || type === 'saveHandoffSummary' || type === 'showTaskHandoff') {
     const id = string('id');
@@ -233,12 +261,12 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id) || !/^[a-f0-9]{12}$/.test(approvalId) || !['accept', 'decline'].includes(decision)) throw new Error('Invalid approval decision.');
     return { type, id, approvalId, decision } as ClientMessage;
   }
-  if (type === 'checkProvider' || type === 'showProviderDiagnostics') {
+  if (type === 'checkProvider' || type === 'showProviderDiagnostics' || type === 'checkModelsForProvider') {
     const provider = string('provider');
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
     return { type, provider };
   }
-  if (['ready', 'editor', 'agents', 'newTask', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
+  if (['ready', 'editor', 'agents', 'newTask', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt', 'attachContext'].includes(type)) return { type } as ClientMessage;
   if (type === 'handoff') {
     const id = string('id');
     const provider = string('provider');
@@ -280,7 +308,10 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!common.title.trim() || !common.prompt.trim()) throw new Error('Enter a title and task prompt.');
     if (common.brief && !common.brief.goal.trim()) throw new Error('Enter a task goal.');
     if (common.brief && buildTaskPrompt(common.brief) !== common.prompt) throw new Error('The prompt preview does not match the task brief. Refresh before creating the task.');
-    return { type, ...common, repository: string('repository', 4096), startingCommit: message.startingCommit === undefined ? undefined : string('startingCommit', 64) || undefined } as ClientMessage;
+    // autoStart carries the prompt-first flow's "send starts the agent" intent.
+    // It has to survive validation, or create silently leaves the task idle.
+    if (message.autoStart !== undefined && typeof message.autoStart !== 'boolean') throw new Error('Invalid autoStart flag.');
+    return { type, ...common, repository: string('repository', 4096), startingCommit: message.startingCommit === undefined ? undefined : string('startingCommit', 64) || undefined, ...(message.autoStart === undefined ? {} : { autoStart: message.autoStart }) } as ClientMessage;
   }
   throw new Error('Unknown command.');
 }

@@ -115,3 +115,17 @@ test('an Auto split is saved with its rationale but never creates child tasks', 
     assert.deepEqual(saved.decisions[0]?.proposal.children.map(item => item.key), ['alpha', 'beta']);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('Auto offers the agent a delegate shape and Solo withholds it, which is what the mode picker promises', () => {
+  // The delegation picker tells the user what Auto does. If this ever stops
+  // being true the copy is wrong, so pin the behaviour rather than the words.
+  const auto = plannerPromptSuffix(createDelegationPlannerRun(policy(), preferences, runId));
+  assert.match(auto, /decision "delegate"/);
+  assert.match(auto, /nonoverlapping write scopes/);
+  assert.doesNotMatch(auto, /requires the Solo shape/);
+
+  const soloPolicy = { ...policy(), mode: 'solo' as const };
+  const solo = plannerPromptSuffix(createDelegationPlannerRun(soloPolicy, { ...preferences, mode: 'solo' as const }, runId));
+  assert.match(solo, /requires the Solo shape/);
+  assert.doesNotMatch(solo, /decision "delegate"/);
+});

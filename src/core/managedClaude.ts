@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { claudeArguments, ClaudeProtocol, testedClaudeVersion } from './claudeProtocol';
+import { claudeInitMatches, defaultPermissionMode, parsePermissionMode, permissionModeLabel } from './permissionMode';
+import { parseContextUsage } from './contextUsage';
 import { processLaunch, terminateProcessTree } from './process';
 import { SessionStore } from './sessionStore';
 import { ClaudeMessages, claudeRecord, readClaudeEffective, readClaudeModels } from './claudeControls';
@@ -41,7 +43,8 @@ export class ManagedClaude {
     const selection = task.modelSelection ? parseModelSelection(task.modelSelection) : undefined;
     const previousModel = selection ? [...view.turns].reverse().find(item => item.modelSettings?.requested?.model === selection.model && item.modelSettings?.effective)?.modelSettings?.effective?.model : undefined;
     turn.modelSettings = selection ? { requested: selection } : undefined;
-    const args = claudeArguments(task.sessionId, selection);
+    const permissionMode = task.permissionMode ? parsePermissionMode(task.permissionMode, 'claude') : defaultPermissionMode('claude');
+    const args = claudeArguments(task.sessionId, selection, permissionMode);
     view.turns.push(turn);
     task.interface = 'managed-cli'; task.state = 'running'; task.error = undefined; task.updatedAt = new Date().toISOString();
     let sequence = 0;
@@ -63,12 +66,15 @@ export class ManagedClaude {
     }
     const launch = processLaunch(executable, args);
     const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment, DISABLE_AUTOUPDATER: '1' }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
-    const protocol = new ClaudeProtocol(turn, task.worktree, task.sessionId);
+    const protocol = new ClaudeProtocol(turn, task.worktree, task.sessionId, permissionMode);
     const stderr = new StringDecoder('utf8');
     const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
     const approvals = new Map<string, { requestId: string; input: Record<string, unknown>; toolUseId: string; approval: Approval }>();
     const seenRequests = new Set<string>();
-    let failure: string | undefined, stopped = false, bytes = 0, nextId = 0, submitted = false, closing = false;
+    let failure: string | undefined, stopped = false, bytes = 0, nextId = 0, submitted = false, closing = false, finishing = false;
+    // Optional requests that timed out; a late reply to one is dropped, not treated
+    // as an unmatched response that would fail a turn that already completed.
+    const abandoned = new Set<string>();
     let cleanup: Promise<void> | undefined;
     let sessionSave: Promise<void> = Promise.resolve();
     let sessionSaving = false;
@@ -92,11 +98,11 @@ export class ManagedClaude {
     };
     const log = (type: string, data: unknown) => { if (data) void this.store.log(task.id, turn.id, { sequence: ++sequence, type, data }).catch(fail); };
     const send = (message: unknown) => { if (stopped || closing || failure || child.exitCode !== null || child.signalCode !== null) throw new Error('Claude connection closed.'); log('stdin', message); child.stdin.write(JSON.stringify(message) + '\n'); };
-    const request = (subtype: 'initialize' | 'get_settings' | 'get_binary_version'): Promise<unknown> => new Promise((resolve, reject) => {
+    const request = (subtype: 'initialize' | 'get_settings' | 'get_binary_version' | 'get_context_usage', extra: Record<string, unknown> = {}, timeout = 15000, optional = false): Promise<unknown> => new Promise((resolve, reject) => {
       const request_id = `hydra-control-${++nextId}`;
-      const timer = setTimeout(() => { pending.delete(request_id); reject(new Error(`Claude ${subtype} timed out. No turn submitted.`)); }, 15000);
+      const timer = setTimeout(() => { pending.delete(request_id); if (optional) abandoned.add(request_id); reject(new Error(`Claude ${subtype} timed out. No turn submitted.`)); }, timeout);
       pending.set(request_id, { resolve, reject, timer });
-      try { send({ type: 'control_request', request_id, request: { subtype } }); } catch (error) { clearTimeout(timer); pending.delete(request_id); reject(error); }
+      try { send({ type: 'control_request', request_id, request: { subtype, ...extra } }); } catch (error) { clearTimeout(timer); pending.delete(request_id); reject(error); }
     });
     const update = () => {
       if (saveTimer) return;
@@ -112,7 +118,7 @@ export class ManagedClaude {
     const messages = new ClaudeMessages(message => {
       if (message.type === 'control_response') {
         const response = claudeRecord(message.response), entry = pending.get(response.request_id);
-        if (!entry) throw new Error('Unmatched Claude control response.');
+        if (!entry) { if (abandoned.delete(response.request_id)) return; throw new Error('Unmatched Claude control response.'); }
         clearTimeout(entry.timer); pending.delete(response.request_id);
         // Effective/raw settings and account data never enter the diagnostic log.
         log('control-response', { requestId: response.request_id, subtype: response.subtype });
@@ -129,6 +135,15 @@ export class ManagedClaude {
         const request = claudeRecord(message.request), requestId = message.request_id;
         if (!submitted || !protocol.initialized || protocol.resultReceived || stopped || closing || typeof requestId !== 'string' || !requestId || requestId.length > 200 || seenRequests.has(requestId) || seenRequests.size >= 1000) throw new Error('Invalid or duplicate Claude approval request.');
         seenRequests.add(requestId);
+        // The permission mode is chosen before launch and locked for the task, so a
+        // request to leave plan mode is denied rather than quietly promoted into a
+        // writing turn. The plan itself is already in the transcript; executing it
+        // means starting a new task. Denying keeps the turn alive to finish its reply.
+        if (request.subtype === 'can_use_tool' && request.tool_name === 'ExitPlanMode' && typeof request.tool_use_id === 'string' && request.tool_use_id && request.tool_use_id.length <= 200) {
+          send({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response: { behavior: 'deny', message: 'This task runs in plan mode, which is locked for the task. Start a new task to execute the plan.', toolUseID: request.tool_use_id } } });
+          log('plan-mode-exit-denied', { requestId, toolUseId: request.tool_use_id });
+          return;
+        }
         if (request.subtype !== 'can_use_tool' || request.requires_user_interaction === true || request.agent_id || request.decision_reason_type === 'asyncAgent' || !['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit'].includes(request.tool_name) || typeof request.tool_use_id !== 'string' || !request.tool_use_id || request.tool_use_id.length > 200) throw new Error('Unsupported Claude interaction. No permission granted; use the official interactive client.');
         const input = claudeRecord(request.input), detail = JSON.stringify({ tool: request.tool_name, input, blockedPath: request.blocked_path, reason: request.decision_reason, reasonType: request.decision_reason_type, defaultToNo: request.default_to_no }, null, 2);
         if (detail.length > 50000 || approvals.size >= 20) throw new Error('Claude approval exceeded display limits. No permission granted; use the official client.');
@@ -145,9 +160,17 @@ export class ManagedClaude {
         sessionSave = this.persistTask().then(() => this.observer.sessionIdentified?.(task, sessionId)).catch(fail).finally(() => { sessionSaving = false; view.approvals = [...approvals.values()].map(entry => entry.approval); this.changed(); });
       }
       if (message.type === 'system' && message.subtype === 'init' && selection && message.model !== turn.modelSettings?.effective?.model) throw new Error('Claude initialization changed the acknowledged model. Turn stopped; inspect provider settings.');
-      if (protocol.resultReceived && !closing) {
+      if (protocol.resultReceived && !closing && !finishing) {
         if (approvals.size) throw new Error('Claude completed while approval was still pending.');
-        closing = true; child.stdin.end(); closeTimer = setTimeout(() => { void kill(); }, 3000);
+        finishing = true;
+        // A read-only snapshot for the composer's usage ring, taken before stdin
+        // closes. It is optional: a rejection, malformed reply or timeout leaves the
+        // finished turn exactly as it was. Nothing here compacts or changes context.
+        void (async () => {
+          try { const usage = parseContextUsage(await request('get_context_usage', { detail: 'summary' }, 3000, true)); if (usage) { turn.contextUsage = usage; update(); } }
+          catch { /* The ring stays empty for this turn. */ }
+          finally { if (!closing) { closing = true; try { child.stdin.end(); } catch { /* already closed */ } closeTimer = setTimeout(() => { void kill(); }, 3000); } }
+        })();
       }
       update();
     });
@@ -187,7 +210,8 @@ export class ManagedClaude {
     void (async () => {
       const init = claudeRecord(await request('initialize'));
       const version = claudeRecord(await request('get_binary_version'));
-      if (version.version !== testedClaudeVersion || !['default', 'manual'].includes(init.current_permission_mode)) throw new Error('Claude pre-turn initialization did not match the tested version or safe permission mode. No turn submitted.');
+      if (version.version !== testedClaudeVersion) throw new Error('Claude pre-turn initialization did not match the tested version. No turn submitted.');
+      if (!claudeInitMatches(permissionMode, init.current_permission_mode)) throw new Error(`Claude reports ${String(init.current_permission_mode)} instead of the requested ${permissionModeLabel(permissionMode)} permission mode. No turn submitted.`);
       const models = readClaudeModels(init.models);
       const effective = readClaudeEffective(await request('get_settings'), models, selection);
       if (previousModel && effective.model !== previousModel) throw new Error('Claude changed the canonical identity of this saved model alias. No turn submitted; create a new task to accept the new model.');

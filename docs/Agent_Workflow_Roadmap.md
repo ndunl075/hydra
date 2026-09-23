@@ -52,6 +52,21 @@ Persist reported usage with its provider semantics and aggregate it by task and 
 
 Acceptance: effective settings survive resume; unsupported choices produce guidance rather than a false success; restart and repeated usage events do not inflate totals; budget warnings stop only the configured new work. UI transcript truncation or collapsing output is not recorded as model-token savings.
 
+#### Context usage ring and manual compact
+
+Status: the read-only ring is implemented. After each completed managed Claude turn, Hydra sends one `get_context_usage` control request (summary detail) before closing stdin and stores the result on the turn. The percentage is derived from `totalTokens / maxTokens` rather than taken from the reply, so the ring does not depend on whether the provider reports a fraction or a percent. The request is optional: a rejection, malformed reply or timeout leaves the finished turn exactly as it was, and a late reply to a timed-out request is dropped rather than treated as an unmatched response. It has not yet been run against a live CLI.
+
+Codex 0.154.0 exposes no context-usage or compaction request in its generated protocol, so Codex tasks show no ring rather than an estimate.
+
+Planned, not built: a manual compact action on the ring. Claude compacts when `/compact` is sent as the prompt, and treats any text after it as instructions for the summary. Hydra appends its delegation planner suffix to every managed turn prompt, so a compact turn would feed the planning receipt into the summary, and that turn's delegation decision would be rejected for lacking its marker line. Before shipping compact:
+
+- send it as its own turn type with no planner suffix and no planner receipt bound to it;
+- record the resulting `compact_boundary` system message (`trigger`, `pre_tokens`, `post_tokens`) on the turn, and refresh the ring from it;
+- keep it Claude-only until Codex exposes a supported compaction request, and never emulate one by summarizing and replaying history;
+- confirm against the pinned CLI that `/compact` is honored in `-p` stream-json mode, since that is untested.
+
+Acceptance: the ring reflects the latest turn and survives reload; a failed usage read never fails a turn; compacting never carries a planner receipt and records its before/after tokens.
+
 ### 5. Real-provider workflows and repeatable setup
 
 Status: PR #24 merged passive account setup with explicit provider-owned login/status/cancellation and no model turn on login after native acceptance. Explicit resource/setup controls are locally tested candidates: logical port/database/service reservations, saved launch environment, bounded user-selected commands, diagnostics and owned cancellation; see [task resources](Task_Resources.md). Feature CI, live sign-in and realistic authenticated edit/test/approval/interruption/resume acceptance remain outstanding. Automatic backing service provisioning and full environment isolation remain outside this foundation.

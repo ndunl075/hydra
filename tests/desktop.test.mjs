@@ -5,7 +5,7 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+import { brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
 
 test('pinned Electron app uses only Hydra update service on Windows and refuses source drift', () => {
   const source = "import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';\nservices.set(IUpdateService, new SyncDescriptor(Win32UpdateService));";
@@ -77,6 +77,15 @@ test('nested editor compiles its own API declarations without loading the parent
     assert.equal(after.diagnostics.length, 0, ts.formatDiagnosticsWithColorAndContext(after.diagnostics, { getCanonicalFileName: file => file, getCurrentDirectory: () => source, getNewLine: () => '\n' }));
     assert.ok(!after.program.getSourceFiles().some(file => file.fileName.replaceAll('\\', '/').endsWith('/node_modules/@types/vscode/index.d.ts')));
     assert.equal(after.program.getCompilerOptions().skipLibCheck, undefined);
+    // The editor sources pin an explicit "types" list, so prepare() passes no
+    // typeRoots for them: forcing one would make every "types" entry resolve
+    // under that single root and drop scoped packages like @webgpu/types. The
+    // explicit list alone must still keep the ancestor @types/vscode out.
+    await fs.writeFile(path.join(source, 'tsconfig.json'), JSON.stringify({ ...child, compilerOptions: { types: [] } }));
+    const pinned = await compile(isolatedEditorTypes(base, './vscode-dts/vscode.d.ts', null));
+    assert.equal(pinned.program.getCompilerOptions().typeRoots, undefined);
+    assert.equal(pinned.diagnostics.length, 0, ts.formatDiagnosticsWithColorAndContext(pinned.diagnostics, { getCanonicalFileName: file => file, getCurrentDirectory: () => source, getNewLine: () => '\n' }));
+    assert.ok(!pinned.program.getSourceFiles().some(file => file.fileName.replaceAll('\\', '/').endsWith('/node_modules/@types/vscode/index.d.ts')));
   } finally {
     if (!fixture.startsWith(parent + path.sep)) throw new Error('Unsafe desktop test cleanup.');
     await fs.rm(fixture, { recursive: true, force: true });
@@ -173,13 +182,32 @@ test('Windows executable metadata uses the Hydra release instead of the editor A
 });
 test('Hydra startup honors explicit appearance instead of forcing system detection for new users; upstream drift refuses', () => {
   for (const name of ['isNewUser', 'isNewUser3']) {
-    const original = `this.settings = new ThemeConfiguration(configurationService, hostColorService, ${name});\nawait this.migrateAutoDetectColorScheme();`;
+    // The fixture carries the upstream shape the guards depend on: the new-user
+    // probe, the constructor argument, the migration call, and the helper the
+    // call is the only caller of. The vendored tsconfig sets noUnusedLocals, so
+    // dropping the call without the probe and the helper breaks the build.
+    const original = `\t\tconst ${name} = this.storageService.isNew(StorageScope.APPLICATION);\n`
+      + `\t\tthis.settings = new ThemeConfiguration(configurationService, hostColorService, ${name});\n`
+      + '\t\tawait this.migrateAutoDetectColorScheme();\n'
+      + '\t}\n\n'
+      + "\t/**\n\t * For new users who haven't explicitly configured `window.autoDetectColorScheme`,\n"
+      + '\t * persist `true` so that auto-detect becomes the default going forward.\n\t */\n'
+      + '\tprivate async migrateAutoDetectColorScheme(): Promise<void> {\n'
+      + '\t\tif (!this.storageService.isNew(StorageScope.APPLICATION)) {\n\t\t\treturn;\n\t\t}\n'
+      + '\t\tawait this.configurationService.updateValue(ThemeSettings.DETECT_COLOR_SCHEME, true);\n'
+      + '\t}\n';
     const branded = brandedThemeStartup(original);
     assert.ok(branded.includes('new ThemeConfiguration(configurationService, hostColorService, false);'));
     assert.ok(!branded.includes('await this.migrateAutoDetectColorScheme();'));
+    // Nothing the injection orphans may survive, or noUnusedLocals fails the build.
+    assert.ok(!branded.includes(`const ${name} =`));
+    assert.ok(!branded.includes('migrateAutoDetectColorScheme'));
+    assert.ok(!branded.includes('auto-detect becomes the default'));
     assert.throws(() => brandedThemeStartup(original + original), /contract changed/);
     assert.throws(() => brandedThemeStartup(original.replace('hostColorService', 'changedService')), /contract changed/);
-    assert.throws(() => brandedThemeStartup(original.replace('await this.migrateAutoDetectColorScheme();', '')), /contract changed/);
+    assert.throws(() => brandedThemeStartup(original.replace('\t\tawait this.migrateAutoDetectColorScheme();\n', '')), /contract changed/);
+    assert.throws(() => brandedThemeStartup(original.replace(`const ${name} = this.storageService.isNew`, `const ${name} = this.storageService.renamed`)), /contract changed/);
+    assert.throws(() => brandedThemeStartup(original.replace('\tprivate async migrateAutoDetectColorScheme(): Promise<void> {\n', '')), /helper changed/);
   }
 });
 
@@ -220,4 +248,28 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     if (!fixture.startsWith(parent + path.sep)) throw new Error('Unsafe desktop test cleanup.');
     await fs.rm(fixture, { recursive: true, force: true });
   }
+});
+
+test('the top activity bar shares the sidebar title row instead of stacking a second header; drift refuses', () => {
+  const method = 'protected getCompositeBarPosition(): CompositeBarPosition {';
+  const original = `\t${method}\n\t\tswitch (activityBarPosition) {\n\t\t\tcase ActivityBarPosition.TOP: return CompositeBarPosition.TOP;\n\t\t\tcase ActivityBarPosition.BOTTOM: return CompositeBarPosition.BOTTOM;\n\t\t\tdefault: return CompositeBarPosition.TITLE;\n\t\t}\n\t}\n\tprivate getRememberedActivityBarVisiblePosition() { case ActivityBarPosition.TOP: return ActivityBarPosition.TOP; }`;
+  const branded = brandedSidebarTitleBar(original);
+  assert.match(branded, /case ActivityBarPosition\.TOP: return CompositeBarPosition\.TITLE;/);
+  assert.doesNotMatch(branded, /case ActivityBarPosition\.TOP: return CompositeBarPosition\.TOP;/);
+  // Bottom placement and the remembered-position helper are untouched.
+  assert.match(branded, /case ActivityBarPosition\.BOTTOM: return CompositeBarPosition\.BOTTOM;/);
+  assert.match(branded, /return ActivityBarPosition\.TOP;/);
+  assert.throws(() => brandedSidebarTitleBar(original.replace('CompositeBarPosition.TOP;', 'CompositeBarPosition.TOP_CHANGED;')), /sidebar composite bar position changed/);
+  assert.throws(() => brandedSidebarTitleBar(original.replace(method, 'protected renamed() {')), /sidebar composite bar position changed/);
+});
+
+test('the active sidebar icon gets a pill drawn behind it, never on the icon label, and drift refuses', () => {
+  const original = '.monaco-workbench .part.sidebar > .title { height: 35px; }';
+  const branded = brandedSidebarCss(original);
+  assert.ok(branded.startsWith(original));
+  assert.match(branded, /\.action-item\.icon\.checked \.active-item-indicator::before \{ background:/);
+  // Extension icons are masks over the label background, so the label is never painted.
+  assert.doesNotMatch(branded, /\.action-label \{[^}]*background/);
+  assert.throws(() => brandedSidebarCss(branded), /already has Hydra styles/);
+  assert.throws(() => brandedSidebarCss('.something-else {}'), /sidebar stylesheet changed/);
 });

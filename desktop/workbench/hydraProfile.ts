@@ -6,6 +6,11 @@ import { IUserDataProfilesService } from '../platform/userDataProfile/common/use
 import { IUserDataProfileService } from './services/userDataProfile/common/userDataProfile.js';
 import { IWorkbenchThemeService } from './services/themes/common/workbenchThemeService.js';
 import { IWorkbenchEnvironmentService } from './services/environment/common/environmentService.js';
+import { Disposable } from '../base/common/lifecycle.js';
+import { registerWorkbenchContribution2, WorkbenchPhase, IWorkbenchContribution } from './common/contributions.js';
+import { IWorkbenchLayoutService, Parts } from './services/layout/browser/layoutService.js';
+import { IWorkspaceContextService, WorkbenchState } from '../platform/workspace/common/workspace.js';
+import { IContextKeyService } from '../platform/contextkey/common/contextkey.js';
 
 CommandsRegistry.registerCommand('hydra.desktop.startupContext', accessor => {
 	if (accessor.get(IProductService).nameShort !== 'Hydra') { throw new Error('Hydra desktop is required.'); }
@@ -28,3 +33,34 @@ CommandsRegistry.registerCommand('hydra.desktop.profileResources', async accesso
 		themes: themes.map(theme => theme.settingsId)
 	};
 });
+
+// The agent panel stays hidden on the empty start surface (no folder open) and
+// reappears once a folder or workspace opens; the terminal panel never
+// auto-opens, matching Cursor's clean landing state. It also hides while the
+// full "Hydra · Agents" manager tab is open, since that tab already includes
+// its own task-creation form and showing both duplicates the composer.
+class HydraStartSurfaceLayout extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'hydra.workbench.contrib.startSurfaceLayout';
+
+	constructor(
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
+	) {
+		super();
+		this.apply();
+		this._register(this.contextService.onDidChangeWorkbenchState(() => this.apply()));
+		this._register(this.contextKeyService.onDidChangeContext(event => {
+			if (event.affectsSome(new Set(['hydra.mode']))) this.apply();
+		}));
+	}
+
+	private apply(): void {
+		const empty = this.contextService.getWorkbenchState() === WorkbenchState.EMPTY;
+		const agentsManagerOpen = this.contextKeyService.getContextKeyValue<string>('hydra.mode') === 'agents';
+		this.layoutService.setPartHidden(empty || agentsManagerOpen, Parts.AUXILIARYBAR_PART);
+		this.layoutService.setPartHidden(true, Parts.PANEL_PART);
+	}
+}
+
+registerWorkbenchContribution2(HydraStartSurfaceLayout.ID, HydraStartSurfaceLayout, WorkbenchPhase.AfterRestored);

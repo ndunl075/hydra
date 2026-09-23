@@ -11,10 +11,16 @@ test('onboarding resumes interrupted steps, records optional skips, and complete
   assert.deepEqual(state.skipped, ['import']);
   assert.deepEqual(readOnboarding(JSON.parse(JSON.stringify(state))), state);
   state = advanceOnboarding(state, false);
+  assert.equal(state.step, 'accounts'); assert.equal(state.completed, false);
   state = advanceOnboarding(state, true);
-  assert.equal(state.step, 'project'); assert.equal(state.completed, false);
-  state = advanceOnboarding(state, false);
-  assert.equal(state.completed, true);
+  assert.equal(state.step, 'accounts'); assert.equal(state.completed, true);
+  assert.deepEqual(state.skipped, ['import', 'accounts']);
+});
+test('onboarding migrates the retired project step onto accounts without losing completion', () => {
+  const migrated = readOnboarding({ version: 1, step: 'project', completed: true, skipped: ['appearance', 'project'] });
+  assert.equal(migrated.step, 'accounts');
+  assert.equal(migrated.completed, true);
+  assert.deepEqual(migrated.skipped, ['appearance', 'accounts']);
 });
 test('onboarding rejects corrupt persisted state and never auto-opens in tests, development, remote, untrusted or handoff windows', () => {
   for (const value of [null, {}, {version:1, step:'import', completed:false, skipped:['invalid']}, {version:2, step:'project', completed:true, skipped:[]}]) assert.equal(readOnboarding(value).step, 'welcome');

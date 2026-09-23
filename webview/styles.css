@@ -106,6 +106,7 @@ textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
 .message-author time { margin-left: auto; color: var(--muted); font-size: 10px; }
 .avatar { width: 23px; height: 23px; display: grid; place-items: center; font-size: 10px; background: var(--hover); border-radius: 4px; }
 .hydra-avatar { background: var(--secondary); font-size: 17px; }
+.avatar img { width: 100%; height: 100%; object-fit: contain; display: block; padding: 2px; box-sizing: border-box; }
 .prompt-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; margin: 14px 0 30px 31px; }
 .system-message { border-top: 1px solid var(--border); padding-top: 22px; }
 .system-message > p { color: var(--body-text); line-height: 1.7; margin-left: 31px; }

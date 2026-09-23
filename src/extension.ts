@@ -122,6 +122,7 @@ class Manager {
   private handoff?: Handoff;
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
   private readonly modelCatalogs = new Map<string, ModelCatalog>();
+  private readonly draftModelCatalogs = new Map<Provider, ModelCatalog>();
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
@@ -244,7 +245,7 @@ class Manager {
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
-    command('hydra.openAccounts', () => this.accounts.show());
+    command('hydra.openAccounts', (provider?: 'claude' | 'codex', autoLogin?: boolean) => this.accounts.show(provider, autoLogin));
     command('hydra.getAccountSetupState', () => this.accounts.snapshot());
     command('hydra.openQuotaStatus', () => this.quota.show());
     command('hydra.getQuotaState', () => this.quota.snapshot());
@@ -436,6 +437,7 @@ class Manager {
     command('hydra.retryBudgetHold', (id: string) => this.handle({ type: 'retryBudgetHold', id }));
     command('hydra.checkModels', async (id: string) => { await this.handle({ type: 'checkModels', id }); return structuredClone(this.modelCatalogs.get(id)); });
     command('hydra.saveModelSelection', (id: string, selection: unknown) => this.handle({ type: 'saveModelSelection', id, selection }));
+    command('hydra.savePermissionMode', (id: string, permissionMode: unknown) => this.handle({ type: 'savePermissionMode', id, permissionMode }));
     command('hydra.handoffClaude', (id?: string) => this.handoffCommand('claude', id));
     command('hydra.handoffCodex', (id?: string) => this.handoffCommand('codex', id));
     command('hydra.releaseExternal', (id: string) => this.handle({ type: 'releaseExternal', id }));
@@ -491,7 +493,7 @@ class Manager {
       }
     }), vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('hydra')) {
-        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear();
+        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear(); this.draftModelCatalogs.clear();
         for (const controller of this.diagnosticChecks) controller.abort();
         void this.refresh().catch(error => this.report(error));
       }
@@ -553,7 +555,20 @@ class Manager {
     }
   }
   async showFirstRun(): Promise<void> {
+    await this.collapseSidebarOnce();
     if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
+  }
+  private async collapseSidebarOnce(): Promise<void> {
+    // The primary side bar has no configurationDefaults-controlled initial
+    // visibility (unlike the secondary side bar), so a one-time explicit
+    // close on first activation is the only extension-level way to start
+    // with a clean, uncluttered layout. Only in the packaged desktop app,
+    // and only once; the user's own later choice to reopen it is not undone.
+    if (!this.settingsImport.available) return;
+    const key = 'hydra.firstRunLayout.v1';
+    if (this.context.globalState.get(key)) return;
+    await this.context.globalState.update(key, true);
+    await Promise.resolve(vscode.commands.executeCommand('workbench.action.closeSidebar')).catch(() => {});
   }
   private async handoffCommand(provider: 'claude' | 'codex', id?: string): Promise<string | undefined> {
     if (!id) {
@@ -954,6 +969,7 @@ class Manager {
       setupPreview,
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
+      draftModelCatalogs: Object.fromEntries(this.draftModelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
@@ -1025,7 +1041,8 @@ class Manager {
     const nonce = randomBytes(24).toString('base64');
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.css'));
-    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-surface="${surface}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
+    const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'hydra-logo.png'));
+    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-surface="${surface}" data-logo="${logo}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
   }
   private async handle(value: unknown, scheduledLaunch = false): Promise<void> {
     const message = parseMessage(value);
@@ -1065,6 +1082,33 @@ class Manager {
       } finally { this.diagnosticChecks.delete(controller); await this.publish(); }
       return;
     }
+    if (message.type === 'checkModelsForProvider') {
+      if (this.draftModelCatalogs.get(message.provider)?.status === 'checking') throw new Error('This provider model check is already in progress.');
+      const controller = new AbortController(), generation = this.diagnosticGeneration;
+      this.diagnosticChecks.add(controller);
+      this.draftModelCatalogs.set(message.provider, { status: 'checking', models: [], checkedAt: new Date().toISOString() });
+      await this.publish();
+      try {
+        const info = await findProvider(message.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${message.provider}Path`));
+        const cwd = this.repositories[0] || this.context.extensionUri.fsPath;
+        const diagnostic = await checkProvider(info, cwd, controller.signal);
+        const testedVersion = message.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
+        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Model discovery requires the configured official ${message.provider} ${testedVersion} executable.`);
+        const models = await (message.provider === 'claude' ? discoverClaudeModels : discoverCodexModels)(info.executable, cwd, controller.signal);
+        if (generation === this.diagnosticGeneration && !this.closing) this.draftModelCatalogs.set(message.provider, { status: 'ready', models, checkedAt: new Date().toISOString() });
+      } catch (error) {
+        if (generation === this.diagnosticGeneration && !this.closing) this.draftModelCatalogs.set(message.provider, { status: 'error', models: [], checkedAt: new Date().toISOString(), error: this.describe(error) });
+      } finally { this.diagnosticChecks.delete(controller); await this.publish(); }
+      return;
+    }
+    if (message.type === 'attachContext') {
+      const picked = await vscode.window.showOpenDialog({ canSelectFolders: false, canSelectFiles: true, canSelectMany: true, openLabel: 'Attach' });
+      if (!picked?.length) return;
+      const root = this.repositories[0];
+      const paths = picked.map(uri => root ? path.relative(root, uri.fsPath).split(path.sep).join('/') : uri.fsPath);
+      await this.broadcast({ type: 'contextAttached', paths });
+      return;
+    }
     if (message.type === 'openOfficial' || message.type === 'showOfficial' || message.type === 'copyHandoffPrompt') {
       await this.verifyHandoffWorkspace();
       const handoff = this.handoff!;
@@ -1075,12 +1119,13 @@ class Manager {
       return;
     }
     if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
       this.busy = true;
       await this.publish();
+      let createdId: string | undefined;
       try {
         const id = randomBytes(6).toString('hex');
         const worktree = await createWorktree(message.repository, message.title, id, vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), message.startingCommit);
@@ -1088,10 +1133,17 @@ class Manager {
         this.tasks.push({ id, title: message.title.trim(), prompt: message.brief ? buildTaskPrompt(message.brief) : message.prompt.trim(), brief: message.brief, provider: message.provider,
           repository: message.repository, ...worktree, interface: 'interactive-cli', state: 'idle', createdAt: now, updatedAt: now });
         this.selectedId = id;
+        createdId = id;
         this.draft = { title: '', prompt: '', provider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude') };
         await this.persist();
         await this.broadcast({ type: 'taskCreated' });
       } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
+      // A single-prompt send creates the worktree and starts the agent in one step.
+      // The task already exists, so a start failure is reported without discarding it.
+      if (message.autoStart && createdId) {
+        try { await this.handle({ type: 'startManaged', id: createdId }); }
+        catch (error) { this.report(error); }
+      }
       return;
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
@@ -1113,7 +1165,7 @@ class Manager {
     if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
     if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }
-    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
+    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
     if (message.type === 'stopSetup') { const pending = this.pendingResource?.id === task.id ? this.pendingResource : undefined; pending?.controller.abort(); await pending?.done; await this.resources.stop(task.id); return; }
     if (message.type === 'showSetupLog') { const log = this.resources.snapshot()[task.id]?.log; if (!log) throw new Error('No setup diagnostics yet.'); await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true }); return; }
     if (['saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) {
@@ -1148,7 +1200,7 @@ class Manager {
       } finally { this.pendingResource = undefined; completeResource(); this.busy = false; await this.settleCapacity(); await this.publish(); if (!this.closing && this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
     }
-    if (this.resources.has(task.id) && ['configureSchedule', 'saveBrief', 'saveModelSelection', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('Stop setup and reconcile its writer first.');
+    if (this.resources.has(task.id) && ['configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'handoff', 'openWorktree'].includes(message.type)) throw new Error('Stop setup and reconcile its writer first.');
     if (['handoff', 'openWorktree'].includes(message.type) && this.resources.snapshot()[task.id]) throw new Error('Configured task resources are supported in Hydra managed sessions and provider terminals. Use those interfaces for this task.');
     if (message.type === 'saveBudgets') {
       this.busy = true;
@@ -1204,6 +1256,30 @@ class Manager {
         else requireAdvertisedSelection(catalog.models, message.selection);
       }
       task.modelSelection = message.selection || undefined; task.updatedAt = new Date().toISOString();
+      await this.persist(); await this.publish(); return;
+    }
+    if (message.type === 'savePermissionMode') {
+      if (this.busy || !canEditBrief(task, this.managed.view(task.id))) throw new Error('Permission mode is locked after launch. Create a new task to run under another mode.');
+      if (message.permissionMode && message.permissionMode.provider !== task.provider) throw new Error(`This is a ${task.provider} task; it cannot take a ${message.permissionMode.provider} permission mode.`);
+      task.permissionMode = message.permissionMode || undefined; task.updatedAt = new Date().toISOString();
+      await this.persist(); await this.publish(); return;
+    }
+    if (message.type === 'saveProviderSelection') {
+      // A session belongs to one provider, so provider and model are fixed once the
+      // task launches. Before that, switching provider drops the settings that only
+      // meant something to the old one, and a model is checked against the catalog
+      // the picker was actually showing.
+      if (this.busy || !canEditBrief(task, this.managed.view(task.id))) throw new Error('Provider and model are locked after launch. Create a new task to use another provider.');
+      let catalog: ModelCatalog | undefined;
+      if (message.selection) {
+        catalog = this.draftModelCatalogs.get(message.provider);
+        if (catalog?.status !== 'ready') throw new Error('Load available provider models before saving a selection.');
+        if (message.provider === 'claude') requireClaudeSelection(catalog.models, message.selection);
+        else requireAdvertisedSelection(catalog.models, message.selection);
+      }
+      if (message.provider !== task.provider) task.permissionMode = undefined;
+      if (catalog) this.modelCatalogs.set(task.id, catalog); else if (message.provider !== task.provider) this.modelCatalogs.delete(task.id);
+      task.provider = message.provider; task.modelSelection = message.selection || undefined; task.updatedAt = new Date().toISOString();
       await this.persist(); await this.publish(); return;
     }
     if (message.type === 'checkModels') {

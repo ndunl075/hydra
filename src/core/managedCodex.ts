@@ -13,6 +13,7 @@ import type { ThreadResumeParams } from './generated/codex-0.154.0/v2/ThreadResu
 import type { TurnStartParams } from './generated/codex-0.154.0/v2/TurnStartParams';
 import type { TurnInterruptParams } from './generated/codex-0.154.0/v2/TurnInterruptParams';
 import { parseEffectiveModel, readModelCatalog, requireAdvertisedSelection, verifyEffectiveModel } from './modelSelection';
+import { codexSandboxPolicy, codexThreadPolicy, defaultPermissionMode, parsePermissionMode } from './permissionMode';
 
 export class ManagedCodex {
   private readonly views = new Map<string, SessionView>();
@@ -37,6 +38,7 @@ export class ManagedCodex {
     const view = this.views.get(task.id)!;
     if (view.writerUncertain) throw new Error('Stop surviving managed process children and reconcile writer absence before resuming.');
     const selection = task.modelSelection ? { ...task.modelSelection } : undefined;
+    const permissionMode = task.permissionMode ? parsePermissionMode(task.permissionMode, 'codex') : defaultPermissionMode('codex');
     const turn: Turn = { id: randomBytes(6).toString('hex'), provider: 'codex', prompt, text: '', status: 'running', createdAt: new Date().toISOString(), ...(selection ? { modelSettings: { requested: selection } } : {}) };
     view.turns.push(turn); view.approvals = [];
     task.interface = 'managed-cli'; task.state = 'running'; task.error = undefined; task.updatedAt = new Date().toISOString();
@@ -190,9 +192,9 @@ export class ManagedCodex {
       if (selection) requireAdvertisedSelection(await readModelCatalog(request), selection);
       if (stopped) { await kill(); return; }
       await beforeTurn(); if (stopped || closing || failure) return;
-      const options = { cwd: task.worktree, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(selection ? { model: selection.model, config: { model_reasoning_effort: selection.effort } } : {}) } satisfies ThreadStartParams;
+      const options = { cwd: task.worktree, ...codexThreadPolicy(permissionMode), ...(selection ? { model: selection.model, config: { model_reasoning_effort: selection.effort } } : {}) } satisfies ThreadStartParams;
       const response = task.sessionId ? await request('thread/resume', { ...options, threadId: providerId(task.sessionId) } satisfies ThreadResumeParams) : await request('thread/start', options);
-      const threadId = validateCodexThread(response, task.worktree, task.sessionId);
+      const threadId = validateCodexThread(response, task.worktree, task.sessionId, permissionMode);
       task.sessionId = threadId; task.sessionProvider = 'codex';
       sessionSave = this.persistTask().then(() => this.observer.sessionIdentified?.(task, threadId));
       await sessionSave;
@@ -205,9 +207,9 @@ export class ManagedCodex {
       await beforeTurn(); if (stopped || closing || failure) return;
       protocol = new CodexTurn(threadId, turn);
       const started = record(await request('turn/start', {
-        threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], cwd: task.worktree, approvalPolicy: 'on-request',
+        threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], cwd: task.worktree, approvalPolicy: codexThreadPolicy(permissionMode).approvalPolicy,
         ...(selection ? { model: selection.model, effort: selection.effort } : {}),
-        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [task.worktree], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true }
+        sandboxPolicy: codexSandboxPolicy(permissionMode, task.worktree)
       } satisfies TurnStartParams));
       protocol.started(started.turn); this.changed();
     })().catch(error => { if (!stopped && !closing) fail(error); });

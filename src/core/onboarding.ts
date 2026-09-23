@@ -1,12 +1,17 @@
-export const onboardingSteps = ['welcome', 'import', 'appearance', 'accounts', 'project'] as const;
+export const onboardingSteps = ['welcome', 'import', 'appearance', 'accounts'] as const;
 export type OnboardingStep = typeof onboardingSteps[number];
 export interface OnboardingState { version: 1; step: OnboardingStep; completed: boolean; skipped: OnboardingStep[] }
 export function readOnboarding(value: unknown): OnboardingState {
-  const state = value as Partial<OnboardingState> | undefined;
-  if (state?.version !== 1 || !onboardingSteps.includes(state.step as OnboardingStep) || typeof state.completed !== 'boolean' || !Array.isArray(state.skipped) || state.skipped.some(step => !onboardingSteps.includes(step))) {
+  const state = value as { version?: unknown; step?: unknown; completed?: unknown; skipped?: unknown } | undefined;
+  // 'project' was retired as its own step; earlier saves referencing it map onto
+  // the new final step so already-completed onboarding is not lost.
+  const migrateStep = (step: unknown): unknown => step === 'project' ? 'accounts' : step;
+  const step = migrateStep(state?.step);
+  const skipped = Array.isArray(state?.skipped) ? state.skipped.map(migrateStep) : undefined;
+  if (state?.version !== 1 || !onboardingSteps.includes(step as OnboardingStep) || typeof state.completed !== 'boolean' || !skipped || skipped.some(item => !onboardingSteps.includes(item as OnboardingStep))) {
     return { version: 1, step: 'welcome', completed: false, skipped: [] };
   }
-  return { version: 1, step: state.step!, completed: state.completed, skipped: [...new Set(state.skipped)] };
+  return { version: 1, step: step as OnboardingStep, completed: state.completed, skipped: [...new Set(skipped)] as OnboardingStep[] };
 }
 export function advanceOnboarding(state: OnboardingState, skip: boolean): OnboardingState {
   const index = onboardingSteps.indexOf(state.step);

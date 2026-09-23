@@ -8,6 +8,7 @@ import { FocusedWorkspace } from '../webview/FocusedWorkspace';
 import { DelegationContextInbox } from '../webview/DelegationContextInbox';
 import { DelegationResultInspection } from '../webview/DelegationResultInspection';
 import { DelegationRunBudgetView } from '../webview/DelegationRunBudgetView';
+import { SessionThread } from '../webview/SessionThread';
 import type { Task } from '../src/core/model';
 import type { DelegationRunUsageProjection } from '../src/core/delegationRunAccounting';
 
@@ -68,15 +69,51 @@ test('focused runtime markup keeps one selected child, pending context, blocked 
 });
 
 test('editor agent panel has the compact Cursor-style conversation hierarchy without changing native editor ownership', async () => {
-  const [editor, css] = await Promise.all([source('webview/EditorConversation.tsx'), source('webview/editor-conversation.css')]);
+  const [editor, css, pickers, thread] = await Promise.all([source('webview/EditorConversation.tsx'), source('webview/editor-conversation.css'), source('webview/ComposerPickers.tsx'), source('webview/SessionThread.tsx')]);
   assert.match(editor, /className="chat-brand"/);
   assert.match(editor, /className="chat-mark"/);
   assert.match(editor, /className="chat-toolbar-actions"/);
-  assert.match(editor, /className="picker-kicker">CHAT/);
-  assert.match(editor, /className="provider-badge"/);
-  assert.match(editor, /Isolated worktree/);
+  // The panel mirrors the provider's own chat surface: one quiet identity line,
+  // then messages. The stacked conversation/identity/provider header rows are gone.
+  assert.match(editor, /className="chat-quiet"/);
+  assert.doesNotMatch(editor, /chat-task-picker|chat-identity|chat-details|provider-badge/);
+  // Branch and worktree stay: Hydra runs each agent in its own worktree, which the
+  // surface it mirrors has no equivalent for, so this is the one thing it must keep.
+  assert.match(editor, /className="chat-quiet-branch"/);
+  assert.match(editor, /task\.worktree/);
   assert.match(css, /\.chat-toolbar \{ min-height: 42px/);
-  assert.match(css, /\.editor-conversation \.follow-up \{[\s\S]*border-top: 1px solid var\(--border\)/);
+  assert.match(css, /\.chat-quiet \{[\s\S]*border-bottom: 1px solid var\(--border\)/);
+  // The removed chrome must not leave dead rules behind in the stylesheet.
+  assert.doesNotMatch(css, /\.chat-task-picker|\.chat-identity|\.chat-details|\.provider-badge|\.chat-worktree|\.editor-conversation \.follow-up/);
+  // The conversation switcher is a themed menu, not a native <select>: Chromium
+  // hands an open select to the OS, which draws a popup CSS cannot style.
+  assert.doesNotMatch(editor, /<select aria-label="Conversation"/);
+  assert.match(editor, /function ConversationMenu/);
+  // With no model chosen the model chip names the provider. "Provider defaults"
+  // sat beside Claude's permission mode, which is literally named "default".
+  assert.match(pickers, /: providerLabel\[provider\];/);
+  // Effort is chosen, not implied: Claude's catalog has no default effort, and
+  // taking the first level silently set Claude models to the lowest one.
+  assert.match(pickers, /aria-label="Effort"/);
+  assert.match(pickers, /model\.efforts\.includes\('medium'\)/);
+  assert.doesNotMatch(pickers, /model\.efforts\[0\] \|\| ''/);
+  // Inside a conversation the composer uses the same pickers until launch, then
+  // reports them read-only; provider can change only before the first launch.
+  assert.match(thread, /const editable = canEditBrief\(task, session\)/);
+  assert.match(thread, /type: 'saveProviderSelection'/);
+  assert.match(thread, /<ContextRing usage=\{latestContextUsage\(session\.turns\)\} \/>/);
+  // The composer has no drag handle; it sizes itself between min and max height.
+  assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{ resize: none;/);
   assert.match(css, /body\.vscode-high-contrast/);
   assert.match(css, /prefers-reduced-motion: reduce/);
+});
+
+test('an unstarted task still accepts typing: the box extends the first message and send starts the task', () => {
+  const task: Task = { id: '4'.repeat(12), title: 'hi', prompt: 'hi', repository: 'C:/repo', worktree: 'C:/repo/wt', branch: 'agent/hi', baseCommit: 'a'.repeat(40), integrationTarget: 'main', provider: 'claude', interface: 'interactive-cli', state: 'idle', createdAt: '2026-09-23T00:00:00.000Z', updatedAt: '2026-09-23T00:00:00.000Z' };
+  const html = renderToStaticMarkup(React.createElement(SessionThread, { task, session: { version: 1, turns: [] }, busy: false, send: () => {}, compact: true, composer: { catalogs: {}, providers: [], delegationMode: 'solo' } }));
+  const textarea = html.match(/<textarea[^>]*>/)![0];
+  // It used to be disabled until a session existed, so a never-started task was a dead box.
+  assert.doesNotMatch(textarea, /disabled/);
+  assert.match(textarea, /placeholder="Add to your first message, or send to start"/);
+  assert.match(html, /aria-label="Start task"/);
 });

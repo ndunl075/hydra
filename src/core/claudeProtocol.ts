@@ -2,12 +2,14 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Turn } from './model';
 import type { ModelSelection } from './modelSelection';
+import { claudeInitMatches, claudePermissionArgument, defaultPermissionMode, permissionModeLabel, type TaskPermissionMode } from './permissionMode';
 
 export const testedClaudeVersion = '2.1.270';
 export const sessionIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-export function claudeArguments(sessionId?: string, selection?: ModelSelection): string[] {
+export function claudeArguments(sessionId?: string, selection?: ModelSelection, permissionMode?: TaskPermissionMode): string[] {
   if (sessionId && !sessionIdPattern.test(sessionId)) throw new Error('Invalid Claude session ID.');
-  return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'default', '--permission-prompts', 'host', ...(sessionId ? ['--resume', sessionId] : []), ...(selection ? ['--model', selection.model, '--effort', selection.effort] : [])];
+  const mode = claudePermissionArgument(permissionMode ?? defaultPermissionMode('claude'));
+  return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', mode, '--permission-prompts', 'host', ...(sessionId ? ['--resume', sessionId] : []), ...(selection ? ['--model', selection.model, '--effort', selection.effort] : [])];
 }
 export class ClaudeProtocol {
   private decoder = new StringDecoder('utf8');
@@ -15,7 +17,7 @@ export class ClaudeProtocol {
   sessionId?: string;
   resultReceived = false;
   initialized = false;
-  constructor(readonly turn: Turn, private readonly cwd: string, private readonly expectedSession?: string) {}
+  constructor(readonly turn: Turn, private readonly cwd: string, private readonly expectedSession?: string, private readonly permissionMode?: TaskPermissionMode) {}
   push(bytes: Buffer): void { this.pending += this.decoder.write(bytes); this.drain(false); }
   end(): void { this.pending += this.decoder.end(); this.drain(true); }
   private drain(final: boolean): void {
@@ -34,7 +36,11 @@ export class ClaudeProtocol {
     if (!event || typeof event !== 'object' || typeof event.type !== 'string') throw new Error('Invalid Claude event envelope.');
     if (event.parent_tool_use_id) return; // Subagent text is retained in raw diagnostics, not mixed into the main response.
     if (event.type === 'system' && event.subtype === 'init') {
-      if (this.initialized || event.claude_code_version !== testedClaudeVersion || typeof event.cwd !== 'string' || path.relative(this.cwd, event.cwd) !== '' || !['default', 'manual'].includes(event.permissionMode)) throw new Error('Claude initialization did not match the tested version, worktree, or permission mode.');
+      if (this.initialized || event.claude_code_version !== testedClaudeVersion || typeof event.cwd !== 'string' || path.relative(this.cwd, event.cwd) !== '') throw new Error('Claude initialization did not match the tested version or worktree.');
+      // Assert Claude echoed the mode that was requested, rather than accepting a
+      // fixed list: that catches a silent escalation or downgrade of the request.
+      const requested = this.permissionMode ?? defaultPermissionMode('claude');
+      if (!claudeInitMatches(requested, event.permissionMode)) throw new Error(`Claude started in ${String(event.permissionMode)} instead of the requested ${permissionModeLabel(requested)} permission mode. No turn submitted.`);
       this.captureSession(event.session_id); this.initialized = true;
     } else if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
       if (!this.initialized || typeof event.event.delta.text !== 'string') throw new Error('Invalid Claude text delta.');

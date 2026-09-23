@@ -28,31 +28,17 @@ body[data-surface="editor"] {
 .chat-toolbar .chat-settings { font-size: 13px; letter-spacing: 1px; }
 .chat-toolbar .icon-button:hover { background: var(--hover); color: var(--text); }
 
-.chat-task-picker { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; column-gap: 7px; min-height: 34px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--rail); }
-.picker-kicker { color: var(--cursor-green); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 8px; letter-spacing: .11em; }
-.chat-task-picker label { font-size: 10px; color: var(--muted); }
-.chat-task-picker select { min-width: 0; border: 0; padding: 0; color: var(--text); background: transparent; font-size: 11px; font-weight: 500; text-overflow: ellipsis; }
 
-.chat-identity { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; }
-.chat-identity > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-project { color: var(--text); }
-.chat-separator { padding: 0 5px; color: var(--muted); }
-.chat-branch { color: var(--muted); }
 .editor-conversation .state { margin-left: 0; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-family: var(--vscode-font-family, "Segoe UI", sans-serif); font-size: 9px; text-transform: capitalize; white-space: nowrap; }
 .editor-conversation .state.running, .editor-conversation .state.external { color: var(--cursor-green); border-color: color-mix(in srgb, var(--cursor-green) 35%, var(--border)); background: color-mix(in srgb, var(--cursor-green) 8%, transparent); }
 .editor-conversation .state.interrupted, .editor-conversation .state.error { color: var(--warning); }
 
-.chat-details { flex-shrink: 0; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 62%, var(--primary)); }
-.chat-details > summary { display: flex; align-items: center; gap: 7px; min-height: 38px; padding: 0 12px; cursor: pointer; font-size: 11px; list-style: none; }
-.chat-details > summary::-webkit-details-marker { display: none; }
-.chat-details > summary::after { content: "+"; margin-left: 7px; color: var(--muted); font-size: 15px; line-height: 1; }
-.chat-details[open] > summary::after { content: "−"; }
-.provider-badge { width: 17px; height: 17px; display: grid; place-items: center; border: 1px solid #426a56; border-radius: 4px; color: var(--cursor-green); font-family: Georgia, serif; font-size: 11px; font-weight: 700; }
-.chat-model { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.chat-details-body { max-height: 42vh; overflow-y: auto; padding: 3px 12px 13px; border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); }
-.chat-worktree { display: block; margin: 4px 0 13px; padding: 7px 8px; overflow-wrap: anywhere; border-left: 2px solid #376c51; background: color-mix(in srgb, var(--surface) 80%, #000); color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; line-height: 1.45; }
 
-.chat-start { overflow-y: auto; max-width: 660px; margin: 0 auto; padding: 42px 27px 28px; }
+.chat-start { overflow-y: auto; max-width: 660px; margin: 0 auto; padding: 10px 8px 8px; }
+/* The empty-state composer sits against the bottom of the panel, where the
+   follow-up box appears once a task exists, so the input does not jump. The
+   auto top margin works because .editor-conversation is a flex column. */
+.chat-start-composer { margin-top: auto; width: 100%; }
 .chat-introduction { position: relative; margin-bottom: 28px; padding: 0 0 22px; border-bottom: 1px solid var(--border); }
 .chat-introduction::after { content: ""; position: absolute; bottom: -1px; left: 0; width: 68px; height: 2px; background: var(--cursor-green); }
 .chat-start h2 { margin: 12px 0 10px; color: var(--text); font-size: 23px; font-weight: 560; letter-spacing: -.5px; }
@@ -66,6 +52,77 @@ body[data-surface="editor"] {
 .editor-conversation .delegation-control { padding: 10px; border: 1px solid var(--border); border-radius: 5px; background: color-mix(in srgb, var(--surface) 70%, var(--primary)); }
 .editor-conversation .delegation-control legend { color: var(--muted); font-size: 9px; letter-spacing: .1em; }
 .editor-conversation .delegation-control .secondary { padding: 5px 8px; }
+.task-prompt-form { gap: 8px; }
+/* The in-conversation composer is the same form outside .chat-start, so it
+   carries its own gutter and divider from the message list above it. */
+.editor-conversation .session-conversation .task-prompt-form { flex-shrink: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 88%, #000); }
+.editor-conversation .session-conversation .task-prompt-box .task-prompt-textarea { min-height: 58px; max-height: 30vh; }
+.task-prompt-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--surface); }
+.task-prompt-box:focus-within { border-color: color-mix(in srgb, #4f9871 55%, transparent); }
+.task-prompt-toolbar-group .icon-button { border-radius: 7px; }
+/* Scoped past `.chat-start form textarea` and the generic `form textarea`, both
+   more specific than a bare class, which drew a second box inside the composer.
+   Anchoring on .task-prompt-box keeps it winning wherever the composer is used. */
+.task-prompt-box .task-prompt-name { border: 0; background: transparent; padding: 2px 2px 0; font-size: 12px; font-weight: 560; color: var(--text); }
+.task-prompt-name:focus-visible { outline: none; }
+.task-prompt-box .task-prompt-textarea { resize: none; min-height: 84px; max-height: 40vh; border: 0; background: transparent; padding: 2px; font-size: 12px; line-height: 1.6; color: var(--text); }
+.task-prompt-textarea:focus-visible { outline: none; }
+.task-prompt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.task-prompt-toolbar-group { display: flex; align-items: center; gap: 6px; }
+.compact-select { padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 10px; max-width: 120px; }
+.delegation-pill-group { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.delegation-pill { padding: 3px 8px; border-radius: 4px; color: var(--muted); font-size: 10px; line-height: 14px; }
+.delegation-pill[aria-pressed="true"] { color: #fff; background: #285b43; }
+/* One quiet identity line replaces the old stack of header rows. */
+.chat-quiet { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border-bottom: 1px solid var(--border); background: var(--rail); color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; }
+.chat-quiet-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-quiet .state { margin-left: auto; flex-shrink: 0; }
+.chat-quiet-title { min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: var(--vscode-font-family, "Segoe UI", sans-serif); font-size: 12px; font-weight: 600; }
+.conversation-menu { position: relative; flex-shrink: 0; }
+.conversation-menu > summary { list-style: none; }
+.conversation-menu > summary::-webkit-details-marker { display: none; }
+.conversation-menu-body { top: calc(100% + 6px); bottom: auto; min-width: 220px; max-height: 50vh; overflow-y: auto; }
+/* Read-only context chips: what this turn will run as. Model and permission mode
+   lock at launch, so in the sidebar they report rather than edit. */
+/* Plain icon buttons: + to attach, and the history menu in the header. */
+.composer-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.composer-icon-button:hover:not(:disabled), details[open] > .composer-icon-button { background: var(--hover); color: var(--text); }
+.composer-icon-button:disabled { opacity: .45; cursor: default; }
+.composer-mode { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; color: var(--muted); font-size: 10px; line-height: 14px; white-space: nowrap; }
+/* Sidebar messages: a user turn is a card, an assistant turn is just its text. */
+.editor-conversation .message.user-card { padding: 8px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.editor-conversation .turn-status { display: inline-block; margin-bottom: 4px; color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+.composer-chip { padding: 4px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; line-height: 14px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-stop { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 999px; background: var(--hover); color: var(--text); font-size: 9px; line-height: 1; }
+.composer-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--warning, #d98c5f) 22%, var(--hover)); }
+.task-prompt-send { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 6px; background: var(--cursor-green); color: #08120d; line-height: 1; }
+.task-prompt-send:disabled { opacity: .45; cursor: default; }
+.task-prompt-send:not(:disabled):hover { filter: brightness(1.08); }
+.mode-picker { position: relative; }
+.mode-picker > summary { list-style: none; display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 0; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; cursor: pointer; }
+.mode-picker-plain > summary { background: transparent; padding: 4px 6px; }
+.mode-picker-plain > summary:hover, .mode-picker-plain[open] > summary { background: var(--hover); color: var(--text); }
+.mode-picker > summary::-webkit-details-marker { display: none; }
+.mode-picker[open] > summary { color: var(--text); }
+.mode-picker-body { position: absolute; z-index: 20; bottom: calc(100% + 6px); right: 0; min-width: 200px; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--primary); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.mode-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 6px; border-radius: 4px; color: var(--text); font-size: 11px; text-align: left; }
+.mode-picker-option:hover { background: var(--hover); }
+.mode-picker-option-text { display: flex; flex-direction: column; gap: 2px; }
+.mode-picker-option-text .muted { color: var(--muted); font-size: 9px; }
+.mode-picker-check { color: var(--cursor-green); font-size: 11px; }
+.model-picker { position: relative; }
+.model-picker > summary { list-style: none; padding: 4px 8px; border: 0; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.model-picker > summary::-webkit-details-marker { display: none; }
+.model-picker[open] > summary { color: var(--text); }
+.model-picker-body { position: absolute; z-index: 20; bottom: calc(100% + 6px); left: 0; min-width: 220px; max-width: 280px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--primary); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.model-picker-group + .model-picker-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.model-picker-group-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.model-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 5px 6px; border-radius: 4px; color: var(--text); font-size: 11px; text-align: left; }
+.model-picker-option:hover { background: var(--hover); }
+.model-picker-option[aria-pressed="true"] { background: color-mix(in srgb, var(--cursor-green) 25%, transparent); }
+.model-picker-option .muted { color: var(--muted); font-size: 10px; }
+.model-picker-clear { display: block; margin-top: 8px; }
+.chat-mark img, .editor-conversation .hydra-avatar img { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 .chat-error, .chat-notice { flex-shrink: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
 .chat-error { color: var(--vscode-errorForeground, #e0a090); background: var(--vscode-inputValidation-errorBackground, #302020); }
@@ -88,21 +145,12 @@ body[data-surface="editor"] {
 .editor-conversation .approval-request { max-width: 760px; margin: 12px auto; padding: 12px; border-radius: 5px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); background: color-mix(in srgb, var(--warning) 7%, var(--surface)); }
 .editor-conversation .approval-request pre { max-height: 240px; overflow: auto; font-size: 10px; }
 
-.editor-conversation .follow-up { flex-shrink: 0; display: flex; gap: 9px; margin: 0; padding: 11px 12px 12px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: color-mix(in srgb, var(--primary) 88%, #000); max-height: 47vh; overflow-y: auto; }
-.editor-conversation .follow-up > label { flex: 1; gap: 5px; color: var(--muted); font-size: 9px; letter-spacing: .08em; }
-.editor-conversation .follow-up textarea { min-height: 62px; max-height: 160px; padding: 8px 9px; border: 1px solid var(--input-border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px; }
-.editor-conversation .follow-up textarea:focus-visible { outline-offset: 1px; border-color: #4f9871; }
-.editor-conversation .follow-up .task-actions { align-items: center; gap: 6px; margin: 0; }
 .editor-conversation .primary, .editor-conversation .secondary, .editor-conversation .stop-button { padding: 6px 9px; font-size: 10px; line-height: 16px; }
-.editor-conversation .follow-up .task-actions > .primary { margin-right: auto; }
-.editor-conversation .follow-up .form-note { width: 100%; margin: 0; font-size: 9px; line-height: 1.45; }
 .editor-conversation .task-actions { gap: 6px; margin: 12px 0 0; }
 
 @media (max-width: 300px) {
-  .chat-brand > span:last-child, .chat-task-picker label { display: none; }
-  .chat-task-picker { grid-template-columns: auto minmax(0, 1fr); }
+  .chat-brand > span:last-child { display: none; }
   .chat-create-options { grid-template-columns: 1fr; }
-  .chat-model { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -111,4 +159,25 @@ body[data-surface="editor"] {
 
 body.vscode-high-contrast .chat-toolbar, body.vscode-high-contrast-light .chat-toolbar { background: var(--primary); }
 body.vscode-high-contrast .chat-mark, body.vscode-high-contrast-light .chat-mark { background: var(--secondary); box-shadow: none; }
-body.vscode-high-contrast .provider-badge, body.vscode-high-contrast-light .provider-badge { border-color: var(--border); color: var(--text); }
+
+/* Effort for the chosen model: its own levels as a segmented row, the way the
+   provider's model menu shows effort beneath the model list. */
+.model-picker-effort { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 6px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.effort-options { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 6px; background: var(--hover); }
+.effort-options button { padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 10px; line-height: 14px; cursor: pointer; }
+.effort-options button[aria-pressed="true"] { background: var(--surface); color: var(--text); }
+.effort-options button:disabled { opacity: .5; cursor: default; }
+/* A model Hydra cannot verify stays listed, disabled, with its reason on hover. */
+.model-picker-option:disabled { opacity: .45; cursor: default; }
+
+/* Context usage ring: read-only, and absent until a turn has reported usage. */
+.context-ring { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; }
+.context-ring circle { fill: none; stroke-width: 2; }
+.context-ring-track { stroke: var(--border); }
+.context-ring-fill { stroke: var(--cursor-green); stroke-linecap: round; }
+.context-ring-rising .context-ring-fill { stroke: #d9b45f; }
+.context-ring-high .context-ring-fill { stroke: var(--warning, #d98c5f); }
+
+/* A menu opened from a chip on the left of the toolbar grows rightward, so it
+   never runs past the panel's left edge and clips its own labels. */
+.task-prompt-toolbar-group:first-child .mode-picker-body { left: 0; right: auto; }

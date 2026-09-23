@@ -178,9 +178,15 @@ test('Claude cancellation removes pending approval and prevents later consent', 
   const f = await fixture({ cancelApproval: true });
   try {
     await f.manager.start(f.task, f.executable, 'approve:Bash');
-    await waitFor(() => !!f.manager.view(f.task.id)?.approvals?.length);
-    const id = f.manager.view(f.task.id)!.approvals![0]!.id;
+    // The fixture cancels 100ms after raising the approval. Polling for it raced:
+    // when both arrive in one stdout read they are handled back to back, so the
+    // approval is never observable and a busy CI runner timed out. The recorded
+    // evidence proves it was raised, without depending on scheduling.
     await f.manager.finished(f.task.id);
+    const turn = f.manager.view(f.task.id)!.turns.at(-1)!;
+    const raised = (await readFile(f.store.rawPath(f.task.id, turn.id), 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.type === 'approval-request');
+    assert.equal(raised.length, 1);
+    const id = raised[0].data.approval.id;
     assert.deepEqual(f.manager.view(f.task.id)?.approvals, []);
     assert.throws(() => f.manager.approve(f.task.id, id, 'accept'));
     await assert.rejects(readFile(path.join(f.root, 'claude-decisions.jsonl')), { code: 'ENOENT' });
@@ -199,4 +205,24 @@ test('Claude waits for the session observer before publishing rapid completion',
     await new Promise(resolve => setTimeout(resolve, 200)); assert.equal(completed, false); assert.equal(manager.has(f.task.id), true);
     release(); await manager.finished(f.task.id); assert.equal(completed, true); assert.equal(f.task.state, 'idle');
   } finally { release(); await manager.shutdown(); await f.close(); }
+});
+
+test('the usage ring reads context once after a completed turn and can never fail the turn', async () => {
+  const usage = { totalTokens: 24000, maxTokens: 200000, percentage: 12 };
+  // A reply, an error reply, a malformed reply, and no reply at all (timeout).
+  for (const [scenario, expected] of [[{}, usage], [{ contextUsage: 'rejected' }, undefined], [{ contextUsage: 'malformed' }, undefined], [{ contextUsage: 'silent' }, undefined]] as const) {
+    const f = await fixture(scenario);
+    try {
+      await f.manager.start(f.task, f.executable, 'ring fixture'); await f.manager.finished(f.task.id);
+      assert.equal(f.task.state, 'idle', JSON.stringify(scenario));
+      const turn = f.manager.view(f.task.id)!.turns.at(-1)!;
+      assert.equal(turn.status, 'completed', JSON.stringify(scenario));
+      assert.deepEqual(turn.contextUsage, expected, JSON.stringify(scenario));
+      // Persisted, and it passes the session store's validation on reload.
+      assert.deepEqual((await f.store.load(f.task.id)).turns.at(-1)!.contextUsage, expected);
+      // Exactly one read-only summary query, after the result and nothing else.
+      const controls = (await readFile(path.join(f.root, 'claude-controls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).request);
+      assert.deepEqual(controls.filter(request => request.subtype === 'get_context_usage'), [{ subtype: 'get_context_usage', detail: 'summary' }]);
+    } finally { await f.close(); }
+  }
 });

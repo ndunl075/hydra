@@ -85,8 +85,14 @@ export function isolatedEditorTypes(upstream, declaration, typeRoots) {
   // A nested checkout otherwise finds Hydra's older @types/vscode through
   // ancestor node_modules, even with typeRoots set. Resolve imports to the
   // editor's own API declarations; keep all upstream checking enabled.
+  //
+  // typeRoots is passed only where the upstream config has no explicit "types"
+  // list. src/tsconfig.json pins one, and that alone excludes ancestor @types.
+  // Forcing typeRoots there would additionally make every "types" entry resolve
+  // under that single root, which drops the scoped @webgpu/types package and
+  // leaves the editor's GPU renderer without its WebGPU globals (28 errors).
   return { ...upstream, compilerOptions: { ...upstream.compilerOptions,
-    typeRoots: upstream.compilerOptions?.typeRoots ?? typeRoots,
+    ...(typeRoots ? { typeRoots: upstream.compilerOptions?.typeRoots ?? typeRoots } : {}),
     paths: { ...upstream.compilerOptions?.paths, vscode: [declaration] } } };
 }
 export function brandedInstaller(text) {
@@ -205,9 +211,23 @@ async function npm(args, cwd, extraEnv) {
 export function brandedThemeStartup(text) {
   const constructor = /new ThemeConfiguration\(configurationService, hostColorService, isNewUser\d*\);/g;
   const migration = 'await this.migrateAutoDetectColorScheme();';
-  if ([...text.matchAll(constructor)].length !== 1 || text.split(migration).length !== 2) throw new Error('Pinned theme startup contract changed.');
-  return text.replace(constructor, 'new ThemeConfiguration(configurationService, hostColorService, false);')
-    .replace(migration, '// Hydra honors its dark default without writing a system-theme preference for new users.');
+  const newUser = /\t*const isNewUser\d* = this\.storageService\.isNew\(StorageScope\.APPLICATION\);\n/g;
+  if ([...text.matchAll(constructor)].length !== 1 || text.split(migration).length !== 2 || [...text.matchAll(newUser)].length !== 1) throw new Error('Pinned theme startup contract changed.');
+  text = text.replace(constructor, 'new ThemeConfiguration(configurationService, hostColorService, false);')
+    .replace(migration, '// Hydra honors its dark default without writing a system-theme preference for new users.')
+    .replace(newUser, '');
+  // Dropping the call and the isNewUser read orphans the migration helper, and
+  // the vendored tsconfig sets noUnusedLocals, so the method must go too. Its
+  // dependencies (userDataInitializationService, ConfigurationTarget,
+  // DETECT_COLOR_SCHEME) all have other callers, so nothing else is orphaned.
+  const docStart = "\t/**\n\t * For new users who haven't explicitly configured `window.autoDetectColorScheme`,";
+  const signature = '\tprivate async migrateAutoDetectColorScheme(): Promise<void> {';
+  const close = '\n\t}\n';
+  const start = text.indexOf(docStart);
+  if (start < 0 || text.split(docStart).length !== 2 || text.split(signature).length !== 2) throw new Error('Pinned theme migration helper changed.');
+  const end = text.indexOf(close, text.indexOf(signature, start));
+  if (end < 0) throw new Error('Pinned theme migration helper is unterminated.');
+  return text.slice(0, start) + text.slice(end + close.length);
 }
 export function brandedEditorGroupWatermark(text) {
   if (text.includes('renderHydraStartSurface')) throw new Error('Pinned watermark changed: Hydra start surface already exists.');
@@ -254,18 +274,27 @@ export function brandedEditorGroupWatermark(text) {
     '\t\tupdate();\n' +
     '\t\tthis.transientDisposables.add(this.keybindingService.onDidUpdateKeybindings(update));\n' +
     '\t}';
-  const newRender = '\tprivate render(): void {\n' +
-    '\t\tclearNode(this.shortcuts);\n' +
-    '\t\tthis.transientDisposables.clear();\n\n' +
-    '\t\t// Only the fully empty workbench (no folder or workspace at all) gets the\n' +
-    '\t\t// Cursor-style start surface; an empty group inside an already-open\n' +
-    '\t\t// project keeps the plain background mark, not project-entry actions.\n' +
-    '\t\tif (this.workbenchState !== WorkbenchState.EMPTY) {\n' +
+  // Only the fully empty workbench (no folder or workspace at all) gets the
+  // Cursor-style start surface. An empty group inside an already-open project
+  // falls through to upstream's greyed-out letterpress mark and keybinding
+  // tips, so none of the upstream watermark machinery becomes dead code.
+  const emptyBranch = '\n\t\t// The fully empty workbench (no folder or workspace at all) gets the\n' +
+    '\t\t// Cursor-style start surface, ignoring the tips setting; an empty group\n' +
+    "\t\t// inside an open project keeps upstream's letterpress mark and tips.\n" +
+    '\t\tif (this.workbenchState === WorkbenchState.EMPTY) {\n' +
+    '\t\t\trenderHydraStartSurface(this.shortcuts, this.commandService, this.workspacesService, this.hostService, this.productService);\n' +
     '\t\t\treturn;\n' +
-    '\t\t}\n\n' +
-    '\t\trenderHydraStartSurface(this.shortcuts, this.commandService, this.workspacesService, this.hostService, this.productService);\n' +
-    '\t}';
-  replaceOnce(originalRender, newRender);
+    '\t\t}\n';
+  const renderAnchor = '\t\tthis.transientDisposables.clear();\n';
+  if (originalRender.split(renderAnchor).length !== 2) throw new Error('Pinned watermark changed: render disposable reset.');
+  // The empty branch returns early, so the entry ternary's EMPTY arm is now
+  // unreachable and tsgo rejects the narrowed comparison; select the workspace
+  // entries directly. emptyWindowEntries stays live via the cachedWhen loop.
+  const entryTernary = '\t\tconst entries = this.filterEntries(this.workbenchState !== WorkbenchState.EMPTY ? workspaceEntries : emptyWindowEntries);\n';
+  if (originalRender.split(entryTernary).length !== 2) throw new Error('Pinned watermark changed: entry selection.');
+  replaceOnce(originalRender, originalRender
+    .replace(renderAnchor, renderAnchor + emptyBranch)
+    .replace(entryTernary, '\t\tconst entries = this.filterEntries(workspaceEntries);\n'));
   return text;
 }
 export function brandedGettingStartedContent(text) {
@@ -534,7 +563,7 @@ export async function prepare() {
   const nativeThemePath = 'src/vs/platform/theme/electron-main/themeMainServiceImpl.ts';
   await fs.writeFile(path.join(source, nativeThemePath), brandedNativeThemeStartup(await git(['show', `${pin.commit}:${nativeThemePath}`])));
   for (const [configPath, declaration, typeRoots] of [
-    ['src/tsconfig.base.json', './vscode-dts/vscode.d.ts', ['../node_modules/@types']],
+    ['src/tsconfig.base.json', './vscode-dts/vscode.d.ts', null],
     ['extensions/tsconfig.base.json', '../src/vscode-dts/vscode.d.ts', ['./node_modules/@types', '../node_modules/@types']]
   ]) {
     const config = JSON.parse(await git(['show', `${pin.commit}:${configPath}`]));

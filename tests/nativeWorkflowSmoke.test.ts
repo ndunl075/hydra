@@ -68,7 +68,7 @@ test('focused runtime markup keeps one selected child, pending context, blocked 
 });
 
 test('editor agent panel has the compact Cursor-style conversation hierarchy without changing native editor ownership', async () => {
-  const [editor, css] = await Promise.all([source('webview/EditorConversation.tsx'), source('webview/editor-conversation.css')]);
+  const [editor, css, pickers, thread] = await Promise.all([source('webview/EditorConversation.tsx'), source('webview/editor-conversation.css'), source('webview/ComposerPickers.tsx'), source('webview/SessionThread.tsx')]);
   assert.match(editor, /className="chat-brand"/);
   assert.match(editor, /className="chat-mark"/);
   assert.match(editor, /className="chat-toolbar-actions"/);
@@ -90,7 +90,17 @@ test('editor agent panel has the compact Cursor-style conversation hierarchy wit
   assert.match(editor, /function ConversationMenu/);
   // With no model chosen the model chip names the provider. "Provider defaults"
   // sat beside Claude's permission mode, which is literally named "default".
-  assert.match(editor, /: providerLabel\[provider\];/);
+  assert.match(pickers, /: providerLabel\[provider\];/);
+  // Effort is chosen, not implied: Claude's catalog has no default effort, and
+  // taking the first level silently set Claude models to the lowest one.
+  assert.match(pickers, /aria-label="Effort"/);
+  assert.match(pickers, /model\.efforts\.includes\('medium'\)/);
+  assert.doesNotMatch(pickers, /model\.efforts\[0\] \|\| ''/);
+  // Inside a conversation the composer uses the same pickers until launch, then
+  // reports them read-only; provider can change only before the first launch.
+  assert.match(thread, /const editable = canEditBrief\(task, session\)/);
+  assert.match(thread, /type: 'saveProviderSelection'/);
+  assert.match(thread, /<ContextRing usage=\{latestContextUsage\(session\.turns\)\} \/>/);
   // The composer has no drag handle; it sizes itself between min and max height.
   assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{ resize: none;/);
   assert.match(css, /body\.vscode-high-contrast/);

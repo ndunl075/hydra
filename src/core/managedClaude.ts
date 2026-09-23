@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { claudeArguments, ClaudeProtocol, testedClaudeVersion } from './claudeProtocol';
 import { claudeInitMatches, defaultPermissionMode, parsePermissionMode, permissionModeLabel } from './permissionMode';
+import { parseContextUsage } from './contextUsage';
 import { processLaunch, terminateProcessTree } from './process';
 import { SessionStore } from './sessionStore';
 import { ClaudeMessages, claudeRecord, readClaudeEffective, readClaudeModels } from './claudeControls';
@@ -70,7 +71,10 @@ export class ManagedClaude {
     const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
     const approvals = new Map<string, { requestId: string; input: Record<string, unknown>; toolUseId: string; approval: Approval }>();
     const seenRequests = new Set<string>();
-    let failure: string | undefined, stopped = false, bytes = 0, nextId = 0, submitted = false, closing = false;
+    let failure: string | undefined, stopped = false, bytes = 0, nextId = 0, submitted = false, closing = false, finishing = false;
+    // Optional requests that timed out; a late reply to one is dropped, not treated
+    // as an unmatched response that would fail a turn that already completed.
+    const abandoned = new Set<string>();
     let cleanup: Promise<void> | undefined;
     let sessionSave: Promise<void> = Promise.resolve();
     let sessionSaving = false;
@@ -94,11 +98,11 @@ export class ManagedClaude {
     };
     const log = (type: string, data: unknown) => { if (data) void this.store.log(task.id, turn.id, { sequence: ++sequence, type, data }).catch(fail); };
     const send = (message: unknown) => { if (stopped || closing || failure || child.exitCode !== null || child.signalCode !== null) throw new Error('Claude connection closed.'); log('stdin', message); child.stdin.write(JSON.stringify(message) + '\n'); };
-    const request = (subtype: 'initialize' | 'get_settings' | 'get_binary_version'): Promise<unknown> => new Promise((resolve, reject) => {
+    const request = (subtype: 'initialize' | 'get_settings' | 'get_binary_version' | 'get_context_usage', extra: Record<string, unknown> = {}, timeout = 15000, optional = false): Promise<unknown> => new Promise((resolve, reject) => {
       const request_id = `hydra-control-${++nextId}`;
-      const timer = setTimeout(() => { pending.delete(request_id); reject(new Error(`Claude ${subtype} timed out. No turn submitted.`)); }, 15000);
+      const timer = setTimeout(() => { pending.delete(request_id); if (optional) abandoned.add(request_id); reject(new Error(`Claude ${subtype} timed out. No turn submitted.`)); }, timeout);
       pending.set(request_id, { resolve, reject, timer });
-      try { send({ type: 'control_request', request_id, request: { subtype } }); } catch (error) { clearTimeout(timer); pending.delete(request_id); reject(error); }
+      try { send({ type: 'control_request', request_id, request: { subtype, ...extra } }); } catch (error) { clearTimeout(timer); pending.delete(request_id); reject(error); }
     });
     const update = () => {
       if (saveTimer) return;
@@ -114,7 +118,7 @@ export class ManagedClaude {
     const messages = new ClaudeMessages(message => {
       if (message.type === 'control_response') {
         const response = claudeRecord(message.response), entry = pending.get(response.request_id);
-        if (!entry) throw new Error('Unmatched Claude control response.');
+        if (!entry) { if (abandoned.delete(response.request_id)) return; throw new Error('Unmatched Claude control response.'); }
         clearTimeout(entry.timer); pending.delete(response.request_id);
         // Effective/raw settings and account data never enter the diagnostic log.
         log('control-response', { requestId: response.request_id, subtype: response.subtype });
@@ -156,9 +160,17 @@ export class ManagedClaude {
         sessionSave = this.persistTask().then(() => this.observer.sessionIdentified?.(task, sessionId)).catch(fail).finally(() => { sessionSaving = false; view.approvals = [...approvals.values()].map(entry => entry.approval); this.changed(); });
       }
       if (message.type === 'system' && message.subtype === 'init' && selection && message.model !== turn.modelSettings?.effective?.model) throw new Error('Claude initialization changed the acknowledged model. Turn stopped; inspect provider settings.');
-      if (protocol.resultReceived && !closing) {
+      if (protocol.resultReceived && !closing && !finishing) {
         if (approvals.size) throw new Error('Claude completed while approval was still pending.');
-        closing = true; child.stdin.end(); closeTimer = setTimeout(() => { void kill(); }, 3000);
+        finishing = true;
+        // A read-only snapshot for the composer's usage ring, taken before stdin
+        // closes. It is optional: a rejection, malformed reply or timeout leaves the
+        // finished turn exactly as it was. Nothing here compacts or changes context.
+        void (async () => {
+          try { const usage = parseContextUsage(await request('get_context_usage', { detail: 'summary' }, 3000, true)); if (usage) { turn.contextUsage = usage; update(); } }
+          catch { /* The ring stays empty for this turn. */ }
+          finally { if (!closing) { closing = true; try { child.stdin.end(); } catch { /* already closed */ } closeTimer = setTimeout(() => { void kill(); }, 3000); } }
+        })();
       }
       update();
     });

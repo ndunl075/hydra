@@ -200,3 +200,23 @@ test('Claude waits for the session observer before publishing rapid completion',
     release(); await manager.finished(f.task.id); assert.equal(completed, true); assert.equal(f.task.state, 'idle');
   } finally { release(); await manager.shutdown(); await f.close(); }
 });
+
+test('the usage ring reads context once after a completed turn and can never fail the turn', async () => {
+  const usage = { totalTokens: 24000, maxTokens: 200000, percentage: 12 };
+  // A reply, an error reply, a malformed reply, and no reply at all (timeout).
+  for (const [scenario, expected] of [[{}, usage], [{ contextUsage: 'rejected' }, undefined], [{ contextUsage: 'malformed' }, undefined], [{ contextUsage: 'silent' }, undefined]] as const) {
+    const f = await fixture(scenario);
+    try {
+      await f.manager.start(f.task, f.executable, 'ring fixture'); await f.manager.finished(f.task.id);
+      assert.equal(f.task.state, 'idle', JSON.stringify(scenario));
+      const turn = f.manager.view(f.task.id)!.turns.at(-1)!;
+      assert.equal(turn.status, 'completed', JSON.stringify(scenario));
+      assert.deepEqual(turn.contextUsage, expected, JSON.stringify(scenario));
+      // Persisted, and it passes the session store's validation on reload.
+      assert.deepEqual((await f.store.load(f.task.id)).turns.at(-1)!.contextUsage, expected);
+      // Exactly one read-only summary query, after the result and nothing else.
+      const controls = (await readFile(path.join(f.root, 'claude-controls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).request);
+      assert.deepEqual(controls.filter(request => request.subtype === 'get_context_usage'), [{ subtype: 'get_context_usage', detail: 'summary' }]);
+    } finally { await f.close(); }
+  }
+});

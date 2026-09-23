@@ -5,9 +5,20 @@ import { pendingSchedule } from '../src/core/scheduler';
 import { TurnModelLabel } from './ModelControls';
 import { HydraMark } from './HydraMark';
 import { ComposerIcon } from './ComposerIcons';
-import { defaultPermissionMode, permissionModeLabel } from '../src/core/permissionMode';
+import type { ModelCatalog } from '../src/core/modelSelection';
+import type { Provider, ProviderInfo } from '../src/core/model';
+import { canEditBrief } from '../src/core/taskContext';
+import { latestContextUsage } from '../src/core/contextUsage';
+import { ContextRing, DelegationModePicker, ModelPicker, PermissionModePicker, asTaskPermissionMode, type DelegationMode } from './ComposerPickers';
+
+/** What the sidebar composer needs beyond the task: catalogs to pick from and the delegation preference. */
+export interface ComposerContext { catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; delegationMode: DelegationMode }
 const providerName = (provider: string) => provider === 'claude' ? 'Claude Code' : 'Codex';
-export function SessionThread({ task, session, busy, draft, send, available = true, compact = false }: { task: Task; session: SessionView; busy: boolean; draft?: ConversationDraft; send: (message: ClientMessage) => void; available?: boolean; compact?: boolean }) {
+export function SessionThread({ task, session, busy, draft, send, available = true, compact = false, composer }: { task: Task; session: SessionView; busy: boolean; draft?: ConversationDraft; send: (message: ClientMessage) => void; available?: boolean; compact?: boolean; composer?: ComposerContext }) {
+  // Provider, model and permission mode can change until the first launch; after
+  // that the session belongs to them, so the composer reports them instead.
+  const editable = canEditBrief(task, session);
+  const locked = 'Locked after launch: this conversation’s session belongs to its provider, model and permission mode. Start a new task to change them.';
   const messages = useRef<HTMLDivElement>(null);
   const followOutput = useRef(true);
   useEffect(() => {
@@ -76,10 +87,14 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
         <div className="task-prompt-toolbar">
           <div className="task-prompt-toolbar-group">
             <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this reply" disabled={blocked || !task.sessionId} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
-            <span className="composer-chip" title={task.modelSelection ? 'Model and effort' : `${providerName(task.provider)} with its default model`}>{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : providerName(task.provider)}</span>
+            <ContextRing usage={latestContextUsage(session.turns)} />
+            <ModelPicker selection={task.modelSelection || null} provider={task.provider} catalogs={composer?.catalogs || {}} providers={composer?.providers || []} busy={busy} send={send} locked={editable ? undefined : locked}
+              onSelect={(selection, provider) => send({ type: 'saveProviderSelection', id: task.id, provider, selection })} />
+            <DelegationModePicker mode={composer?.delegationMode || 'solo'} send={send} />
           </div>
           <div className="task-prompt-toolbar-group">
-            <span className="composer-mode" title={`${providerName(task.provider)} permission mode, locked for this task`}><ComposerIcon name="shield" size={12} />{permissionModeLabel(task.permissionMode || defaultPermissionMode(task.provider))}</span>
+            <PermissionModePicker provider={task.provider} mode={task.permissionMode?.mode ?? null} busy={busy} locked={editable ? undefined : locked}
+              onSelect={next => send({ type: 'savePermissionMode', id: task.id, permissionMode: asTaskPermissionMode(task.provider, next) })} />
             {running ? <button className="composer-stop" type="button" disabled={busy} title="Stop process" aria-label="Stop process" onClick={() => send({ type: 'stop', id: task.id })}>■</button>
               : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !prompt.trim()} title="Send" aria-label="Send"><ComposerIcon name="up" /></button>
               : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={() => send({ type: 'startManaged', id: task.id })}><ComposerIcon name="up" /></button>}

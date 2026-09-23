@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { SessionView } from './model';
 import { validThreadUsage } from './usage';
 import { validateTurnModelSettings } from './modelSelection';
+import { validContextUsage } from './contextUsage';
 
 export class SessionStore {
   private queue: Promise<void> = Promise.resolve();
@@ -44,6 +45,7 @@ export class SessionStore {
         (turn.provider !== undefined && !['claude', 'codex'].includes(turn.provider)) ||
         (turn.usageSource !== undefined && (turn.usageSource !== 'claude-result' && turn.usageSource !== 'codex-last-request' || !turn.usage || (turn.usageSource === 'claude-result' ? turn.provider !== 'claude' : turn.provider !== 'codex'))) ||
         (turn.threadUsage !== undefined && (turn.provider !== 'codex' || !validThreadUsage(turn.threadUsage))) ||
+        (turn.contextUsage !== undefined && (turn.provider !== 'claude' || !validContextUsage(turn.contextUsage))) ||
         (turn.error !== undefined && typeof turn.error !== 'string') || (turn.permissionDenials !== undefined && (!number(turn.permissionDenials) || !Number.isInteger(turn.permissionDenials))) ||
         (turn.usage !== undefined && (!turn.usage || !number(turn.usage.input) || !number(turn.usage.output) || ['cacheRead', 'cacheCreated', 'estimatedUsd'].some(key => {
           const value = (turn.usage as unknown as Record<string, unknown>)[key]; return value !== undefined && !number(value);

@@ -5,6 +5,7 @@ import { parseBudgets, type SoftBudget, type BudgetSettings, type BudgetObservat
 import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
 import { parseSubmittedPermissionMode, type TaskPermissionMode } from './permissionMode';
+import type { ContextUsage } from './contextUsage';
 import type { CapacityView } from './profileCapacity';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
@@ -79,6 +80,8 @@ export interface Turn {
   /** Cumulative root-thread snapshot; never sum these across turns. */
   threadUsage?: { sessionId: string; input: number; output: number; cacheRead?: number; cacheCreated?: number };
   modelSettings?: TurnModelSettings;
+  /** Claude only: context-window fill after this turn, for the composer's usage ring. */
+  contextUsage?: ContextUsage;
 }
 export interface Approval { id: string; kind: 'command' | 'file' | 'network'; detail: string }
 export interface SessionView { version: 1; turns: Turn[]; writerUncertain?: boolean; active?: boolean; totalTurns?: number; approvals?: Approval[] }
@@ -133,6 +136,7 @@ export type ClientMessage =
   | { type: 'checkModels'; id: string }
   | { type: 'saveModelSelection'; id: string; selection: ModelSelection | null }
   | { type: 'savePermissionMode'; id: string; permissionMode: TaskPermissionMode | null }
+  | { type: 'saveProviderSelection'; id: string; provider: Provider; selection: ModelSelection | null }
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
@@ -203,6 +207,13 @@ export function parseMessage(value: unknown): ClientMessage {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return { type, id, permissionMode: message.permissionMode === null ? null : parseSubmittedPermissionMode(message.permissionMode) };
+  }
+  if (type === 'saveProviderSelection') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    const provider = string('provider');
+    if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
+    return { type, id, provider, selection: message.selection === null || message.selection === undefined ? null : parseModelSelection(message.selection) };
   }
   if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['model', 'effort', 'reasoningEffort', 'reasoning_effort'].some(key => key in message)) {
     throw new Error('Direct launch-time model and effort fields are unsupported. Save a verified managed selection before launching; Hydra cannot confirm an Astra High preset unless the exact model and effort are advertised.');

@@ -159,3 +159,21 @@ body[data-surface="editor"] {
 
 body.vscode-high-contrast .chat-toolbar, body.vscode-high-contrast-light .chat-toolbar { background: var(--primary); }
 body.vscode-high-contrast .chat-mark, body.vscode-high-contrast-light .chat-mark { background: var(--secondary); box-shadow: none; }
+
+/* Effort for the chosen model: its own levels as a segmented row, the way the
+   provider's model menu shows effort beneath the model list. */
+.model-picker-effort { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 6px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.effort-options { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 6px; background: var(--hover); }
+.effort-options button { padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 10px; line-height: 14px; cursor: pointer; }
+.effort-options button[aria-pressed="true"] { background: var(--surface); color: var(--text); }
+.effort-options button:disabled { opacity: .5; cursor: default; }
+/* A model Hydra cannot verify stays listed, disabled, with its reason on hover. */
+.model-picker-option:disabled { opacity: .45; cursor: default; }
+
+/* Context usage ring: read-only, and absent until a turn has reported usage. */
+.context-ring { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; }
+.context-ring circle { fill: none; stroke-width: 2; }
+.context-ring-track { stroke: var(--border); }
+.context-ring-fill { stroke: var(--cursor-green); stroke-linecap: round; }
+.context-ring-rising .context-ring-fill { stroke: #d9b45f; }
+.context-ring-high .context-ring-fill { stroke: var(--warning, #d98c5f); }

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ClientMessage, Draft, Provider, ProviderInfo, Snapshot } from '../src/core/model';
 import type { ModelCatalog, ModelSelection } from '../src/core/modelSelection';
-import { permissionModeChoices, type ClaudePermissionMode, type CodexPermissionMode, type TaskPermissionMode } from '../src/core/permissionMode';
+import { ModelPicker, DelegationModePicker, PermissionModePicker, asTaskPermissionMode, isPermissionModeFor, type PermissionModeName } from './ComposerPickers';
 import { SessionThread } from './SessionThread';
 import { pendingSchedule } from '../src/core/scheduler';
 import { CapacityStatus } from './CapacityStatus';
@@ -11,120 +11,6 @@ import { ComposerIcon } from './ComposerIcons';
 type Send = (message: ClientMessage) => void;
 const empty: Snapshot = { tasks: [], repositories: [], providers: [], files: [], busy: false, mode: 'editor' };
 const basename = (value: string) => value.split(/[\\/]/).filter(Boolean).at(-1) || value;
-const providerLabel: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
-
-function ModelPicker({ selection, provider, catalogs, providers, busy, send, onSelect }: {
-  selection: ModelSelection | null; provider: Provider; catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; busy: boolean; send: Send;
-  onSelect: (selection: ModelSelection | null, provider: Provider) => void;
-}) {
-  const label = selection ? `${selection.model} · ${selection.effort}` : providerLabel[provider];
-  const ref = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const onToggle = () => {
-      if (!element.open) return;
-      for (const item of ['claude', 'codex'] as const) {
-        const available = providers.find(entry => entry.provider === item)?.available;
-        if (available && !catalogs[item]) send({ type: 'checkModelsForProvider', provider: item });
-      }
-    };
-    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
-    element.addEventListener('toggle', onToggle);
-    document.addEventListener('click', onOutsideClick, true);
-    return () => { element.removeEventListener('toggle', onToggle); document.removeEventListener('click', onOutsideClick, true); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providers, catalogs]);
-  return <details className="model-picker" ref={ref}>
-    <summary title={selection ? 'Model and effort' : `${providerLabel[provider]} with its default model`}>{label}</summary>
-    <div className="model-picker-body">
-      {(['claude', 'codex'] as const).map(item => {
-        const available = providers.find(entry => entry.provider === item)?.available;
-        const catalog = catalogs[item];
-        return <div key={item} className="model-picker-group">
-          <div className="model-picker-group-header">
-            <span>{providerLabel[item]}</span>
-            {available && catalog?.status === 'error' && <button type="button" className="text-button" disabled={busy} onClick={() => send({ type: 'checkModelsForProvider', provider: item })}>Retry</button>}
-          </div>
-          {!available && <p className="form-note">Not connected.</p>}
-          {available && catalog?.status === 'checking' && <p className="form-note">Loading…</p>}
-          {available && catalog?.status === 'error' && <p role="status" className="session-error">{catalog.error}</p>}
-          {available && catalog?.status === 'ready' && !catalog.models.length && <p className="form-note">No models advertised.</p>}
-          {available && catalog?.status === 'ready' && catalog.models.map(model => (
-            <button key={model.model} type="button" className="model-picker-option" aria-pressed={provider === item && selection?.model === model.model}
-              onClick={() => onSelect({ model: model.model, effort: model.efforts.includes(model.defaultEffort) ? model.defaultEffort : model.efforts[0] || '' }, item)}>
-              {model.displayName}<span className="muted">{model.defaultEffort}</span>
-            </button>
-          ))}
-        </div>;
-      })}
-      {selection && <button type="button" className="text-button model-picker-clear" onClick={() => onSelect(null, provider)}>Use provider defaults</button>}
-    </div>
-  </details>;
-}
-
-function DelegationModePicker({ mode, send }: { mode: 'solo' | 'auto'; send: Send }) {
-  const ref = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
-    document.addEventListener('click', onOutsideClick, true);
-    return () => document.removeEventListener('click', onOutsideClick, true);
-  }, []);
-  const options: { id: 'solo' | 'auto'; label: string; description: string }[] = [
-    { id: 'solo', label: 'Solo', description: 'One agent keeps the whole task.' },
-    { id: 'auto', label: 'Auto', description: 'The agent may split independent work into child agents, each in its own worktree.' },
-  ];
-  return <details className="mode-picker" ref={ref}>
-    <summary title="Subagent delegation"><ComposerIcon name="agents" size={12} />{options.find(option => option.id === mode)?.label}</summary>
-    <div className="mode-picker-body">
-      {options.map(option => (
-        <button key={option.id} type="button" className="mode-picker-option" aria-pressed={mode === option.id}
-          onClick={() => { send({ type: 'setDelegationMode', mode: option.id }); if (ref.current) ref.current.open = false; }}>
-          <span className="mode-picker-option-text"><span>{option.label}</span><span className="muted">{option.description}</span></span>
-          {mode === option.id && <span className="mode-picker-check">✓</span>}
-        </button>
-      ))}
-    </div>
-  </details>;
-}
-
-// The options carry each provider's own names, so what is shown here is what the
-// provider is actually told. Claude takes one --permission-mode; Codex splits the
-// same ground across an approval policy and a sandbox, so both are named.
-type PermissionModeName = TaskPermissionMode['mode'];
-const permissionModeOptions: Record<Provider, { mode: PermissionModeName; description: string }[]> = permissionModeChoices;
-const defaultPermissionModeName = (provider: Provider): PermissionModeName => provider === 'claude' ? 'default' : 'on-request/workspace-write';
-/** Pair the name back with its provider so the saved value is a valid mode for this task. */
-const asTaskPermissionMode = (provider: Provider, mode: PermissionModeName): TaskPermissionMode =>
-  provider === 'claude' ? { provider: 'claude', mode: mode as ClaudePermissionMode } : { provider: 'codex', mode: mode as CodexPermissionMode };
-
-function PermissionModePicker({ provider, mode, busy, onSelect }: { provider: Provider; mode: PermissionModeName | null; busy: boolean; onSelect: (mode: PermissionModeName) => void }) {
-  const ref = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
-    document.addEventListener('click', onOutsideClick, true);
-    return () => document.removeEventListener('click', onOutsideClick, true);
-  }, []);
-  const options = permissionModeOptions[provider];
-  const current = mode && options.some(option => option.mode === mode) ? mode : defaultPermissionModeName(provider);
-  return <details className="mode-picker mode-picker-plain" ref={ref}>
-    <summary title={`${providerLabel[provider]} permission mode`}><ComposerIcon name="shield" size={12} />{current.replace('/', ' · ')}</summary>
-    <div className="mode-picker-body">
-      {options.map(option => (
-        <button key={option.mode} type="button" className="mode-picker-option" aria-pressed={current === option.mode} disabled={busy}
-          onClick={() => { onSelect(option.mode); if (ref.current) ref.current.open = false; }}>
-          <span className="mode-picker-option-text"><span>{option.mode.replace('/', ' · ')}</span><span className="muted">{option.description}</span></span>
-          {current === option.mode && <span className="mode-picker-check">✓</span>}
-        </button>
-      ))}
-    </div>
-  </details>;
-}
-
 function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; send: Send; onSubmit: (selection: ModelSelection | null, permissionMode: PermissionModeName | null) => void }) {
   const [draft, setDraft] = useState<Draft>(snapshot.draft || { title: '', prompt: '', provider: 'claude' });
   const [repository, setRepository] = useState(snapshot.repositories[0] || '');
@@ -237,7 +123,7 @@ export function EditorConversation({ send }: { send: Send }) {
     const pending = pendingPermissionMode.current;
     if (!pending || !task || task.permissionMode) return;
     pendingPermissionMode.current = null;
-    if (permissionModeOptions[task.provider].some(option => option.mode === pending)) {
+    if (isPermissionModeFor(task.provider, pending)) {
       send({ type: 'savePermissionMode', id: task.id, permissionMode: asTaskPermissionMode(task.provider, pending) });
     }
   }, [task, send]);
@@ -264,7 +150,7 @@ ${basename(task.repository)}`}>{task.branch}</span>}
       {(task.state === 'external' || task.interface === 'official-extension') && <div className="chat-notice">This task is open in an external provider session. <button className="text-button" onClick={() => send({ type: 'agents' })}>Manage session</button></div>}
       {pendingSchedule(task) && task.state !== 'running' && <div className="chat-notice" role="status">{task.schedule?.reason || `Task ${task.schedule?.state}.`}{['queued', 'blocked'].includes(task.schedule?.state || '') && <button className="text-button" disabled={busy} onClick={() => send({ type: 'cancelQueued', id: task.id })}>Cancel queued work</button>}</div>}
       {snapshot.capacity && (snapshot.capacity.error || snapshot.capacity.owned[task.id]?.uncertain || snapshot.session?.writerUncertain) && <div className="chat-notice"><CapacityStatus capacity={snapshot.capacity} task={task} busy={busy} writerUncertain={snapshot.session?.writerUncertain} send={send} /></div>}
-      <SessionThread key={task.id} task={task} session={snapshot.session || { version: 1, turns: [] }} busy={busy} available={available} draft={snapshot.conversationDraft} send={send} compact />
+      <SessionThread key={task.id} task={task} session={snapshot.session || { version: 1, turns: [] }} busy={busy} available={available} draft={snapshot.conversationDraft} send={send} compact composer={{ catalogs: snapshot.draftModelCatalogs || {}, providers: snapshot.providers, delegationMode: snapshot.delegation?.mode === 'auto' ? 'auto' : 'solo' }} />
     </>}
   </main>;
 }

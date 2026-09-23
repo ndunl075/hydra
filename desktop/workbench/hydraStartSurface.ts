@@ -33,7 +33,7 @@ export async function renderHydraStartSurface(
 	openProject.onclick = () => commandService.executeCommand('workbench.action.files.openFolder');
 
 	const cloneRepo = append(actions, $('button.hydra-start-surface-card'));
-	cloneRepo.appendChild(renderIcon(Codicon.repoClone));
+	cloneRepo.appendChild(renderIcon(Codicon.cloudDownload));
 	append(cloneRepo, $('span.hydra-start-surface-card-label', undefined, localize('hydra.startSurface.cloneRepo', "Clone repo")));
 	cloneRepo.onclick = () => commandService.executeCommand('git.clone');
 

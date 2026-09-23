@@ -317,29 +317,33 @@ const hydraStartSurfaceCss = `
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-actions {
-	display: flex;
+	display: grid;
+	grid-template-columns: repeat(2, minmax(220px, 1fr));
 	gap: 12px;
+	width: 100%;
+	max-width: 460px;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-card {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 8px 14px;
+	gap: 10px;
+	padding: 14px 16px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
-	border-radius: 6px;
-	background-color: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
+	border-radius: 8px;
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
 	font-size: 13px;
 	cursor: pointer;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-card:hover {
-	background-color: var(--vscode-button-secondaryHoverBackground);
+	background-color: var(--vscode-list-hoverBackground);
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-card .codicon {
 	color: inherit !important;
+	font-size: 18px;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recents {
@@ -347,14 +351,12 @@ const hydraStartSurfaceCss = `
 	flex-direction: column;
 	align-items: stretch;
 	width: 100%;
-	max-width: 320px;
+	max-width: 460px;
 	gap: 6px;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recents-title {
-	font-size: 11px;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
+	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
 	margin-bottom: 2px;
 }
@@ -369,7 +371,7 @@ const hydraStartSurfaceCss = `
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 4px 6px;
+	padding: 6px 8px;
 	border: none;
 	border-radius: 4px;
 	background-color: transparent;
@@ -390,16 +392,19 @@ const hydraStartSurfaceCss = `
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item-text {
 	display: flex;
+	flex: 1;
+	justify-content: space-between;
 	align-items: baseline;
-	gap: 8px;
+	gap: 12px;
 	overflow: hidden;
-	white-space: nowrap;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item-label {
 	font-size: 13px;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex-shrink: 0;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-recent-item-path {
@@ -407,6 +412,7 @@ const hydraStartSurfaceCss = `
 	color: var(--vscode-descriptionForeground);
 	overflow: hidden;
 	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 `;
 export function brandedWatermarkLayout(text) {

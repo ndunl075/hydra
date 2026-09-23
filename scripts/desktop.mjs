@@ -317,12 +317,12 @@ const hydraStartSurfaceCss = `
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-title-row {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 12px;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-logo {
-	width: 20px;
-	height: 20px;
+	width: 40px;
+	height: 40px;
 	background-image: url('./letterpress-light.svg');
 	background-size: contain;
 	background-position: center;
@@ -343,8 +343,8 @@ const hydraStartSurfaceCss = `
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-title {
-	font-size: 15px;
-	font-weight: 500;
+	font-size: 26px;
+	font-weight: 600;
 	color: var(--vscode-foreground);
 }
 

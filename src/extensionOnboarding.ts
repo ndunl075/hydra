@@ -25,7 +25,7 @@ export class Onboarding implements vscode.Disposable {
   async show(): Promise<void> {
     if (!this.imports.available) throw new Error('Onboarding is available in the local Hydra desktop IDE.');
     if (this.panel) { this.panel.reveal(); return; }
-    if (this.state.completed) await this.save({ ...this.state, completed: false, step: this.state.step === 'project' ? 'welcome' : this.state.step });
+    if (this.state.step !== 'welcome') await this.save({ ...this.state, completed: false, step: 'welcome' });
     const panel = vscode.window.createWebviewPanel('hydra.onboarding', 'Welcome to Hydra', vscode.ViewColumn.Active, { enableScripts: true });
     this.panel = panel; panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, 'hydra-logo.png');
     panel.webview.html = this.html();

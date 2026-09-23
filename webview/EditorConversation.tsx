@@ -3,8 +3,6 @@ import type { ClientMessage, Draft, Provider, ProviderInfo, Snapshot } from '../
 import type { ModelCatalog, ModelSelection } from '../src/core/modelSelection';
 import { permissionModeChoices, type ClaudePermissionMode, type CodexPermissionMode, type TaskPermissionMode } from '../src/core/permissionMode';
 import { SessionThread } from './SessionThread';
-import { ModelControls } from './ModelControls';
-import { TaskContext } from './TaskContext';
 import { pendingSchedule } from '../src/core/scheduler';
 import { CapacityStatus } from './CapacityStatus';
 import { HydraMark } from './HydraMark';
@@ -149,7 +147,7 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
   const title = (draft.prompt.trim().split('\n')[0] || '').slice(0, 120).trim();
   const ready = !snapshot.busy && !!draft.prompt.trim() && !!repository;
   const submit = () => { if (ready) { send({ type: 'create', ...draft, title: title || 'New task', repository, autoStart: true }); onSubmit(selection, permissionMode); } };
-  return <section className="chat-start">
+  return <section className="chat-start chat-start-composer">
     <form className="task-prompt-form" onSubmit={event => { event.preventDefault(); submit(); }}>
       <div className="task-prompt-box">
         <textarea className="task-prompt-textarea" autoFocus rows={4} maxLength={32000} value={draft.prompt}
@@ -222,16 +220,15 @@ export function EditorConversation({ send }: { send: Send }) {
       <div className="mode-switch" aria-label="Workspace mode"><button className="current" aria-current="page">Editor</button><button onClick={() => send({ type: 'agents' })}>Agents</button></div>
       <div className="chat-toolbar-actions"><button className="icon-button" aria-label="New conversation" title="New conversation" onClick={() => setCreating(true)}>+</button><button className="icon-button chat-settings" aria-label="Hydra settings" title="Hydra settings" onClick={() => send({ type: 'settings' })}>...</button></div>
     </header>
-    {!!tasks.length && <div className="chat-task-picker"><span className="picker-kicker">CHAT</span><label htmlFor="chat-task">Conversation</label><select id="chat-task" value={creating || !task ? '' : task.id} onChange={event => { if (event.target.value) { setCreating(false); send({ type: 'select', id: event.target.value }); } }}>{(creating || !task) && <option value="">New conversation</option>}{tasks.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></div>}
+    {/* One quiet line instead of a stack of header rows. The branch and state are
+        kept because Hydra runs each agent in its own worktree, which the panel this
+        mirrors has no equivalent for; everything else moved into the composer. */}
+    {!!tasks.length && <div className="chat-quiet">
+      <select aria-label="Conversation" value={creating || !task ? '' : task.id} onChange={event => { if (event.target.value) { setCreating(false); send({ type: 'select', id: event.target.value }); } }}>{(creating || !task) && <option value="">New conversation</option>}{tasks.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+      {task && !creating && <><span className="chat-quiet-sep">/</span><span className="chat-quiet-branch" title={`${task.worktree}\n${basename(task.repository)}`}>{task.branch}</span><span className={`state ${task.state}`}>{task.state}</span></>}
+    </div>}
     {snapshot.error && <div className="chat-error" role="alert">{snapshot.error}</div>}
     {!ready ? <p className="chat-loading" role="status">Loading conversation...</p> : snapshot.handoff ? <div className="chat-start"><h2>External provider workspace</h2><p>This task is managed from its original Hydra window.</p><button className="secondary" onClick={() => send({ type: 'agents' })}>Open handoff details</button></div> : creating || !task ? <NewConversation key={creating ? 'new' : 'empty'} snapshot={snapshot} send={send} onSubmit={(selection, permissionMode) => { pendingSelection.current = selection; pendingPermissionMode.current = permissionMode; }} /> : <>
-      <div className="chat-identity"><div><span className="chat-project" title={task.worktree}>{basename(task.repository)}</span><span className="chat-separator">/</span><span className="chat-branch" title={task.branch}>{task.branch}</span></div><span className={`state ${task.state}`}>{task.state}</span></div>
-      <details className="chat-details"><summary><span className="provider-badge">{task.provider === 'claude' ? 'C' : 'O'}</span><span>{task.provider === 'claude' ? 'Claude Code' : 'Codex'}</span><span className="chat-model">{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : 'Provider defaults'}</span></summary><div className="chat-details-body">
-        <p className="form-note">Isolated worktree</p><code className="chat-worktree">{task.worktree}</code>
-        <TaskContext key={task.id} task={task} session={snapshot.session} busy={busy} send={send} />
-        <ModelControls key={`model-${task.id}`} task={task} session={snapshot.session} catalog={snapshot.modelCatalogs?.[task.id]} busy={busy} send={send} />
-        <div className="task-actions"><button className="secondary" onClick={() => send({ type: 'agents' })}>Task details & changes</button><button className="secondary" disabled={busy || !snapshot.session?.turns.length} onClick={() => send({ type: 'showSessionDiagnostics', id: task.id })}>Diagnostics</button></div>
-      </div></details>
       {task.error && <div className="chat-error" role="status">{task.error}</div>}
       {!available && <div className="chat-notice">Provider CLI not found. <button className="text-button" onClick={() => send({ type: 'settings' })}>Set up provider</button></div>}
       {(task.state === 'external' || task.interface === 'official-extension') && <div className="chat-notice">This task is open in an external provider session. <button className="text-button" onClick={() => send({ type: 'agents' })}>Manage session</button></div>}

@@ -109,3 +109,13 @@ test('permission modes are saved before launch, never passed as a launch-time fi
     }
   }
 });
+
+test('create carries the prompt-first autoStart flag through validation', () => {
+  const base = { type: 'create', title: 'hi', prompt: 'hi', provider: 'claude', repository: 'C:/repo' };
+  // Dropping the flag here is invisible: create succeeds and the task silently
+  // stays idle, so the composer's send button never starts the agent.
+  assert.equal((parseMessage({ ...base, autoStart: true }) as { autoStart?: boolean }).autoStart, true);
+  assert.equal((parseMessage({ ...base, autoStart: false }) as { autoStart?: boolean }).autoStart, false);
+  assert.equal((parseMessage(base) as { autoStart?: boolean }).autoStart, undefined);
+  for (const value of ['true', 1, null, {}]) assert.throws(() => parseMessage({ ...base, autoStart: value }), /Invalid autoStart flag/);
+});

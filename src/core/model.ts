@@ -297,7 +297,10 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!common.title.trim() || !common.prompt.trim()) throw new Error('Enter a title and task prompt.');
     if (common.brief && !common.brief.goal.trim()) throw new Error('Enter a task goal.');
     if (common.brief && buildTaskPrompt(common.brief) !== common.prompt) throw new Error('The prompt preview does not match the task brief. Refresh before creating the task.');
-    return { type, ...common, repository: string('repository', 4096), startingCommit: message.startingCommit === undefined ? undefined : string('startingCommit', 64) || undefined } as ClientMessage;
+    // autoStart carries the prompt-first flow's "send starts the agent" intent.
+    // It has to survive validation, or create silently leaves the task idle.
+    if (message.autoStart !== undefined && typeof message.autoStart !== 'boolean') throw new Error('Invalid autoStart flag.');
+    return { type, ...common, repository: string('repository', 4096), startingCommit: message.startingCommit === undefined ? undefined : string('startingCommit', 64) || undefined, ...(message.autoStart === undefined ? {} : { autoStart: message.autoStart }) } as ClientMessage;
   }
   throw new Error('Unknown command.');
 }

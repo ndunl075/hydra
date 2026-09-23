@@ -4,6 +4,7 @@ import { receiveConversationDraft, type ConversationDraft, type ConversationDraf
 import { pendingSchedule } from '../src/core/scheduler';
 import { TurnModelLabel } from './ModelControls';
 import { HydraMark } from './HydraMark';
+import { defaultPermissionMode, permissionModeLabel } from '../src/core/permissionMode';
 const providerName = (provider: string) => provider === 'claude' ? 'Claude Code' : 'Codex';
 export function SessionThread({ task, session, busy, draft, send, available = true, compact = false }: { task: Task; session: SessionView; busy: boolean; draft?: ConversationDraft; send: (message: ClientMessage) => void; available?: boolean; compact?: boolean }) {
   const messages = useRef<HTMLDivElement>(null);
@@ -34,7 +35,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
   const blocked = busy || pendingSchedule(task) || !available || running || task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>
-    {!session.turns.length && <article className="message"><div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div><p className="prompt-text">{task.prompt}</p></article>}
+    {!session.turns.length && <article className="message">{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
     {(session.totalTurns || session.turns.length) > 10 && <p className="quiet">Showing the latest ten turns. Full conversation and process events remain in local storage.</p>}
     {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
       <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{turn.prompt}</p></article>
@@ -52,11 +53,33 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     </article>)}
     {!!task.sessionProvider && task.sessionProvider !== task.provider && <p role="status">This recorded session belongs to {providerName(task.sessionProvider)}. Create a separate task for {providerName(task.provider)}.</p>}
     </div>
-    <form className="follow-up" onSubmit={event => { event.preventDefault(); if (!blocked && prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); }}>
+    {/* The sidebar composer is the same shape as the one that starts a task, so the
+        input does not change form once a conversation exists. The manager view keeps
+        the labelled form, where the surrounding controls explain themselves. */}
+    {compact ? <form className="task-prompt-form chat-start-composer" onSubmit={event => { event.preventDefault(); if (!blocked && prompt.trim() && task.sessionId) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); }}>
+      <div className="task-prompt-box">
+        <textarea className="task-prompt-textarea" rows={3} maxLength={32000} value={prompt} disabled={blocked || !task.sessionId} aria-label="Follow-up"
+          onChange={event => setPrompt(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && task.sessionId) { event.preventDefault(); if (!blocked && prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); } }}
+          placeholder={task.sessionId ? 'Reply to this agent' : 'Start the task to begin a conversation.'} />
+        <div className="task-prompt-toolbar">
+          <div className="task-prompt-toolbar-group">
+            <span className="composer-chip" title="Model and effort">{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : 'Provider defaults'}</span>
+            <span className="composer-chip" title={`${task.provider} permission mode`}>{permissionModeLabel(task.permissionMode || defaultPermissionMode(task.provider))}</span>
+          </div>
+          <div className="task-prompt-toolbar-group">
+            {running ? <button className="composer-stop" type="button" disabled={busy} title="Stop process" aria-label="Stop process" onClick={() => send({ type: 'stop', id: task.id })}>■</button>
+              : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !prompt.trim()} title="Send" aria-label="Send">↑</button>
+              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={() => send({ type: 'startManaged', id: task.id })}>↑</button>}
+          </div>
+        </div>
+      </div>
+      <p className="form-note">Runs in this task worktree. Review approvals in this conversation.</p>
+    </form> : <form className="follow-up" onSubmit={event => { event.preventDefault(); if (!blocked && prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); }}>
       <label>Follow-up<textarea rows={3} maxLength={32000} value={prompt} disabled={blocked || !task.sessionId} onChange={event => setPrompt(event.target.value)} placeholder={task.sessionId ? "Continue this task..." : "Start the task to begin a conversation."} /></label>
       <div className="task-actions">{task.sessionId ? <button className="primary" disabled={blocked || !prompt.trim()} type="submit">Send</button> : <button className="primary" disabled={blocked} type="button" onClick={() => send({ type: 'startManaged', id: task.id })}>Start task</button>}{running ? <button className="stop-button" disabled={busy} type="button" onClick={() => send({ type: 'stop', id: task.id })}>Stop process</button> : <button className="secondary" type="button" disabled={blocked} onClick={() => send({ type: 'launch', id: task.id })}>Open provider terminal</button>}</div>
-      <p className="form-note">{compact ? 'Runs in this task worktree. Review approvals in this conversation.' : <>Messages run in this task worktree. Follow-ups resume its provider session. {task.provider === 'codex' ? 'Stop requests an interrupt, then terminates the owned process if needed. Approvals grant only the displayed request; unsupported prompts stop the turn.' : 'Stop process terminates the owned process tree. Approvals grant only the displayed command or file request; unsupported interactions stop the turn.'}</>}</p>
-      {!compact && <button className="secondary" type="button" disabled={busy} onClick={() => send({ type: 'showSessionDiagnostics', id: task.id })}>Raw diagnostics</button>}
-    </form>
+      <p className="form-note">Messages run in this task worktree. Follow-ups resume its provider session. {task.provider === 'codex' ? 'Stop requests an interrupt, then terminates the owned process if needed. Approvals grant only the displayed request; unsupported prompts stop the turn.' : 'Stop process terminates the owned process tree. Approvals grant only the displayed command or file request; unsupported interactions stop the turn.'}</p>
+      <button className="secondary" type="button" disabled={busy} onClick={() => send({ type: 'showSessionDiagnostics', id: task.id })}>Raw diagnostics</button>
+    </form>}
   </div>;
 }

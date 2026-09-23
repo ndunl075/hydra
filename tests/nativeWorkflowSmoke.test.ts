@@ -72,11 +72,18 @@ test('editor agent panel has the compact Cursor-style conversation hierarchy wit
   assert.match(editor, /className="chat-brand"/);
   assert.match(editor, /className="chat-mark"/);
   assert.match(editor, /className="chat-toolbar-actions"/);
-  assert.match(editor, /className="picker-kicker">CHAT/);
-  assert.match(editor, /className="provider-badge"/);
-  assert.match(editor, /Isolated worktree/);
+  // The panel mirrors the provider's own chat surface: one quiet identity line,
+  // then messages. The stacked conversation/identity/provider header rows are gone.
+  assert.match(editor, /className="chat-quiet"/);
+  assert.doesNotMatch(editor, /chat-task-picker|chat-identity|chat-details|provider-badge/);
+  // Branch and worktree stay: Hydra runs each agent in its own worktree, which the
+  // surface it mirrors has no equivalent for, so this is the one thing it must keep.
+  assert.match(editor, /className="chat-quiet-branch"/);
+  assert.match(editor, /task\.worktree/);
   assert.match(css, /\.chat-toolbar \{ min-height: 42px/);
-  assert.match(css, /\.editor-conversation \.follow-up \{[\s\S]*border-top: 1px solid var\(--border\)/);
+  assert.match(css, /\.chat-quiet \{[\s\S]*border-bottom: 1px solid var\(--border\)/);
+  // The removed chrome must not leave dead rules behind in the stylesheet.
+  assert.doesNotMatch(css, /\.chat-task-picker|\.chat-identity|\.chat-details|\.provider-badge|\.chat-worktree|\.editor-conversation \.follow-up/);
   assert.match(css, /body\.vscode-high-contrast/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });

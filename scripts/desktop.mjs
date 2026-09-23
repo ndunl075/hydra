@@ -257,6 +257,12 @@ export function brandedEditorGroupWatermark(text) {
   const newRender = '\tprivate render(): void {\n' +
     '\t\tclearNode(this.shortcuts);\n' +
     '\t\tthis.transientDisposables.clear();\n\n' +
+    '\t\t// Only the fully empty workbench (no folder or workspace at all) gets the\n' +
+    '\t\t// Cursor-style start surface; an empty group inside an already-open\n' +
+    '\t\t// project keeps the plain background mark, not project-entry actions.\n' +
+    '\t\tif (this.workbenchState !== WorkbenchState.EMPTY) {\n' +
+    '\t\t\treturn;\n' +
+    '\t\t}\n\n' +
     '\t\trenderHydraStartSurface(this.shortcuts, this.commandService, this.workspacesService, this.hostService, this.productService);\n' +
     '\t}';
   replaceOnce(originalRender, newRender);
@@ -357,7 +363,7 @@ const hydraStartSurfaceCss = `
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface {
 	display: flex;
 	flex-direction: column;
-	align-items: center;
+	align-items: flex-start;
 	gap: 20px;
 	width: 100%;
 }
@@ -371,23 +377,11 @@ const hydraStartSurfaceCss = `
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-logo {
 	width: 40px;
 	height: 40px;
-	background-image: url('./letterpress-light.svg');
+	background-image: url('./hydra-logo.png');
 	background-size: contain;
 	background-position: center;
 	background-repeat: no-repeat;
 	flex-shrink: 0;
-}
-
-.monaco-workbench.vs-dark .part.editor > .content .editor-group-container .editor-group-watermark .shortcuts .hydra-start-surface-logo {
-	background-image: url('./letterpress-dark.svg');
-}
-
-.monaco-workbench.hc-light .part.editor > .content .editor-group-container .editor-group-watermark .shortcuts .hydra-start-surface-logo {
-	background-image: url('./letterpress-hcLight.svg');
-}
-
-.monaco-workbench.hc-black .part.editor > .content .editor-group-container .editor-group-watermark .shortcuts .hydra-start-surface-logo {
-	background-image: url('./letterpress-hcDark.svg');
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts .hydra-start-surface-title {
@@ -494,6 +488,10 @@ const hydraStartSurfaceCss = `
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container {
+	--editor-group-tab-height: 19px !important;
+}
 `;
 export function brandedWatermarkLayout(text) {
   const container = '\tmax-width: 272px;';
@@ -550,7 +548,12 @@ export async function prepare() {
   const electron = await git(['show', `${pin.commit}:build/lib/electron.ts`]);
   if (!electron.includes("companyName: 'Microsoft Corporation'")) throw new Error('Pinned executable publisher metadata changed.');
   await fs.writeFile(path.join(source, 'build', 'lib', 'electron.ts'), electron.replace("companyName: 'Microsoft Corporation'", "companyName: 'Nico Dunlap'"));
-  await stageWatermarks(path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
+  const watermarkMediaDir = path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor', 'media');
+  await stageWatermarks(watermarkMediaDir, await fs.readFile(path.join(root, 'hydra-logo.png')));
+  // The letterpress SVGs above are a deliberately near-invisible background
+  // texture (6-12% opacity); the start surface's small header mark needs the
+  // real, crisp logo instead.
+  await fs.copyFile(path.join(root, 'hydra-logo.png'), path.join(watermarkMediaDir, 'hydra-logo.png'));
   const watermarkCss = 'src/vs/workbench/browser/parts/editor/media/editorgroupview.css';
   await fs.writeFile(path.join(source, watermarkCss), brandedWatermarkLayout(await git(['show', `${pin.commit}:${watermarkCss}`])));
   const editorPartsDir = path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'editor');
@@ -604,6 +607,8 @@ export async function verify() {
   await fs.access(path.join(bundled, 'dist', 'extension.cjs'));
   await fs.access(path.join(bundled, 'themes', 'hydra-light.json'));
   await verifyWatermarks(path.join(output, 'resources', 'app', 'out', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
+  const stagedLogo = await fs.readFile(path.join(output, 'resources', 'app', 'out', 'media', 'hydra-logo.png'));
+  if (!stagedLogo.equals(await fs.readFile(path.join(root, 'hydra-logo.png')))) throw new Error('Staged start-surface logo differs from the source hydra-logo.png.');
   console.log(`Verified standalone executable and built-in Hydra ${manifest.version}: ${output}`);
 }
 export async function build() {

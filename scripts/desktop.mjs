@@ -262,6 +262,54 @@ export function brandedEditorGroupWatermark(text) {
   replaceOnce(originalRender, newRender);
   return text;
 }
+export function brandedGettingStartedContent(text) {
+  const replaceOnce = (before, after) => {
+    if (text.split(before).length !== 2) throw new Error(`Pinned getting-started content changed: ${before}`);
+    text = text.replace(before, after);
+  };
+  const hydraCategory = `\t{
+\t\tid: 'HydraSetup',
+\t\ttitle: localize('gettingStarted.hydraSetup.title', "Get started with Hydra"),
+\t\tdescription: localize('gettingStarted.hydraSetup.description', "Connect a provider, open a project, and start your first agent task"),
+\t\tisFeatured: true,
+\t\ticon: setupIcon,
+\t\twalkthroughPageTitle: localize('gettingStarted.hydraSetup.walkthroughPageTitle', 'Setup Hydra'),
+\t\tcontent: {
+\t\t\ttype: 'steps',
+\t\t\tsteps: [
+\t\t\t\t{
+\t\t\t\t\tid: 'hydraConnectProvider',
+\t\t\t\t\ttitle: localize('gettingStarted.hydraConnectProvider.title', "Connect Claude or Codex"),
+\t\t\t\t\tdescription: localize('gettingStarted.hydraConnectProvider.description.interpolated', "Hydra runs the official Claude Code and Codex CLIs. Connect the one you use.\\n{0}", Button(localize('gettingStarted.hydraConnectProvider.button', "Provider Accounts"), 'command:hydra.openAccounts')),
+\t\t\t\t\tmedia: { type: 'markdown', path: 'empty' },
+\t\t\t\t},
+\t\t\t\t{
+\t\t\t\t\tid: 'hydraOpenProject',
+\t\t\t\t\ttitle: localize('gettingStarted.hydraOpenProject.title', "Open a project"),
+\t\t\t\t\tdescription: localize('gettingStarted.hydraOpenProject.description.interpolated', "Open a folder or clone a repository to start working.\\n{0}", Button(localize('gettingStarted.hydraOpenProject.button', "Open Folder"), 'command:workbench.action.files.openFolder')),
+\t\t\t\t\tmedia: { type: 'markdown', path: 'empty' },
+\t\t\t\t},
+\t\t\t\t{
+\t\t\t\t\tid: 'hydraStartTask',
+\t\t\t\t\ttitle: localize('gettingStarted.hydraStartTask.title', "Start an agent task"),
+\t\t\t\t\tdescription: localize('gettingStarted.hydraStartTask.description.interpolated', "Give Hydra a focused task. The agent works in its own isolated worktree while your editor stays untouched.\\n{0}", Button(localize('gettingStarted.hydraStartTask.button', "New Task"), 'command:hydra.newTask')),
+\t\t\t\t\tmedia: { type: 'markdown', path: 'empty' },
+\t\t\t\t}
+\t\t\t]
+\t\t}
+\t},
+
+\t{
+\t\tid: 'Setup',`;
+  replaceOnce("export const walkthroughs: GettingStartedWalkthroughContent = [\n\t{\n\t\tid: 'Setup',", `export const walkthroughs: GettingStartedWalkthroughContent = [\n${hydraCategory}`);
+  replaceOnce(
+    "\t\tid: 'Setup',\n\t\ttitle: localize('gettingStarted.setup.title', \"Get started with VS Code\"),\n\t\tdescription: localize('gettingStarted.setup.description', \"Customize your editor, learn the basics, and start coding\"),\n\t\tisFeatured: true,",
+    "\t\tid: 'Setup',\n\t\ttitle: localize('gettingStarted.setup.title', \"Get started with VS Code\"),\n\t\tdescription: localize('gettingStarted.setup.description', \"Customize your editor, learn the basics, and start coding\"),\n\t\tisFeatured: false,");
+  replaceOnce(
+    "\t\tid: 'SetupWeb',\n\t\ttitle: localize('gettingStarted.setupWeb.title', \"Get Started with VS Code for the Web\"),\n\t\tdescription: localize('gettingStarted.setupWeb.description', \"Customize your editor, learn the basics, and start coding\"),\n\t\tisFeatured: true,",
+    "\t\tid: 'SetupWeb',\n\t\ttitle: localize('gettingStarted.setupWeb.title', \"Get Started with VS Code for the Web\"),\n\t\tdescription: localize('gettingStarted.setupWeb.description', \"Customize your editor, learn the basics, and start coding\"),\n\t\tisFeatured: false,");
+  return text;
+}
 export function brandedStartupPage(text) {
   const replaceOnce = (before, after) => {
     if (text.split(before).length !== 2) throw new Error(`Pinned startup page changed: ${before}`);
@@ -511,6 +559,8 @@ export async function prepare() {
   await fs.writeFile(path.join(source, editorGroupWatermarkPath), brandedEditorGroupWatermark(await git(['show', `${pin.commit}:${editorGroupWatermarkPath}`])));
   const startupPagePath = 'src/vs/workbench/contrib/welcomeGettingStarted/browser/startupPage.ts';
   await fs.writeFile(path.join(source, startupPagePath), brandedStartupPage(await git(['show', `${pin.commit}:${startupPagePath}`])));
+  const gettingStartedContentPath = 'src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts';
+  await fs.writeFile(path.join(source, gettingStartedContentPath), brandedGettingStartedContent(await git(['show', `${pin.commit}:${gettingStartedContentPath}`])));
   console.log(`Prepared Hydra ${manifest.version}: Code - OSS ${pin.tag} at ${pin.commit}.`);
 }
 export async function stageHydra(destination) {

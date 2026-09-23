@@ -63,6 +63,33 @@ function ModelPicker({ selection, provider, catalogs, providers, busy, send, onS
   </details>;
 }
 
+function DelegationModePicker({ mode, send }: { mode: 'solo' | 'auto'; send: Send }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
+    document.addEventListener('click', onOutsideClick, true);
+    return () => document.removeEventListener('click', onOutsideClick, true);
+  }, []);
+  const options: { id: 'solo' | 'auto'; label: string; description: string }[] = [
+    { id: 'solo', label: 'Solo', description: 'You run this task yourself.' },
+    { id: 'auto', label: 'Auto', description: 'Auto planning is being prepared. This task still runs solo.' },
+  ];
+  return <details className="mode-picker" ref={ref}>
+    <summary title="Delegation mode">{options.find(option => option.id === mode)?.label}</summary>
+    <div className="mode-picker-body">
+      {options.map(option => (
+        <button key={option.id} type="button" className="mode-picker-option" aria-pressed={mode === option.id}
+          onClick={() => { send({ type: 'setDelegationMode', mode: option.id }); if (ref.current) ref.current.open = false; }}>
+          <span className="mode-picker-option-text"><span>{option.label}</span><span className="muted">{option.description}</span></span>
+          {mode === option.id && <span className="mode-picker-check">✓</span>}
+        </button>
+      ))}
+    </div>
+  </details>;
+}
+
 function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; send: Send; onSubmit: (selection: ModelSelection | null) => void }) {
   const [draft, setDraft] = useState<Draft>(snapshot.draft || { title: '', prompt: '', provider: 'claude' });
   const [repository, setRepository] = useState(snapshot.repositories[0] || '');
@@ -84,22 +111,20 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
   const ready = !snapshot.busy && !!draft.prompt.trim() && !!repository;
   const submit = () => { if (ready) { send({ type: 'create', ...draft, title: title || 'New task', repository, autoStart: true }); onSubmit(selection); } };
   return <section className="chat-start">
-    <div className="chat-introduction"><span className="section-label">NEW AGENT TASK</span><h2>Start from the editor.</h2><p>Give Hydra a focused task. The agent works in its own isolated worktree while your editor stays untouched.</p></div>
     <form className="task-prompt-form" onSubmit={event => { event.preventDefault(); submit(); }}>
       <div className="task-prompt-box">
         <textarea className="task-prompt-textarea" autoFocus rows={4} maxLength={32000} value={draft.prompt}
           onChange={event => update({ prompt: event.target.value, brief: undefined })}
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); } }}
-          placeholder="Describe the change, constraints, and desired result..." aria-label="Task prompt" disabled={snapshot.busy} />
+          placeholder="Plan, search, build anything" aria-label="Task prompt" disabled={snapshot.busy} />
         <div className="task-prompt-toolbar">
           <div className="task-prompt-toolbar-group">
             <button type="button" className="icon-button" aria-label="Attach context" title="Attach a file to this task" disabled={snapshot.busy} onClick={() => send({ type: 'attachContext' })}>+</button>
             <ModelPicker selection={selection} provider={draft.provider} catalogs={snapshot.draftModelCatalogs || {}} providers={snapshot.providers} busy={snapshot.busy} send={send}
               onSelect={(next, provider) => { setSelection(next); update({ provider }); }} />
-            <select className="compact-select" aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} disabled={snapshot.busy}>{!snapshot.repositories.length && <option value="">No repository</option>}{snapshot.repositories.map(root => <option key={root} value={root}>{basename(root)}</option>)}</select>
           </div>
           <div className="task-prompt-toolbar-group">
-            <button type="button" className="auto-toggle" aria-pressed={snapshot.delegation?.mode === 'auto'} title="Auto planning is being prepared. This task still runs solo." onClick={() => send({ type: 'setDelegationMode', mode: snapshot.delegation?.mode === 'auto' ? 'solo' : 'auto' })}>Auto</button>
+            <DelegationModePicker mode={snapshot.delegation?.mode === 'auto' ? 'auto' : 'solo'} send={send} />
             <button className="task-prompt-send" type="submit" aria-label="Start task" title="Start task" disabled={!ready}>↑</button>
           </div>
         </div>

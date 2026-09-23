@@ -7,11 +7,11 @@ export function readOnboarding(value: unknown): OnboardingState {
   // the new final step so already-completed onboarding is not lost.
   const migrateStep = (step: unknown): unknown => step === 'project' ? 'accounts' : step;
   const step = migrateStep(state?.step);
-  const skipped = Array.isArray(state?.skipped) ? state.skipped.map(migrateStep).filter((s, i, all) => onboardingSteps.includes(s as OnboardingStep) && all.indexOf(s) === i) : undefined;
-  if (state?.version !== 1 || !onboardingSteps.includes(step as OnboardingStep) || typeof state.completed !== 'boolean' || !skipped) {
+  const skipped = Array.isArray(state?.skipped) ? state.skipped.map(migrateStep) : undefined;
+  if (state?.version !== 1 || !onboardingSteps.includes(step as OnboardingStep) || typeof state.completed !== 'boolean' || !skipped || skipped.some(item => !onboardingSteps.includes(item as OnboardingStep))) {
     return { version: 1, step: 'welcome', completed: false, skipped: [] };
   }
-  return { version: 1, step: step as OnboardingStep, completed: state.completed, skipped: skipped as OnboardingStep[] };
+  return { version: 1, step: step as OnboardingStep, completed: state.completed, skipped: [...new Set(skipped)] as OnboardingStep[] };
 }
 export function advanceOnboarding(state: OnboardingState, skip: boolean): OnboardingState {
   const index = onboardingSteps.indexOf(state.step);

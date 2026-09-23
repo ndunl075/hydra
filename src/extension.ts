@@ -122,6 +122,7 @@ class Manager {
   private handoff?: Handoff;
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
   private readonly modelCatalogs = new Map<string, ModelCatalog>();
+  private readonly draftModelCatalogs = new Map<Provider, ModelCatalog>();
   private readonly diagnosticChecks = new Set<AbortController>();
   private diagnosticGeneration = 0;
   private readonly managed: ManagedSessions;
@@ -491,7 +492,7 @@ class Manager {
       }
     }), vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('hydra')) {
-        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear();
+        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear(); this.draftModelCatalogs.clear();
         for (const controller of this.diagnosticChecks) controller.abort();
         void this.refresh().catch(error => this.report(error));
       }
@@ -967,6 +968,7 @@ class Manager {
       setupPreview,
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
+      draftModelCatalogs: Object.fromEntries(this.draftModelCatalogs),
       integration: task ? this.integrationSnapshot(this.integrationOperations.get(task.id)) : undefined,
       taskActivity: Object.fromEntries(this.tasks.map(item => {
         const view = item.interface === 'managed-cli' ? this.managed.view(item.id) : undefined;
@@ -1077,6 +1079,33 @@ class Manager {
       } catch (error) {
         if (generation === this.diagnosticGeneration && !this.closing) this.diagnostics.set(message.provider, { provider: message.provider, status: 'error', checkedAt: new Date().toISOString(), advertised: [], probes: [], error: this.describe(error) });
       } finally { this.diagnosticChecks.delete(controller); await this.publish(); }
+      return;
+    }
+    if (message.type === 'checkModelsForProvider') {
+      if (this.draftModelCatalogs.get(message.provider)?.status === 'checking') throw new Error('This provider model check is already in progress.');
+      const controller = new AbortController(), generation = this.diagnosticGeneration;
+      this.diagnosticChecks.add(controller);
+      this.draftModelCatalogs.set(message.provider, { status: 'checking', models: [], checkedAt: new Date().toISOString() });
+      await this.publish();
+      try {
+        const info = await findProvider(message.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${message.provider}Path`));
+        const cwd = this.repositories[0] || this.context.extensionUri.fsPath;
+        const diagnostic = await checkProvider(info, cwd, controller.signal);
+        const testedVersion = message.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
+        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Model discovery requires the configured official ${message.provider} ${testedVersion} executable.`);
+        const models = await (message.provider === 'claude' ? discoverClaudeModels : discoverCodexModels)(info.executable, cwd, controller.signal);
+        if (generation === this.diagnosticGeneration && !this.closing) this.draftModelCatalogs.set(message.provider, { status: 'ready', models, checkedAt: new Date().toISOString() });
+      } catch (error) {
+        if (generation === this.diagnosticGeneration && !this.closing) this.draftModelCatalogs.set(message.provider, { status: 'error', models: [], checkedAt: new Date().toISOString(), error: this.describe(error) });
+      } finally { this.diagnosticChecks.delete(controller); await this.publish(); }
+      return;
+    }
+    if (message.type === 'attachContext') {
+      const picked = await vscode.window.showOpenDialog({ canSelectFolders: false, canSelectFiles: true, canSelectMany: true, openLabel: 'Attach' });
+      if (!picked?.length) return;
+      const root = this.repositories[0];
+      const paths = picked.map(uri => root ? path.relative(root, uri.fsPath).split(path.sep).join('/') : uri.fsPath);
+      await this.broadcast({ type: 'contextAttached', paths });
       return;
     }
     if (message.type === 'openOfficial' || message.type === 'showOfficial' || message.type === 'copyHandoffPrompt') {

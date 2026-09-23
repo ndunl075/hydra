@@ -102,6 +102,8 @@ export interface Snapshot {
   delegationRunAccounting?: Record<string, DelegationRunUsageProjection>;
   delegationReconciliation?: Record<string, DelegationReconciliationProjection>;
   modelCatalogs?: Record<string, ModelCatalog>;
+  /** Task-independent model discovery for the task-creation picker, keyed by provider. */
+  draftModelCatalogs?: Partial<Record<Provider, ModelCatalog>>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
@@ -115,7 +117,7 @@ export type ClientMessage =
   | { type: 'reviewDelegationResult'; id: string; decision: 'approved' | 'rejected'; reason: string }
   | { type: 'saveResources'; id: string; config: ResourceConfig }
   | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
-  | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' }
+  | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' | 'attachContext' }
   | { type: 'select' | 'launch' | 'terminal' | 'copyPrompt' | 'openWorktree' | 'stop' | 'releaseExternal' | 'startManaged' | 'showSessionDiagnostics' | 'cancelQueued' | 'reconcileWriter' | 'reconcileCapacity'; id: string }
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
@@ -130,6 +132,7 @@ export type ClientMessage =
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
+  | { type: 'checkModelsForProvider'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
   | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
@@ -233,12 +236,12 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id) || !/^[a-f0-9]{12}$/.test(approvalId) || !['accept', 'decline'].includes(decision)) throw new Error('Invalid approval decision.');
     return { type, id, approvalId, decision } as ClientMessage;
   }
-  if (type === 'checkProvider' || type === 'showProviderDiagnostics') {
+  if (type === 'checkProvider' || type === 'showProviderDiagnostics' || type === 'checkModelsForProvider') {
     const provider = string('provider');
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
     return { type, provider };
   }
-  if (['ready', 'editor', 'agents', 'newTask', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
+  if (['ready', 'editor', 'agents', 'newTask', 'refresh', 'settings', 'openQuota', 'openOfficial', 'showOfficial', 'copyHandoffPrompt', 'attachContext'].includes(type)) return { type } as ClientMessage;
   if (type === 'handoff') {
     const id = string('id');
     const provider = string('provider');

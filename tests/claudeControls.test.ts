@@ -226,3 +226,24 @@ test('the usage ring reads context once after a completed turn and can never fai
     } finally { await f.close(); }
   }
 });
+
+test('user SessionStart hooks before the handshake are recorded, not fatal; other early events still stop the turn', async () => {
+  // A real CLI with plugin hooks (claude-mem) reports hook_started/hook_response
+  // before answering initialize; Hydra used to fail every launch on them.
+  const hooked = await fixture({ sessionStartHooks: true });
+  try {
+    await hooked.manager.start(hooked.task, hooked.executable, 'hooked fixture'); await hooked.manager.finished(hooked.task.id);
+    assert.equal(hooked.task.state, 'idle');
+    const turn = hooked.manager.view(hooked.task.id)!.turns.at(-1)!;
+    assert.equal(turn.status, 'completed');
+    const raw = (await readFile(hooked.store.rawPath(hooked.task.id, turn.id), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(raw.filter(entry => entry.type === 'hook').map(entry => entry.data.subtype), ['hook_started', 'hook_response']);
+  } finally { await hooked.close(); }
+  const early = await fixture({ unexpectedEarlyEvent: true });
+  try {
+    await early.manager.start(early.task, early.executable, 'early fixture').catch(() => {}); await early.manager.finished(early.task.id);
+    const turn = early.manager.view(early.task.id)!.turns.at(-1)!;
+    assert.equal(turn.status, 'error');
+    assert.match(turn.error || '', /non-control event \(system\/status\) before settings were verified/);
+  } finally { await early.close(); }
+});

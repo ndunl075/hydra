@@ -103,7 +103,9 @@ test('editor agent panel has the compact Cursor-style conversation hierarchy wit
   assert.match(thread, /type: 'saveProviderSelection'/);
   assert.match(thread, /<ContextRing usage=\{latestContextUsage\(session\.turns\)\} \/>/);
   // The composer has no drag handle; it sizes itself between min and max height.
-  assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{ resize: none;/);
+  assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{[^}]*resize: none;/);
+  // Claude-style input: one line tall, grows with its content up to 200px.
+  assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{[^}]*field-sizing: content;[^}]*max-height: 200px;/);
   assert.match(css, /body\.vscode-high-contrast/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });

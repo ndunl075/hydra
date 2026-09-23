@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { ClientMessage, Provider, ProviderInfo } from '../src/core/model';
 import type { ModelCatalog, ModelOption, ModelSelection } from '../src/core/modelSelection';
 import { permissionModeChoices, type ClaudePermissionMode, type CodexPermissionMode, type TaskPermissionMode } from '../src/core/permissionMode';
@@ -129,9 +129,16 @@ export function ModelPicker({ selection, provider, catalogs, providers, busy, se
 }
 
 export type DelegationMode = 'solo' | 'auto';
-export function DelegationModePicker({ mode, send, locked }: { mode: DelegationMode; send: Send; locked?: string }) {
+export function DelegationModePicker({ mode: saved, send, locked }: { mode: DelegationMode; send: Send; locked?: string }) {
   const ref = useRef<HTMLDetailsElement>(null);
   useOutsideClose(ref);
+  // The chip changes the moment it is clicked instead of waiting for the settings
+  // write and the snapshot round trip. The saved value takes over once it arrives;
+  // if it never does (the write failed), the chip reverts to what is saved.
+  const [pending, setPending] = useState<DelegationMode | null>(null);
+  useEffect(() => { if (pending && saved === pending) setPending(null); }, [saved, pending]);
+  useEffect(() => { if (!pending) return; const timer = setTimeout(() => setPending(null), 5000); return () => clearTimeout(timer); }, [pending]);
+  const mode = pending ?? saved;
   const options: { id: DelegationMode; label: string; description: string }[] = [
     { id: 'solo', label: 'Solo', description: 'One agent keeps the whole task.' },
     { id: 'auto', label: 'Auto', description: 'The agent may split independent work into child agents, each in its own worktree.' },
@@ -143,7 +150,7 @@ export function DelegationModePicker({ mode, send, locked }: { mode: DelegationM
     <div className="mode-picker-body">
       {options.map(option => (
         <button key={option.id} type="button" className="mode-picker-option" aria-pressed={mode === option.id}
-          onClick={() => { send({ type: 'setDelegationMode', mode: option.id }); if (ref.current) ref.current.open = false; }}>
+          onClick={() => { if (option.id !== mode) { setPending(option.id); send({ type: 'setDelegationMode', mode: option.id }); } if (ref.current) ref.current.open = false; }}>
           <span className="mode-picker-option-text"><span>{option.label}</span><span className="muted">{option.description}</span></span>
           {mode === option.id && <span className="mode-picker-check">✓</span>}
         </button>

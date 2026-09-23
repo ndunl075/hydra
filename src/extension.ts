@@ -46,6 +46,7 @@ import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
 import { findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
+import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { ConversationDrafts } from './core/conversationDrafts';
@@ -70,6 +71,10 @@ import { officialExtensionInfo, openOfficialExtension } from './extensionBridge'
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
 
 let manager: Manager | undefined;
+/** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
+function otherHydraSettings(context: vscode.ExtensionContext): string[] {
+  return settingsRequiringRefresh([context.extension.packageJSON?.contributes?.configuration].flat().flatMap((section: { properties?: Record<string, unknown> } | undefined) => Object.keys(section?.properties || {})));
+}
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   manager = new Manager(context);
   await manager.initialize();
@@ -492,11 +497,16 @@ class Manager {
         void this.persist().catch(error => this.report(error));
       }
     }), vscode.workspace.onDidChangeConfiguration(event => {
-      if (event.affectsConfiguration('hydra')) {
-        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear(); this.draftModelCatalogs.clear();
-        for (const controller of this.diagnosticChecks) controller.abort();
-        void this.refresh().catch(error => this.report(error));
-      }
+      if (!event.affectsConfiguration('hydra')) return;
+      // Delegation preferences are read fresh wherever they are used and touch no
+      // provider, model catalog or repository state. Treating them like a provider
+      // path change cleared both model catalogs, aborted provider checks and ran a
+      // full refresh on every Solo/Auto flip, so they only republish. Any other
+      // Hydra setting, including ones added later, still takes the full path.
+      if (!otherHydraSettings(this.context).some(key => event.affectsConfiguration(key))) { void this.publish().catch(error => this.report(error)); return; }
+      this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear(); this.draftModelCatalogs.clear();
+      for (const controller of this.diagnosticChecks) controller.abort();
+      void this.refresh().catch(error => this.report(error));
     }));
     try {
       this.tasks = await this.store.load();
@@ -909,7 +919,14 @@ class Manager {
     }
     if (this.closing || this.disabled || !vscode.workspace.isTrusted) throw new Error('Workspace closed or lost trust. Task preserved.');
   }
+  private publishTimer: ReturnType<typeof setTimeout> | undefined;
+  /** One trailing publish for high-frequency updates; an immediate publish() supersedes it. */
+  private publishSoon(): void {
+    if (this.publishTimer) clearTimeout(this.publishTimer);
+    this.publishTimer = setTimeout(() => { this.publishTimer = undefined; void this.publish().catch(error => this.report(error)); }, 200);
+  }
   private async publish(): Promise<void> {
+    if (this.publishTimer) { clearTimeout(this.publishTimer); this.publishTimer = undefined; }
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
     const active = this.terminals.size + this.managed.count + this.resources.count;
@@ -1053,7 +1070,12 @@ class Manager {
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'newTask') { await vscode.commands.executeCommand('hydra.newTask'); return; }
-    if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); await this.publish(); return; }
+    // A reply draft changes on every keystroke. The typing panel gets its own ack
+    // (conversationDraftAck) and send-time validation reads the draft map, which
+    // updates here immediately; the publish only carries the draft to the other
+    // panel. Publishing the whole snapshot per keystroke made typing lag, so it
+    // is coalesced to one trailing publish once typing pauses.
+    if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); this.publishSoon(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'setDelegationMode') { await this.setDelegationMode(message.mode); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }

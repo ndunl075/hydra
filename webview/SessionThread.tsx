@@ -5,6 +5,7 @@ import { pendingSchedule } from '../src/core/scheduler';
 import { TurnModelLabel } from './ModelControls';
 import { HydraMark } from './HydraMark';
 import { ComposerIcon } from './ComposerIcons';
+import { withoutPlannerSuffix } from '../src/core/plannerSuffix';
 import type { ModelCatalog } from '../src/core/modelSelection';
 import type { Provider, ProviderInfo } from '../src/core/model';
 import { canEditBrief, emptyBrief } from '../src/core/taskContext';
@@ -74,7 +75,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     {!session.turns.length && <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
     {(session.totalTurns || session.turns.length) > 10 && <p className="quiet">Showing the latest ten turns. Full conversation and process events remain in local storage.</p>}
     {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
-      <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>}<p className="prompt-text">{turn.prompt}</p></article>
+      <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>}<p className="prompt-text">{withoutPlannerSuffix(turn.prompt)}</p></article>
       <article className="message assistant-message">{!compact && <div className="message-author"><HydraMark className="avatar hydra-avatar" /><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div>}{compact && turn.status !== 'completed' && <span className="turn-status">{turn.status}</span>}<p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
         {(!compact || turn.modelSettings?.rerouted) && <TurnModelLabel turn={turn} />}
         {turn.error && <p className="session-error" role="status">{turn.error}</p>}
@@ -94,7 +95,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
         the labelled form, where the surrounding controls explain themselves. */}
     {compact ? <form className="task-prompt-form chat-start-composer" onSubmit={event => { event.preventDefault(); submitCompact(); }}>
       <div className="task-prompt-box">
-        <textarea className="task-prompt-textarea" rows={3} maxLength={32000} value={prompt} disabled={blocked} aria-label={task.sessionId ? 'Follow-up' : 'Add to your first message'}
+        <textarea className="task-prompt-textarea" rows={1} maxLength={32000} value={prompt} disabled={blocked} aria-label={task.sessionId ? 'Follow-up' : 'Add to your first message'}
           onChange={event => setPrompt(event.target.value)}
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCompact(); } }}
           placeholder={task.sessionId ? 'Reply to this agent' : 'Add to your first message, or send to start'} />

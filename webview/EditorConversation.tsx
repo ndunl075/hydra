@@ -37,7 +37,7 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
   return <section className="chat-start chat-start-composer">
     <form className="task-prompt-form" onSubmit={event => { event.preventDefault(); submit(); }}>
       <div className="task-prompt-box">
-        <textarea className="task-prompt-textarea" autoFocus rows={4} maxLength={32000} value={draft.prompt}
+        <textarea className="task-prompt-textarea" autoFocus rows={1} maxLength={32000} value={draft.prompt}
           onChange={event => update({ prompt: event.target.value, brief: undefined })}
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); } }}
           placeholder="Plan, search, build anything" aria-label="Task prompt" disabled={snapshot.busy} />

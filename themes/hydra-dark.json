@@ -4,8 +4,9 @@
   "type": "dark",
   "colors": {
     "editor.background": "#141414", "editor.foreground": "#F5F5F5",
-    "sideBar.background": "#111111", "sideBar.foreground": "#C8C8C8",
-    "activityBar.background": "#111111", "activityBar.foreground": "#F5F5F5",
+    "sideBar.background": "#141414", "sideBar.foreground": "#F0F0F0BD",
+    "sideBarSectionHeader.background": "#141414", "sideBarSectionHeader.foreground": "#F0F0F05C", "sideBarTitle.foreground": "#F0F0F0BD",
+    "activityBar.background": "#141414", "activityBar.foreground": "#F5F5F5",
     "activityBarBadge.background": "#173C2C", "activityBarBadge.foreground": "#FFFFFF",
     "titleBar.activeBackground": "#141414", "titleBar.activeForeground": "#B8B8B8", "titleBar.inactiveForeground": "#7A7A7A",
     "statusBar.background": "#141414", "statusBar.foreground": "#C8C8C8",
@@ -14,12 +15,13 @@
     "editorGroupHeader.tabsBackground": "#111111", "panel.background": "#141414",
     "terminal.background": "#141414", "terminal.foreground": "#F5F5F5",
     "button.background": "#173C2C", "button.foreground": "#FFFFFF", "button.hoverBackground": "#24553F",
-    "focusBorder": "#7EAD93", "list.activeSelectionBackground": "#173C2C",
-    "list.activeSelectionForeground": "#FFFFFF", "list.hoverBackground": "#202620",
+    "focusBorder": "#7EAD93", "list.activeSelectionBackground": "#F0F0F01E",
+    "list.activeSelectionForeground": "#F0F0F0", "list.hoverBackground": "#F0F0F011",
+    "list.inactiveSelectionBackground": "#F0F0F011", "list.focusOutline": "#F0F0F026", "tree.indentGuidesStroke": "#F0F0F030",
     "input.background": "#1B1B1B", "input.foreground": "#F5F5F5", "input.border": "#363636",
     "editor.selectionBackground": "#294B3A", "editor.lineHighlightBackground": "#1C1C1C",
     "editorLineNumber.foreground": "#717171", "editorLineNumber.activeForeground": "#C8C8C8",
-    "panel.border": "#2B2B2B", "sideBar.border": "#2B2B2B",
+    "panel.border": "#2B2B2B", "sideBar.border": "#F0F0F013",
     "textLink.foreground": "#9FCAB0", "textLink.activeForeground": "#C0E4CD"
   },
   "tokenColors": [

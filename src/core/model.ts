@@ -4,6 +4,7 @@ import type { UsageSummary } from './usage';
 import { parseBudgets, type SoftBudget, type BudgetSettings, type BudgetObservation } from './budgets';
 import type { DiscardReceipt, DiscardReview } from './discard';
 import { parseModelSelection, type ModelSelection, type ModelCatalog, type TurnModelSettings } from './modelSelection';
+import { parseSubmittedPermissionMode, type TaskPermissionMode } from './permissionMode';
 import type { CapacityView } from './profileCapacity';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
@@ -35,6 +36,8 @@ export interface Task {
   contextLockedAt?: string;
   handoffSummary?: TaskHandoffSummary;
   modelSelection?: ModelSelection;
+  /** Chosen before the first launch and locked afterwards, like modelSelection. */
+  permissionMode?: TaskPermissionMode;
   schedule?: TaskSchedule;
   delegationExecution?: DelegatedExecutionReceipt;
   /** Opaque, durable approval-pause sources for provenance-backed graph replay. */
@@ -129,6 +132,7 @@ export type ClientMessage =
   | { type: 'showTaskHandoff'; id: string }
   | { type: 'checkModels'; id: string }
   | { type: 'saveModelSelection'; id: string; selection: ModelSelection | null }
+  | { type: 'savePermissionMode'; id: string; permissionMode: TaskPermissionMode | null }
   | { type: 'approve'; id: string; approvalId: string; decision: 'accept' | 'decline' }
   | { type: 'handoff'; id: string; provider: Provider }
   | { type: 'checkProvider' | 'showProviderDiagnostics'; provider: Provider }
@@ -195,8 +199,18 @@ export function parseMessage(value: unknown): ClientMessage {
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return type === 'checkModels' ? { type, id } : { type, id, selection: message.selection === null ? null : parseModelSelection(message.selection) };
   }
+  if (type === 'savePermissionMode') {
+    const id = string('id');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+    return { type, id, permissionMode: message.permissionMode === null ? null : parseSubmittedPermissionMode(message.permissionMode) };
+  }
   if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['model', 'effort', 'reasoningEffort', 'reasoning_effort'].some(key => key in message)) {
     throw new Error('Direct launch-time model and effort fields are unsupported. Save a verified managed selection before launching; Hydra cannot confirm an Astra High preset unless the exact model and effort are advertised.');
+  }
+  // Permission modes follow the same rule as model settings: they are saved and
+  // verified before a launch, never smuggled in as a launch-time field.
+  if (['create', 'draft', 'startManaged', 'followUp', 'saveBrief'].includes(type) && ['permissionMode', 'permission_mode', 'approvalPolicy', 'sandbox', 'sandboxPolicy'].some(key => key in message)) {
+    throw new Error('Direct launch-time permission fields are unsupported. Save a permission mode before launching so Hydra can verify the provider applied it.');
   }
   if (type === 'saveBrief' || type === 'saveHandoffSummary' || type === 'showTaskHandoff') {
     const id = string('id');

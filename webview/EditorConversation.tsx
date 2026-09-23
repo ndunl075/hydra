@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ClientMessage, Draft, Provider, ProviderInfo, Snapshot } from '../src/core/model';
 import type { ModelCatalog, ModelSelection } from '../src/core/modelSelection';
+import { permissionModeChoices, type ClaudePermissionMode, type CodexPermissionMode, type TaskPermissionMode } from '../src/core/permissionMode';
 import { SessionThread } from './SessionThread';
 import { ModelControls } from './ModelControls';
 import { TaskContext } from './TaskContext';
@@ -90,10 +91,48 @@ function DelegationModePicker({ mode, send }: { mode: 'solo' | 'auto'; send: Sen
   </details>;
 }
 
-function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; send: Send; onSubmit: (selection: ModelSelection | null) => void }) {
+// The options carry each provider's own names, so what is shown here is what the
+// provider is actually told. Claude takes one --permission-mode; Codex splits the
+// same ground across an approval policy and a sandbox, so both are named.
+type PermissionModeName = TaskPermissionMode['mode'];
+const permissionModeOptions: Record<Provider, { mode: PermissionModeName; description: string }[]> = permissionModeChoices;
+const defaultPermissionModeName = (provider: Provider): PermissionModeName => provider === 'claude' ? 'default' : 'on-request/workspace-write';
+/** Pair the name back with its provider so the saved value is a valid mode for this task. */
+const asTaskPermissionMode = (provider: Provider, mode: PermissionModeName): TaskPermissionMode =>
+  provider === 'claude' ? { provider: 'claude', mode: mode as ClaudePermissionMode } : { provider: 'codex', mode: mode as CodexPermissionMode };
+
+function PermissionModePicker({ provider, mode, busy, onSelect }: { provider: Provider; mode: PermissionModeName | null; busy: boolean; onSelect: (mode: PermissionModeName) => void }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
+    document.addEventListener('click', onOutsideClick, true);
+    return () => document.removeEventListener('click', onOutsideClick, true);
+  }, []);
+  const options = permissionModeOptions[provider];
+  const current = mode && options.some(option => option.mode === mode) ? mode : defaultPermissionModeName(provider);
+  return <details className="mode-picker" ref={ref}>
+    <summary title={`${provider} permission mode`}>{current.replace('/', ' · ')}</summary>
+    <div className="mode-picker-body">
+      {options.map(option => (
+        <button key={option.mode} type="button" className="mode-picker-option" aria-pressed={current === option.mode} disabled={busy}
+          onClick={() => { onSelect(option.mode); if (ref.current) ref.current.open = false; }}>
+          <span className="mode-picker-option-text"><span>{option.mode.replace('/', ' · ')}</span><span className="muted">{option.description}</span></span>
+          {current === option.mode && <span className="mode-picker-check">✓</span>}
+        </button>
+      ))}
+    </div>
+  </details>;
+}
+
+function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; send: Send; onSubmit: (selection: ModelSelection | null, permissionMode: PermissionModeName | null) => void }) {
   const [draft, setDraft] = useState<Draft>(snapshot.draft || { title: '', prompt: '', provider: 'claude' });
   const [repository, setRepository] = useState(snapshot.repositories[0] || '');
   const [selection, setSelection] = useState<ModelSelection | null>(null);
+  // Mode names are provider-specific, so a provider switch drops the picked mode
+  // back to that provider's default rather than carrying a name it does not have.
+  const [permissionMode, setPermissionMode] = useState<PermissionModeName | null>(null);
   useEffect(() => { setRepository(current => snapshot.repositories.includes(current) ? current : snapshot.repositories[0] || ''); }, [snapshot.repositories.join('\0')]);
   useEffect(() => {
     const listener = (event: MessageEvent) => {
@@ -109,7 +148,7 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
   // line of the prompt, which createWorktree slugifies and bounds on its own.
   const title = (draft.prompt.trim().split('\n')[0] || '').slice(0, 120).trim();
   const ready = !snapshot.busy && !!draft.prompt.trim() && !!repository;
-  const submit = () => { if (ready) { send({ type: 'create', ...draft, title: title || 'New task', repository, autoStart: true }); onSubmit(selection); } };
+  const submit = () => { if (ready) { send({ type: 'create', ...draft, title: title || 'New task', repository, autoStart: true }); onSubmit(selection, permissionMode); } };
   return <section className="chat-start">
     <form className="task-prompt-form" onSubmit={event => { event.preventDefault(); submit(); }}>
       <div className="task-prompt-box">
@@ -121,7 +160,8 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
           <div className="task-prompt-toolbar-group">
             <button type="button" className="icon-button" aria-label="Attach context" title="Attach a file to this task" disabled={snapshot.busy} onClick={() => send({ type: 'attachContext' })}>+</button>
             <ModelPicker selection={selection} provider={draft.provider} catalogs={snapshot.draftModelCatalogs || {}} providers={snapshot.providers} busy={snapshot.busy} send={send}
-              onSelect={(next, provider) => { setSelection(next); update({ provider }); }} />
+              onSelect={(next, provider) => { setSelection(next); if (provider !== draft.provider) setPermissionMode(null); update({ provider }); }} />
+            <PermissionModePicker provider={draft.provider} mode={permissionMode} busy={snapshot.busy} onSelect={setPermissionMode} />
           </div>
           <div className="task-prompt-toolbar-group">
             <DelegationModePicker mode={snapshot.delegation?.mode === 'auto' ? 'auto' : 'solo'} send={send} />
@@ -142,6 +182,7 @@ export function EditorConversation({ send }: { send: Send }) {
   // Best-effort for the common single-task creation flow: applies to whichever
   // task next appears selected with no model set. Consumed once, then cleared.
   const pendingSelection = useRef<ModelSelection | null>(null);
+  const pendingPermissionMode = useRef<PermissionModeName | null>(null);
   useEffect(() => {
     const listener = (event: MessageEvent) => { if (event.data?.type === 'snapshot') { setSnapshot(event.data.snapshot); setReady(true); } if (event.data?.type === 'taskCreated') setCreating(false); };
     window.addEventListener('message', listener); send({ type: 'ready' }); return () => window.removeEventListener('message', listener);
@@ -165,6 +206,16 @@ export function EditorConversation({ send }: { send: Send }) {
     }
     pendingSelection.current = null;
   }, [task, snapshot.modelCatalogs, send]);
+  // The mode needs no catalog check: it is a fixed provider vocabulary, so it
+  // applies as soon as the created task appears, and only if it still has none.
+  useEffect(() => {
+    const pending = pendingPermissionMode.current;
+    if (!pending || !task || task.permissionMode) return;
+    pendingPermissionMode.current = null;
+    if (permissionModeOptions[task.provider].some(option => option.mode === pending)) {
+      send({ type: 'savePermissionMode', id: task.id, permissionMode: asTaskPermissionMode(task.provider, pending) });
+    }
+  }, [task, send]);
   return <main className="editor-conversation" aria-label="Editor agent conversation">
     <header className="chat-toolbar">
       <div className="chat-brand" aria-label="Hydra"><HydraMark className="chat-mark" /><span>HYDRA</span></div>
@@ -173,7 +224,7 @@ export function EditorConversation({ send }: { send: Send }) {
     </header>
     {!!tasks.length && <div className="chat-task-picker"><span className="picker-kicker">CHAT</span><label htmlFor="chat-task">Conversation</label><select id="chat-task" value={creating || !task ? '' : task.id} onChange={event => { if (event.target.value) { setCreating(false); send({ type: 'select', id: event.target.value }); } }}>{(creating || !task) && <option value="">New conversation</option>}{tasks.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></div>}
     {snapshot.error && <div className="chat-error" role="alert">{snapshot.error}</div>}
-    {!ready ? <p className="chat-loading" role="status">Loading conversation...</p> : snapshot.handoff ? <div className="chat-start"><h2>External provider workspace</h2><p>This task is managed from its original Hydra window.</p><button className="secondary" onClick={() => send({ type: 'agents' })}>Open handoff details</button></div> : creating || !task ? <NewConversation key={creating ? 'new' : 'empty'} snapshot={snapshot} send={send} onSubmit={selection => { pendingSelection.current = selection; }} /> : <>
+    {!ready ? <p className="chat-loading" role="status">Loading conversation...</p> : snapshot.handoff ? <div className="chat-start"><h2>External provider workspace</h2><p>This task is managed from its original Hydra window.</p><button className="secondary" onClick={() => send({ type: 'agents' })}>Open handoff details</button></div> : creating || !task ? <NewConversation key={creating ? 'new' : 'empty'} snapshot={snapshot} send={send} onSubmit={(selection, permissionMode) => { pendingSelection.current = selection; pendingPermissionMode.current = permissionMode; }} /> : <>
       <div className="chat-identity"><div><span className="chat-project" title={task.worktree}>{basename(task.repository)}</span><span className="chat-separator">/</span><span className="chat-branch" title={task.branch}>{task.branch}</span></div><span className={`state ${task.state}`}>{task.state}</span></div>
       <details className="chat-details"><summary><span className="provider-badge">{task.provider === 'claude' ? 'C' : 'O'}</span><span>{task.provider === 'claude' ? 'Claude Code' : 'Codex'}</span><span className="chat-model">{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : 'Provider defaults'}</span></summary><div className="chat-details-body">
         <p className="form-note">Isolated worktree</p><code className="chat-worktree">{task.worktree}</code>

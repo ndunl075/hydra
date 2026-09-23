@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { ClientMessage, SessionView, Task, Turn } from '../src/core/model';
 import type { ModelCatalog, ModelSelection } from '../src/core/modelSelection';
 import { canEditBrief } from '../src/core/taskContext';
+import { defaultPermissionMode, permissionModeChoices, type TaskPermissionMode } from '../src/core/permissionMode';
 
 export function TurnModelLabel({ turn }: { turn: Turn }) {
   const settings = turn.modelSettings;
@@ -16,6 +17,8 @@ export function ModelControls({ task, session, catalog, busy, send }: { task: Ta
   const supported = !selection || !!selected?.efforts.includes(selection.effort);
   const astra = models.find(model => model.model === 'gpt-6-astra' && model.efforts.includes('high'));
   const dirty = JSON.stringify(selection) !== saved;
+  const choices = permissionModeChoices[task.provider];
+  const mode = task.permissionMode?.mode || defaultPermissionMode(task.provider).mode;
   return <details className="context-details"><summary>Model and effort <span>{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : 'Official provider defaults'}</span></summary>
     <>
       <p className="form-note">These settings apply to managed {task.provider === 'claude' ? 'Claude' : 'Codex'} tasks. Discovery reads model metadata without submitting a prompt. The provider verifies access when you run the task.</p>
@@ -27,6 +30,13 @@ export function ModelControls({ task, session, catalog, busy, send }: { task: Ta
         <div className="task-actions"><button type="submit" className="secondary" disabled={busy || !editable || !supported || !dirty}>Save model settings</button>{task.provider === 'codex' && <button type="button" className="secondary" disabled={busy || !editable || !astra} onClick={() => setSelection({ model: astra!.model, effort: 'high' })}>Astra High</button>}{selection && editable && <button type="button" className="text-button" disabled={busy} onClick={() => setSelection(null)}>Use provider defaults</button>}</div>
       </form>
       {task.provider === 'codex' && !astra && <p className="form-note">Astra High is available only when this runtime advertises exactly gpt-6-astra with high effort. No substitute is selected.</p>}
+      {/* Named exactly as the provider names them, and locked at launch like the
+          model settings above, so a running task cannot change its own permissions. */}
+      <label className="permission-mode">Permission mode
+        <select disabled={busy || !editable} value={mode} onChange={event => send({ type: 'savePermissionMode', id: task.id, permissionMode: { provider: task.provider, mode: event.target.value } as TaskPermissionMode })}>
+          {choices.map(choice => <option key={choice.mode} value={choice.mode}>{choice.mode} · {choice.description}</option>)}
+        </select>
+      </label>
       <p className="form-note">{editable ? 'Save settings before starting. Explicit selections lock when launched and are rechecked on resume.' : 'Settings are locked for this task. Follow-ups reapply its saved selection.'} No selection leaves provider configuration unchanged. {task.provider === 'codex' ? 'A later provider reroute is reported; an explicitly configured run is stopped.' : 'Effective settings describe the next root request; they do not guarantee every internal call.'}</p>
     </>
   </details>;

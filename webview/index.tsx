@@ -1,3 +1,4 @@
+import { permissionModeLabel, permissionModeWrites } from '../src/core/permissionMode';
 import { pendingSchedule } from '../src/core/scheduler';
 import { ScheduleControls } from './ScheduleControls';
 import { CapacityStatus } from './CapacityStatus';
@@ -69,12 +70,15 @@ function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: Officia
 function Changes({ task, files, busy, prepared }: { task: Task; files: TaskFile[]; busy: boolean; prepared?: PreparedReview }) {
   const [message, setMessage] = useState('');
   const blocked = pendingSchedule(task) || busy || task.state === 'running' || task.state === 'external' || task.interface === 'official-extension';
+  // A read-only permission mode produces no diff by design, so an empty list is
+  // the expected result rather than a worktree that still needs refreshing.
+  const readOnlyTask = !!task.permissionMode && !permissionModeWrites(task.permissionMode);
   return <section className="changes" aria-label="Changed files">
     <div className="section-label">CHANGES <span>{files.length}</span><button className="text-button" onClick={() => send({ type: 'refresh' })}>Refresh</button></div>
     {files.length ? files.map(file => <div className="change-row" key={file.path}>
       <div className="change-path"><span className="file-status">{file.status.trim()}</span><span title={file.path}>{file.path}</span><button className="text-button" title={`Open ${file.path} in the native editor`} onClick={() => send({ type: 'openFile', id: task.id, path: file.path })}>Open file</button></div>
       <div className="change-layers">{file.changes?.map(change => <button className="diff-button" key={change.layer} disabled={blocked} title={`${change.beforePath ? `${change.beforePath} → ` : ''}${change.path} · ${diffLabels[change.layer]}`} onClick={() => send({ type: 'openDiff', id: task.id, path: change.path, layer: change.layer })}>{diffLabels[change.layer]} <Icon name="arrow" /></button>)}</div>
-    </div>) : <p className="quiet">No changes yet. Refresh to check this worktree.</p>}
+    </div>) : <p className="quiet">{readOnlyTask ? `This task runs in ${permissionModeLabel(task.permissionMode!)}, which cannot write files. Its plan is in the session transcript; start a new task to carry it out.` : 'No changes yet. Refresh to check this worktree.'}</p>}
     <p className="review-note">{blocked ? 'Stop the task writer or acknowledge official-extension handback to review changes.' : 'Choose a layer to open a read-only native diff. Saved files exclude unsaved editor buffers. Snapshots stay fixed; reopen after edits. Binary and large files show metadata.'}</p>
     <section className="commit-review" aria-label="Reviewed task commit">
       <div className="section-label">REVIEWED COMMIT</div>

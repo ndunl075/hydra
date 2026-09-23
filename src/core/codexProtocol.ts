@@ -2,6 +2,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Turn } from './model';
 import { parseModelSelection } from './modelSelection';
+import { codexThreadMatches, defaultPermissionMode, permissionModeLabel, type TaskPermissionMode } from './permissionMode';
 
 export const testedCodexVersion = '0.154.0';
 export type RpcId = string | number;
@@ -13,13 +14,16 @@ export function providerId(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)) throw new Error('Invalid Codex thread/turn ID.');
   return value;
 }
-export function validateCodexThread(value: unknown, cwd: string, expectedId?: string): string {
+export function validateCodexThread(value: unknown, cwd: string, expectedId?: string, permissionMode?: TaskPermissionMode): string {
   const response = record(value), thread = record(response.thread);
   const id = providerId(thread.id);
   if (expectedId && id !== expectedId) throw new Error('Codex resumed a different thread.');
   if (typeof response.cwd !== 'string' || path.relative(cwd, response.cwd) !== '' || typeof thread.cwd !== 'string' || path.relative(cwd, thread.cwd) !== '') throw new Error('Codex returned a different working directory.');
-  if (record(response.sandbox).type !== 'workspaceWrite') throw new Error('Codex did not grant the requested worktree sandbox. Check sandbox setup and managed configuration in the official client, or use the provider terminal.');
-  if (thread.cliVersion !== testedCodexVersion || response.approvalPolicy !== 'on-request') throw new Error('Codex returned an unverified version or task policy. Use the provider terminal.');
+  if (thread.cliVersion !== testedCodexVersion) throw new Error('Codex returned an unverified version. Use the provider terminal.');
+  // Assert Codex echoed the requested sandbox and approval policy, rather than a
+  // fixed pair: that catches a silently widened sandbox or dropped approvals.
+  const requested = permissionMode ?? defaultPermissionMode('codex');
+  if (!codexThreadMatches(requested, record(response.sandbox).type, response.approvalPolicy)) throw new Error(`Codex granted ${String(record(response.sandbox).type)} with ${String(response.approvalPolicy)} approvals instead of the requested ${permissionModeLabel(requested)}. Check sandbox setup and managed configuration in the official client, or use the provider terminal.`);
   return id;
 }
 

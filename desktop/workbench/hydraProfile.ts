@@ -6,6 +6,10 @@ import { IUserDataProfilesService } from '../platform/userDataProfile/common/use
 import { IUserDataProfileService } from './services/userDataProfile/common/userDataProfile.js';
 import { IWorkbenchThemeService } from './services/themes/common/workbenchThemeService.js';
 import { IWorkbenchEnvironmentService } from './services/environment/common/environmentService.js';
+import { Disposable } from '../base/common/lifecycle.js';
+import { registerWorkbenchContribution2, WorkbenchPhase, IWorkbenchContribution } from './common/contributions.js';
+import { IWorkbenchLayoutService, Parts } from './services/layout/browser/layoutService.js';
+import { IWorkspaceContextService, WorkbenchState } from '../platform/workspace/common/workspace.js';
 
 CommandsRegistry.registerCommand('hydra.desktop.startupContext', accessor => {
 	if (accessor.get(IProductService).nameShort !== 'Hydra') { throw new Error('Hydra desktop is required.'); }
@@ -28,3 +32,26 @@ CommandsRegistry.registerCommand('hydra.desktop.profileResources', async accesso
 		themes: themes.map(theme => theme.settingsId)
 	};
 });
+
+// The agent panel stays hidden on the empty start surface (no folder open) and
+// reappears once a folder or workspace opens; the terminal panel never
+// auto-opens, matching Cursor's clean landing state.
+class HydraStartSurfaceLayout extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'hydra.workbench.contrib.startSurfaceLayout';
+
+	constructor(
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
+	) {
+		super();
+		this.apply(this.contextService.getWorkbenchState());
+		this._register(this.contextService.onDidChangeWorkbenchState(state => this.apply(state)));
+	}
+
+	private apply(state: WorkbenchState): void {
+		this.layoutService.setPartHidden(state === WorkbenchState.EMPTY, Parts.AUXILIARYBAR_PART);
+		this.layoutService.setPartHidden(true, Parts.PANEL_PART);
+	}
+}
+
+registerWorkbenchContribution2(HydraStartSurfaceLayout.ID, HydraStartSurfaceLayout, WorkbenchPhase.AfterRestored);

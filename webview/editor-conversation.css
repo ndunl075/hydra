@@ -70,9 +70,11 @@ body[data-surface="editor"] {
 .task-prompt-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border: 1px solid transparent; border-radius: 12px; background: var(--surface); }
 .task-prompt-box:focus-within { border-color: color-mix(in srgb, #4f9871 55%, transparent); }
 .task-prompt-toolbar-group .icon-button { border-radius: 7px; }
-.task-prompt-name { border: 0; background: transparent; padding: 2px 2px 0; font-size: 12px; font-weight: 560; color: var(--text); }
+/* Scoped past `.chat-start form textarea`, which is more specific than a bare
+   class and was drawing a second box inside the composer's own container. */
+.chat-start form .task-prompt-name { border: 0; background: transparent; padding: 2px 2px 0; font-size: 12px; font-weight: 560; color: var(--text); }
 .task-prompt-name:focus-visible { outline: none; }
-.task-prompt-textarea { resize: vertical; min-height: 84px; max-height: 40vh; border: 0; background: transparent; padding: 2px; font-size: 12px; line-height: 1.6; color: var(--text); }
+.chat-start form .task-prompt-textarea { resize: vertical; min-height: 84px; max-height: 40vh; border: 0; background: transparent; padding: 2px; font-size: 12px; line-height: 1.6; color: var(--text); }
 .task-prompt-textarea:focus-visible { outline: none; }
 .task-prompt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .task-prompt-toolbar-group { display: flex; align-items: center; gap: 6px; }

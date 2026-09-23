@@ -84,6 +84,15 @@ test('editor agent panel has the compact Cursor-style conversation hierarchy wit
   assert.match(css, /\.chat-quiet \{[\s\S]*border-bottom: 1px solid var\(--border\)/);
   // The removed chrome must not leave dead rules behind in the stylesheet.
   assert.doesNotMatch(css, /\.chat-task-picker|\.chat-identity|\.chat-details|\.provider-badge|\.chat-worktree|\.editor-conversation \.follow-up/);
+  // The conversation switcher is a themed menu, not a native <select>: Chromium
+  // hands an open select to the OS, which draws a popup CSS cannot style.
+  assert.doesNotMatch(editor, /<select aria-label="Conversation"/);
+  assert.match(editor, /function ConversationMenu/);
+  // With no model chosen the model chip names the provider. "Provider defaults"
+  // sat beside Claude's permission mode, which is literally named "default".
+  assert.match(editor, /: providerLabel\[provider\];/);
+  // The composer has no drag handle; it sizes itself between min and max height.
+  assert.match(css, /\.task-prompt-box \.task-prompt-textarea \{ resize: none;/);
   assert.match(css, /body\.vscode-high-contrast/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });

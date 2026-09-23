@@ -6,6 +6,7 @@ import { SessionThread } from './SessionThread';
 import { pendingSchedule } from '../src/core/scheduler';
 import { CapacityStatus } from './CapacityStatus';
 import { HydraMark } from './HydraMark';
+import { ComposerIcon } from './ComposerIcons';
 
 type Send = (message: ClientMessage) => void;
 const empty: Snapshot = { tasks: [], repositories: [], providers: [], files: [], busy: false, mode: 'editor' };
@@ -16,7 +17,7 @@ function ModelPicker({ selection, provider, catalogs, providers, busy, send, onS
   selection: ModelSelection | null; provider: Provider; catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; busy: boolean; send: Send;
   onSelect: (selection: ModelSelection | null, provider: Provider) => void;
 }) {
-  const label = selection ? `${selection.model} · ${selection.effort}` : 'Provider defaults';
+  const label = selection ? `${selection.model} · ${selection.effort}` : providerLabel[provider];
   const ref = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const element = ref.current;
@@ -35,7 +36,7 @@ function ModelPicker({ selection, provider, catalogs, providers, busy, send, onS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers, catalogs]);
   return <details className="model-picker" ref={ref}>
-    <summary title="Model and effort">{label}</summary>
+    <summary title={selection ? 'Model and effort' : `${providerLabel[provider]} with its default model`}>{label}</summary>
     <div className="model-picker-body">
       {(['claude', 'codex'] as const).map(item => {
         const available = providers.find(entry => entry.provider === item)?.available;
@@ -72,11 +73,11 @@ function DelegationModePicker({ mode, send }: { mode: 'solo' | 'auto'; send: Sen
     return () => document.removeEventListener('click', onOutsideClick, true);
   }, []);
   const options: { id: 'solo' | 'auto'; label: string; description: string }[] = [
-    { id: 'solo', label: 'Solo', description: 'You run this task yourself.' },
-    { id: 'auto', label: 'Auto', description: 'Auto planning is being prepared. This task still runs solo.' },
+    { id: 'solo', label: 'Solo', description: 'One agent keeps the whole task.' },
+    { id: 'auto', label: 'Auto', description: 'The agent may split independent work into child agents, each in its own worktree.' },
   ];
   return <details className="mode-picker" ref={ref}>
-    <summary title="Delegation mode">{options.find(option => option.id === mode)?.label}</summary>
+    <summary title="Subagent delegation"><ComposerIcon name="agents" size={12} />{options.find(option => option.id === mode)?.label}</summary>
     <div className="mode-picker-body">
       {options.map(option => (
         <button key={option.id} type="button" className="mode-picker-option" aria-pressed={mode === option.id}
@@ -110,8 +111,8 @@ function PermissionModePicker({ provider, mode, busy, onSelect }: { provider: Pr
   }, []);
   const options = permissionModeOptions[provider];
   const current = mode && options.some(option => option.mode === mode) ? mode : defaultPermissionModeName(provider);
-  return <details className="mode-picker" ref={ref}>
-    <summary title={`${provider} permission mode`}>{current.replace('/', ' · ')}</summary>
+  return <details className="mode-picker mode-picker-plain" ref={ref}>
+    <summary title={`${providerLabel[provider]} permission mode`}><ComposerIcon name="shield" size={12} />{current.replace('/', ' · ')}</summary>
     <div className="mode-picker-body">
       {options.map(option => (
         <button key={option.mode} type="button" className="mode-picker-option" aria-pressed={current === option.mode} disabled={busy}
@@ -156,14 +157,14 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
           placeholder="Plan, search, build anything" aria-label="Task prompt" disabled={snapshot.busy} />
         <div className="task-prompt-toolbar">
           <div className="task-prompt-toolbar-group">
-            <button type="button" className="icon-button" aria-label="Attach context" title="Attach a file to this task" disabled={snapshot.busy} onClick={() => send({ type: 'attachContext' })}>+</button>
+            <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this task" disabled={snapshot.busy} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
             <ModelPicker selection={selection} provider={draft.provider} catalogs={snapshot.draftModelCatalogs || {}} providers={snapshot.providers} busy={snapshot.busy} send={send}
               onSelect={(next, provider) => { setSelection(next); if (provider !== draft.provider) setPermissionMode(null); update({ provider }); }} />
-            <PermissionModePicker provider={draft.provider} mode={permissionMode} busy={snapshot.busy} onSelect={setPermissionMode} />
+            <DelegationModePicker mode={snapshot.delegation?.mode === 'auto' ? 'auto' : 'solo'} send={send} />
           </div>
           <div className="task-prompt-toolbar-group">
-            <DelegationModePicker mode={snapshot.delegation?.mode === 'auto' ? 'auto' : 'solo'} send={send} />
-            <button className="task-prompt-send" type="submit" aria-label="Start task" title="Start task" disabled={!ready}>↑</button>
+            <PermissionModePicker provider={draft.provider} mode={permissionMode} busy={snapshot.busy} onSelect={setPermissionMode} />
+            <button className="task-prompt-send" type="submit" aria-label="Start task" title="Start task" disabled={!ready}><ComposerIcon name="up" /></button>
           </div>
         </div>
       </div>
@@ -171,6 +172,32 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
       {!snapshot.repositories.length && <p role="status" className="form-note">Open a local Git repository with an initial commit to begin.</p>}
     </form>
   </section>;
+}
+
+// Conversation switcher. A native <select> cannot be themed: Chromium hands the
+// open list to the OS, which draws its own popup and blue highlight, and the
+// click leaves a focus ring on the control. A details menu matches the pickers.
+function ConversationMenu({ tasks, currentId, onSelect }: { tasks: Snapshot['tasks']; currentId?: string; onSelect: (id: string) => void }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const onOutsideClick = (event: MouseEvent) => { if (element.open && !element.contains(event.target as Node)) element.open = false; };
+    document.addEventListener('click', onOutsideClick, true);
+    return () => document.removeEventListener('click', onOutsideClick, true);
+  }, []);
+  return <details className="conversation-menu" ref={ref}>
+    <summary className="composer-icon-button" aria-label="Conversation history" title="Conversation history"><ComposerIcon name="history" /></summary>
+    <div className="mode-picker-body conversation-menu-body">
+      {tasks.map(item => (
+        <button key={item.id} type="button" className="mode-picker-option" aria-pressed={item.id === currentId}
+          onClick={() => { onSelect(item.id); if (ref.current) ref.current.open = false; }}>
+          <span className="mode-picker-option-text"><span>{item.title}</span><span className="muted">{item.branch} · {item.state}</span></span>
+          {item.id === currentId && <span className="mode-picker-check">✓</span>}
+        </button>
+      ))}
+    </div>
+  </details>;
 }
 
 export function EditorConversation({ send }: { send: Send }) {
@@ -224,8 +251,11 @@ export function EditorConversation({ send }: { send: Send }) {
         kept because Hydra runs each agent in its own worktree, which the panel this
         mirrors has no equivalent for; everything else moved into the composer. */}
     {!!tasks.length && <div className="chat-quiet">
-      <select aria-label="Conversation" value={creating || !task ? '' : task.id} onChange={event => { if (event.target.value) { setCreating(false); send({ type: 'select', id: event.target.value }); } }}>{(creating || !task) && <option value="">New conversation</option>}{tasks.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
-      {task && !creating && <><span className="chat-quiet-sep">/</span><span className="chat-quiet-branch" title={`${task.worktree}\n${basename(task.repository)}`}>{task.branch}</span><span className={`state ${task.state}`}>{task.state}</span></>}
+      <span className="chat-quiet-title" title={creating || !task ? undefined : task.title}>{creating || !task ? 'New conversation' : task.title}</span>
+      {task && !creating && <span className="chat-quiet-branch" title={`${task.worktree}
+${basename(task.repository)}`}>{task.branch}</span>}
+      {task && !creating && <span className={`state ${task.state}`}>{task.state}</span>}
+      <ConversationMenu tasks={tasks} currentId={creating || !task ? undefined : task.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />
     </div>}
     {snapshot.error && <div className="chat-error" role="alert">{snapshot.error}</div>}
     {!ready ? <p className="chat-loading" role="status">Loading conversation...</p> : snapshot.handoff ? <div className="chat-start"><h2>External provider workspace</h2><p>This task is managed from its original Hydra window.</p><button className="secondary" onClick={() => send({ type: 'agents' })}>Open handoff details</button></div> : creating || !task ? <NewConversation key={creating ? 'new' : 'empty'} snapshot={snapshot} send={send} onSubmit={(selection, permissionMode) => { pendingSelection.current = selection; pendingPermissionMode.current = permissionMode; }} /> : <>

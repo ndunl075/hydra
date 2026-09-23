@@ -4,6 +4,7 @@ import { receiveConversationDraft, type ConversationDraft, type ConversationDraf
 import { pendingSchedule } from '../src/core/scheduler';
 import { TurnModelLabel } from './ModelControls';
 import { HydraMark } from './HydraMark';
+import { ComposerIcon } from './ComposerIcons';
 import { defaultPermissionMode, permissionModeLabel } from '../src/core/permissionMode';
 const providerName = (provider: string) => provider === 'claude' ? 'Claude Code' : 'Codex';
 export function SessionThread({ task, session, busy, draft, send, available = true, compact = false }: { task: Task; session: SessionView; busy: boolean; draft?: ConversationDraft; send: (message: ClientMessage) => void; available?: boolean; compact?: boolean }) {
@@ -31,20 +32,30 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     setState(current => ({ ...current, local: { prompt, version }, pendingVersion: version }));
     send({ type: 'conversationDraft', id: task.id, prompt, version });
   };
+  useEffect(() => {
+    if (!compact) return;
+    const listener = (event: MessageEvent) => {
+      if (event.data?.type !== 'contextAttached' || !Array.isArray(event.data.paths)) return;
+      const reference = event.data.paths.map((item: string) => `\`${item}\``).join(' ');
+      setPrompt(`${prompt}${prompt.trim() ? '\n' : ''}Context: ${reference}`);
+    };
+    window.addEventListener('message', listener); return () => window.removeEventListener('message', listener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compact, prompt]);
   const running = task.state === 'running' || !!session.active;
   const blocked = busy || pendingSchedule(task) || !available || running || task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>
-    {!session.turns.length && <article className="message">{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
+    {!session.turns.length && <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
     {(session.totalTurns || session.turns.length) > 10 && <p className="quiet">Showing the latest ten turns. Full conversation and process events remain in local storage.</p>}
     {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
-      <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{turn.prompt}</p></article>
-      <article className="message assistant-message"><div className="message-author"><HydraMark className="avatar hydra-avatar" /><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div><p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
-        <TurnModelLabel turn={turn} />
+      <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>}<p className="prompt-text">{turn.prompt}</p></article>
+      <article className="message assistant-message">{!compact && <div className="message-author"><HydraMark className="avatar hydra-avatar" /><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div>}{compact && turn.status !== 'completed' && <span className="turn-status">{turn.status}</span>}<p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
+        {(!compact || turn.modelSettings?.rerouted) && <TurnModelLabel turn={turn} />}
         {turn.error && <p className="session-error" role="status">{turn.error}</p>}
         {turn.textTruncated && <p className="session-note">Showing the first 50,000 characters here. Full output is retained in local raw diagnostics; model context is unchanged.</p>}
         {!!turn.permissionDenials && <p className="session-note">{turn.permissionDenials} permission request(s) denied. Interactive approvals are unavailable here; use the provider terminal when needed.</p>}
-        {turn.usage && <p className="session-note">{turn.provider === 'codex' ? 'Latest model response (not a turn total)' : 'Provider result'} tokens: {turn.usage.input.toLocaleString()} input · {turn.usage.output.toLocaleString()} output{turn.usage.cacheRead !== undefined && ` · ${turn.usage.cacheRead.toLocaleString()} cache read`}{turn.usage.cacheCreated !== undefined && ` · ${turn.usage.cacheCreated.toLocaleString()} cache created`}{turn.usage.estimatedUsd !== undefined && ` · $${turn.usage.estimatedUsd.toFixed(4)} provider estimate, not your bill`}</p>}
+        {turn.usage && !compact && <p className="session-note">{turn.provider === 'codex' ? 'Latest model response (not a turn total)' : 'Provider result'} tokens: {turn.usage.input.toLocaleString()} input · {turn.usage.output.toLocaleString()} output{turn.usage.cacheRead !== undefined && ` · ${turn.usage.cacheRead.toLocaleString()} cache read`}{turn.usage.cacheCreated !== undefined && ` · ${turn.usage.cacheCreated.toLocaleString()} cache created`}{turn.usage.estimatedUsd !== undefined && ` · $${turn.usage.estimatedUsd.toFixed(4)} provider estimate, not your bill`}</p>}
       </article>
     </React.Fragment>)}
     {session.approvals?.map(approval => <article key={approval.id} className="approval-request" aria-label={`${approval.kind} approval`}>
@@ -64,13 +75,14 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
           placeholder={task.sessionId ? 'Reply to this agent' : 'Start the task to begin a conversation.'} />
         <div className="task-prompt-toolbar">
           <div className="task-prompt-toolbar-group">
-            <span className="composer-chip" title="Model and effort">{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : 'Provider defaults'}</span>
-            <span className="composer-chip" title={`${task.provider} permission mode`}>{permissionModeLabel(task.permissionMode || defaultPermissionMode(task.provider))}</span>
+            <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this reply" disabled={blocked || !task.sessionId} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
+            <span className="composer-chip" title={task.modelSelection ? 'Model and effort' : `${providerName(task.provider)} with its default model`}>{task.modelSelection ? `${task.modelSelection.model} · ${task.modelSelection.effort}` : providerName(task.provider)}</span>
           </div>
           <div className="task-prompt-toolbar-group">
+            <span className="composer-mode" title={`${providerName(task.provider)} permission mode, locked for this task`}><ComposerIcon name="shield" size={12} />{permissionModeLabel(task.permissionMode || defaultPermissionMode(task.provider))}</span>
             {running ? <button className="composer-stop" type="button" disabled={busy} title="Stop process" aria-label="Stop process" onClick={() => send({ type: 'stop', id: task.id })}>■</button>
-              : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !prompt.trim()} title="Send" aria-label="Send">↑</button>
-              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={() => send({ type: 'startManaged', id: task.id })}>↑</button>}
+              : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !prompt.trim()} title="Send" aria-label="Send"><ComposerIcon name="up" /></button>
+              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={() => send({ type: 'startManaged', id: task.id })}><ComposerIcon name="up" /></button>}
           </div>
         </div>
       </div>

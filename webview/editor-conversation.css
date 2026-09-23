@@ -57,7 +57,7 @@ body[data-surface="editor"] {
    carries its own gutter and divider from the message list above it. */
 .editor-conversation .session-conversation .task-prompt-form { flex-shrink: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 88%, #000); }
 .editor-conversation .session-conversation .task-prompt-box .task-prompt-textarea { min-height: 58px; max-height: 30vh; }
-.task-prompt-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border: 1px solid transparent; border-radius: 8px; background: var(--surface); }
+.task-prompt-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--surface); }
 .task-prompt-box:focus-within { border-color: color-mix(in srgb, #4f9871 55%, transparent); }
 .task-prompt-toolbar-group .icon-button { border-radius: 7px; }
 /* Scoped past `.chat-start form textarea` and the generic `form textarea`, both
@@ -65,7 +65,7 @@ body[data-surface="editor"] {
    Anchoring on .task-prompt-box keeps it winning wherever the composer is used. */
 .task-prompt-box .task-prompt-name { border: 0; background: transparent; padding: 2px 2px 0; font-size: 12px; font-weight: 560; color: var(--text); }
 .task-prompt-name:focus-visible { outline: none; }
-.task-prompt-box .task-prompt-textarea { resize: vertical; min-height: 84px; max-height: 40vh; border: 0; background: transparent; padding: 2px; font-size: 12px; line-height: 1.6; color: var(--text); }
+.task-prompt-box .task-prompt-textarea { resize: none; min-height: 84px; max-height: 40vh; border: 0; background: transparent; padding: 2px; font-size: 12px; line-height: 1.6; color: var(--text); }
 .task-prompt-textarea:focus-visible { outline: none; }
 .task-prompt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .task-prompt-toolbar-group { display: flex; align-items: center; gap: 6px; }
@@ -75,20 +75,33 @@ body[data-surface="editor"] {
 .delegation-pill[aria-pressed="true"] { color: #fff; background: #285b43; }
 /* One quiet identity line replaces the old stack of header rows. */
 .chat-quiet { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border-bottom: 1px solid var(--border); background: var(--rail); color: var(--muted); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 9px; }
-.chat-quiet select { min-width: 0; max-width: 44%; border: 0; padding: 0; background: transparent; color: var(--text); font-family: var(--vscode-font-family, "Segoe UI", sans-serif); font-size: 11px; font-weight: 500; text-overflow: ellipsis; }
-.chat-quiet-sep { color: var(--border); }
 .chat-quiet-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-quiet .state { margin-left: auto; flex-shrink: 0; }
+.chat-quiet-title { min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: var(--vscode-font-family, "Segoe UI", sans-serif); font-size: 12px; font-weight: 600; }
+.conversation-menu { position: relative; flex-shrink: 0; }
+.conversation-menu > summary { list-style: none; }
+.conversation-menu > summary::-webkit-details-marker { display: none; }
+.conversation-menu-body { top: calc(100% + 6px); bottom: auto; min-width: 220px; max-height: 50vh; overflow-y: auto; }
 /* Read-only context chips: what this turn will run as. Model and permission mode
    lock at launch, so in the sidebar they report rather than edit. */
+/* Plain icon buttons: + to attach, and the history menu in the header. */
+.composer-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.composer-icon-button:hover:not(:disabled), details[open] > .composer-icon-button { background: var(--hover); color: var(--text); }
+.composer-icon-button:disabled { opacity: .45; cursor: default; }
+.composer-mode { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; color: var(--muted); font-size: 10px; line-height: 14px; white-space: nowrap; }
+/* Sidebar messages: a user turn is a card, an assistant turn is just its text. */
+.editor-conversation .message.user-card { padding: 8px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.editor-conversation .turn-status { display: inline-block; margin-bottom: 4px; color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
 .composer-chip { padding: 4px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; line-height: 14px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-stop { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 999px; background: var(--hover); color: var(--text); font-size: 9px; line-height: 1; }
 .composer-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--warning, #d98c5f) 22%, var(--hover)); }
-.task-prompt-send { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 999px; background: var(--cursor-green); color: #08120d; font-size: 14px; line-height: 1; }
+.task-prompt-send { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 6px; background: var(--cursor-green); color: #08120d; line-height: 1; }
 .task-prompt-send:disabled { opacity: .45; cursor: default; }
 .task-prompt-send:not(:disabled):hover { filter: brightness(1.08); }
 .mode-picker { position: relative; }
-.mode-picker > summary { list-style: none; padding: 4px 8px; border: 0; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; cursor: pointer; }
+.mode-picker > summary { list-style: none; display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 0; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; cursor: pointer; }
+.mode-picker-plain > summary { background: transparent; padding: 4px 6px; }
+.mode-picker-plain > summary:hover, .mode-picker-plain[open] > summary { background: var(--hover); color: var(--text); }
 .mode-picker > summary::-webkit-details-marker { display: none; }
 .mode-picker[open] > summary { color: var(--text); }
 .mode-picker-body { position: absolute; z-index: 20; bottom: calc(100% + 6px); right: 0; min-width: 200px; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--primary); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }

@@ -23,7 +23,9 @@ export async function renderHydraStartSurface(
 
 	const root = append(container, $('.hydra-start-surface'));
 
-	append(root, $('.hydra-start-surface-title', undefined, productService.nameLong));
+	const titleRow = append(root, $('.hydra-start-surface-title-row'));
+	append(titleRow, $('.hydra-start-surface-logo'));
+	append(titleRow, $('.hydra-start-surface-title', undefined, productService.nameLong));
 
 	const actions = append(root, $('.hydra-start-surface-actions'));
 

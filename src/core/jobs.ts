@@ -52,11 +52,14 @@ export interface JobCheckResult { id: string; required: boolean; passed: boolean
 export interface JobResult { summary: string; commit: string; changedFiles: string[]; checks: JobCheckResult[] }
 export interface JobEvent { at: string; from: JobState | null; to: JobState; reason?: string }
 
+/** The chat that started a job: one lead bridge (one Claude Code or Codex conversation). Set by Hydra from the caller's token. */
+export interface JobLead { sessionId: string; provider?: Provider; label?: string }
 export interface Job {
   version: 1;
   id: string;
   /** Who started it: the lead of one Hydra window. Assigned by Hydra from the caller's token, never by the caller. */
   leadKey: string;
+  lead?: JobLead;
   idempotencyKey: string;
   title: string;
   brief: string;
@@ -91,6 +94,8 @@ export interface Job {
 export interface JobInput {
   title: string; brief: string; writeScope: string[]; provider: Provider; model?: string;
   dependsOn?: string[]; idempotencyKey: string; limits?: Partial<JobLimits>;
+  /** Optional name for the chat that started it, shown on the Agents canvas. */
+  leadLabel?: string;
 }
 
 const text = (value: unknown, name: string, max: number, min = 1): string => {
@@ -130,6 +135,7 @@ export function parseJobInput(value: unknown): JobInput {
     model: source.model === undefined ? undefined : text(source.model, 'model', 100),
     dependsOn: [...new Set(dependsOn as string[])],
     idempotencyKey: text(source.idempotency_key ?? source.idempotencyKey, 'idempotency_key', 200),
+    leadLabel: source.lead_label === undefined ? undefined : text(source.lead_label, 'lead_label', 60),
     limits: {
       wallClockMs: limits.wall_clock_minutes === undefined ? undefined : clamp(Number(limits.wall_clock_minutes) * 60_000, defaultJobLimits.wallClockMs, 60_000, 4 * 3600_000),
       maxTurns: limits.max_turns === undefined ? undefined : clamp(limits.max_turns, defaultJobLimits.maxTurns, 1, 500),
@@ -175,7 +181,7 @@ export class JobStore {
   get(id: string): Job | undefined { const job = this.jobs.get(id); return job && structuredClone(job); }
 
   /** Create a job, or return the existing one for a repeated idempotency key from the same lead. */
-  async create(leadKey: string, input: JobInput): Promise<{ job: Job; created: boolean }> {
+  async create(leadKey: string, input: JobInput, lead?: Omit<JobLead, 'label'>): Promise<{ job: Job; created: boolean }> {
     return this.serialize(async () => {
       this.assertLoaded();
       const existing = [...this.jobs.values()].find(job => job.leadKey === leadKey && job.idempotencyKey === input.idempotencyKey);
@@ -188,7 +194,8 @@ export class JobStore {
       let id: string; do { id = randomBytes(6).toString('hex'); } while (this.jobs.has(id));
       const limits = { ...this.getDefaultLimits(), ...Object.fromEntries(Object.entries(input.limits || {}).filter(([, value]) => value !== undefined)) } as JobLimits;
       const job: Job = {
-        version: 1, id, leadKey, idempotencyKey: input.idempotencyKey, title: input.title, brief: input.brief, writeScope: input.writeScope,
+        version: 1, id, leadKey, ...(lead ? { lead: { ...lead, ...(input.leadLabel ? { label: input.leadLabel } : {}) } } : {}),
+        idempotencyKey: input.idempotencyKey, title: input.title, brief: input.brief, writeScope: input.writeScope,
         provider: input.provider, model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: 3, nudged: false,
         replies: [], createdAt: at, updatedAt: at, history: [{ at, from: null, to: 'queued' }],
       };

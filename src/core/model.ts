@@ -71,6 +71,12 @@ export interface HelperJobView {
   repository?: string;
   worktree?: string;
   dependsOn: string[];
+  /** The chat that started it (one Claude Code or Codex conversation), when known. */
+  lead?: { sessionId: string; provider?: Provider; label?: string };
+  /** Done, and its commit is already in the lead folder's HEAD. */
+  merged?: boolean;
+  startedAt?: string;
+  writeScope?: string[];
 }
 export interface Snapshot {
   capacity?: CapacityView;
@@ -119,7 +125,7 @@ export type ClientMessage =
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
   | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
-  | { type: 'helperReview' | 'helperLog' | 'helperCancel'; jobId: string }
+  | { type: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer'; jobId: string }
   | { type: 'helperStopAll' }
   | { type: 'prepareCommitReview'; id: string }
   | { type: 'prepareDiscard' | 'restoreDiscarded' | 'copyDiscardLocation'; id: string }
@@ -142,7 +148,7 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
-  if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel') {
+  if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel' || type === 'helperAnswer') {
     const jobId = string('jobId'); if (!/^[a-f0-9]{12}$/.test(jobId)) throw new Error('Invalid head job ID.');
     return { type, jobId };
   }

@@ -23,6 +23,7 @@ export const leadTools: readonly HelperToolDefinition[] = [
         model: string('Optional model for the head.'),
         depends_on: { type: 'array', items: jobId, description: 'Job ids that must finish first.' },
         idempotency_key: string('A unique key for this request. Repeating a call with the same key returns the same job instead of starting another.'),
+        lead_label: string('Optional short name for this chat, under 60 characters, shown to the user on Hydra\'s Agents canvas (e.g. "Checkout refactor").'),
         limits: { type: 'object', additionalProperties: false, properties: { wall_clock_minutes: { type: 'number' }, max_turns: { type: 'number' }, max_budget_usd: { type: 'number' } }, description: 'Optional caps. Defaults come from Hydra Settings → Heads.' },
       },
     },

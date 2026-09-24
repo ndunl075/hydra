@@ -2,7 +2,7 @@
 
 You chat with Claude in the Claude Code extension, or with Codex in the Codex extension. When a task has independent pieces, the agent hands them to **Hydra heads**: separate agents that Hydra runs in their own git worktrees, checks, and hands back. The agent you're chatting with is the **lead**, and it merges the heads' work with git.
 
-You don't have to ask for heads. Hydra tells the lead to decide by itself: before a code change, it checks whether the work splits into independent pieces with separate files (a feature and its tests, frontend and backend, several unrelated fixes). If there are two or more pieces worth a few minutes each, it starts one head per piece without asking or announcing it; the heads appear on Hydra's orchestration map. Small, tightly coupled or question-only tasks stay with the lead. You can still ask for heads, or ask it not to use them.
+You don't have to ask for heads. Hydra tells the lead to decide by itself: before a code change, it checks whether the work splits into independent pieces with separate files (a feature and its tests, frontend and backend, several unrelated fixes). If there are two or more pieces worth a few minutes each, it starts one head per piece without asking or announcing it; the heads appear on Hydra's Agents view. Small, tightly coupled or question-only tasks stay with the lead. You can still ask for heads, or ask it not to use them.
 
 This replaces the old Auto delegation, which read a `HYDRA_DELEGATION_V1` line out of chat text. How it was designed and verified is in [Official_Extensions_Plan.md](Official_Extensions_Plan.md).
 
@@ -83,13 +83,19 @@ Checks come from the **lead's** folder, never from a head's worktree, so a head 
 
 With no checks file, a head is accepted after the scope check.
 
-## The dashboard
+## The Agents view
 
-The Agents view shows a **Heads** section for each head:
-- its state ("Needs an answer" while it waits on the lead), progress or question, summary, number of changed files, check results and commit;
-- **Review changes**, which opens the diff and names the branch to merge;
-- **Open log**, the head's raw output with its token removed;
-- **Cancel**, and **Stop all**.
+Open it with **Ctrl+Alt+A**, or **Agents** in the status bar. It's a live canvas of your heads ([Agents_View_Plan.md](Agents_View_Plan.md)):
+
+- **Blank until a chat starts heads.** Each head grows out of the chat that started it: the **lead**, labelled with its provider, and a name if the chat gave one (`lead_label`).
+- **What each head is doing:** state (Queued, Working, Needs an answer, Checking, Done, Failed), its latest progress note or question, branch and elapsed time. When it finishes: checks passed and files changed.
+- **How heads connect:** a flowing edge from the chat while a head works, and amber dependency edges (`depends_on`) between heads. A dependent sits to the right of what it waits on.
+- **Heads leave when they're merged.** Hydra notices within seconds when a head's commit is in your folder's HEAD, and the head collapses back into its chat. A finished head that isn't merged stays two minutes, then moves to the **Finished** tray.
+- **Actions** (click the ⋯ on a head, right-click, or Shift+F10): **Open diff**, **Open log** (token removed), **Answer question…** for a head waiting on the lead, and **Cancel head**. **Stop all heads** is in the toolbar.
+- **Heads list** on the side: Running, or All today. Selecting a head centres it on the canvas; Enter opens its diff.
+- **Pause motion**, zoom (Ctrl+wheel) and drag to pan. Reduced-motion and high-contrast settings are respected.
+
+The view never starts work itself; everything on it comes from what your Claude Code and Codex chats do.
 
 ## Security
 

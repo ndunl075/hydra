@@ -1,4 +1,5 @@
 import { CommandsRegistry } from '../platform/commands/common/commands.js';
+import { MenuId, MenuRegistry } from '../platform/actions/common/actions.js';
 import { IProductService } from '../platform/product/common/productService.js';
 import { IConfigurationRegistry, Extensions } from '../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../platform/registry/common/platform.js';
@@ -17,6 +18,9 @@ CommandsRegistry.registerCommand('hydra.desktop.startupContext', accessor => {
 	const environment = accessor.get(IWorkbenchEnvironmentService);
 	return { development: environment.isExtensionDevelopment || !!environment.extensionTestsLocationURI };
 });
+
+// Hydra Settings leads the title bar gear (Manage) menu, above Command Palette.
+MenuRegistry.appendMenuItem(MenuId.GlobalActivity, { command: { id: 'hydra.openSettings', title: 'Hydra Settings' }, group: '0_hydra', order: 1 });
 
 // Owned desktop API: extensions do not infer active profiles from global storage.
 CommandsRegistry.registerCommand('hydra.desktop.profileResources', async accessor => {

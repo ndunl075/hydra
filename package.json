@@ -124,6 +124,11 @@
         "command": "hydra.toggleMode",
         "key": "ctrl+alt+a",
         "mac": "cmd+alt+a"
+      },
+      {
+        "command": "hydra.openSettings",
+        "key": "ctrl+shift+,",
+        "mac": "cmd+shift+,"
       }
     ],
     "viewsContainers": {

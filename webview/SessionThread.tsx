@@ -69,7 +69,10 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     }
     send({ type: 'startManaged', id: task.id });
   };
-  const blocked = busy || pendingSchedule(task) || !available || running || task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
+  // Only these make a reply impossible; while a turn runs or the host is busy you
+  // can still click in and type (as in the provider's own panel), only Send waits.
+  const cannotReply = task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
+  const blocked = busy || pendingSchedule(task) || !available || running || cannotReply;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>
     {!session.turns.length && <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
@@ -95,7 +98,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
         the labelled form, where the surrounding controls explain themselves. */}
     {compact ? <form className="task-prompt-form chat-start-composer" onSubmit={event => { event.preventDefault(); submitCompact(); }}>
       <div className="task-prompt-box">
-        <textarea className="task-prompt-textarea" rows={1} maxLength={32000} value={prompt} disabled={blocked} aria-label={task.sessionId ? 'Follow-up' : 'Add to your first message'}
+        <textarea className="task-prompt-textarea" rows={1} maxLength={32000} value={prompt} disabled={cannotReply} aria-label={task.sessionId ? 'Follow-up' : 'Add to your first message'}
           onChange={event => setPrompt(event.target.value)}
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCompact(); } }}
           placeholder={task.sessionId ? 'Reply to this agent' : 'Add to your first message, or send to start'} />

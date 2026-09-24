@@ -90,7 +90,7 @@ body[data-surface="editor"] {
 .composer-icon-button:disabled { opacity: .45; cursor: default; }
 .composer-mode { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; color: var(--muted); font-size: 10px; line-height: 14px; white-space: nowrap; }
 /* Sidebar messages: a user turn is a card, an assistant turn is just its text. */
-.editor-conversation .message.user-card { padding: 4px 6px; border: 1px solid var(--vscode-inlineChatInput-border, var(--vscode-input-border, var(--vscode-widget-border, #7f7f7f66))); border-radius: 6px; background: var(--vscode-input-background, var(--surface)); font-size: 13px; }
+.editor-conversation .message.user-card { padding: 8px 12px; margin: 4px 0 12px; border: 1px solid var(--vscode-inlineChatInput-border, var(--vscode-input-border, var(--vscode-widget-border, #7f7f7f66))); border-radius: 8px; background: color-mix(in srgb, var(--vscode-foreground, var(--text)) 5%, var(--vscode-input-background, var(--surface))); font-size: 13px; }
 .editor-conversation .turn-status { display: inline-block; margin-bottom: 4px; color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
 .composer-chip { padding: 4px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 10px; line-height: 14px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-stop { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 999px; background: var(--hover); color: var(--text); font-size: 9px; line-height: 1; }

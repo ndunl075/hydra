@@ -51,6 +51,8 @@ import { HelperService } from './core/helperService';
 import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
 import { startHelperRun } from './core/helperRunner';
 import { selfCheckCli } from './core/cliSelfCheck';
+import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, providerPaths, type ConnectableProvider, type HelperServerSpec } from './core/helperRegistration';
+import type { ProviderConnectionView } from './helperConnectionsView';
 import { checkProvider } from './core/diagnostics';
 import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
@@ -184,7 +186,7 @@ class Manager {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
-    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport, () => this.delegationPreferences(), mode => this.setDelegationMode(mode));
+    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
     context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
@@ -447,6 +449,14 @@ class Manager {
       return stopped;
     });
     command('hydra.listHelpers', () => structuredClone(this.helpers?.service.list() ?? []));
+    command('hydra.helperConnections', () => this.helperConnections());
+    command('hydra.connectHelpers', async (provider: ConnectableProvider) => { await this.connectHelpers(provider); return this.helperConnections(); });
+    command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
+    command('hydra.installProviderExtension', async (provider: ConnectableProvider) => {
+      if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
+      await vscode.commands.executeCommand('workbench.extensions.installExtension', provider === 'claude' ? 'anthropic.claude-code' : 'openai.chatgpt');
+      return this.helperConnections();
+    });
     command('hydra.reconcileCapacity', (id: string) => this.handle({ type: 'reconcileCapacity', id }));
     command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
@@ -628,6 +638,51 @@ class Manager {
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, token: endpoint.issue({ role: 'lead', leadKey }), pid: process.pid, folders });
     this.helpers = { store, endpoint, service, record };
     this.output.appendLine(`[helpers] ready for ${leadFolder}`);
+    void this.refreshHelperConnections();
+  }
+  // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
+  private helperServerSpec(): HelperServerSpec { const bridge = this.helperBridge(); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
+  /** Claude's own CLI does the registration: the configured or PATH claude, else the extension's bundled one. */
+  private async claudeForRegistration(): Promise<string | undefined> {
+    const info = await findProvider('claude', vscode.workspace.getConfiguration('hydra').get<string>('claudePath')).catch(() => undefined);
+    if (info?.executable) return info.executable;
+    const extension = vscode.extensions.getExtension('anthropic.claude-code');
+    if (!extension) return undefined;
+    const bundled = path.join(extension.extensionPath, 'resources', 'native-binary', process.platform === 'win32' ? 'claude.exe' : 'claude');
+    return await realpath(bundled).catch(() => undefined);
+  }
+  async helperConnections(): Promise<ProviderConnectionView[]> {
+    const paths = providerPaths(), spec = this.helperServerSpec();
+    const [claude, codex] = await Promise.all([claudeStatus(paths, spec), codexStatus(paths.codexConfig, spec)]);
+    return [
+      { ...claude, name: 'Claude Code', extensionInstalled: !!vscode.extensions.getExtension('anthropic.claude-code') },
+      { ...codex, name: 'Codex', extensionInstalled: !!vscode.extensions.getExtension('openai.chatgpt') },
+    ];
+  }
+  private async connectHelpers(provider: ConnectableProvider): Promise<void> {
+    const paths = providerPaths(), spec = this.helperServerSpec();
+    if (provider === 'codex') await connectCodex(paths.codexConfig, spec);
+    else if (provider === 'claude') {
+      const claude = await this.claudeForRegistration();
+      if (!claude) throw new Error('Install the Claude Code extension or CLI first; Hydra connects through it.');
+      await connectClaude(claude, paths, spec);
+    } else throw new Error('Unknown provider.');
+    this.output.appendLine(`[helpers] connected ${provider} to Hydra`);
+  }
+  private async disconnectHelpers(provider: ConnectableProvider): Promise<void> {
+    const paths = providerPaths();
+    if (provider === 'codex') await disconnectCodex(paths.codexConfig);
+    else if (provider === 'claude') await disconnectClaude(await this.claudeForRegistration(), paths);
+    else throw new Error('Unknown provider.');
+    this.output.appendLine(`[helpers] disconnected ${provider} from Hydra`);
+  }
+  /** A connection made by an older Hydra (a different executable path) is refreshed; nothing is connected here that the user didn't connect. */
+  private async refreshHelperConnections(): Promise<void> {
+    for (const connection of await this.helperConnections()) {
+      if (connection.connected && !connection.current && !connection.error) {
+        await this.connectHelpers(connection.provider).catch(error => this.output.appendLine(`[helpers] could not refresh ${connection.provider}: ${this.describe(error)}`));
+      }
+    }
   }
   private async stopHelpers(): Promise<void> {
     const helpers = this.helpers; this.helpers = undefined;

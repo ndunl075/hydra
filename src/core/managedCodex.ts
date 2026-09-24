@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { CodexMessages, CodexTurn, providerId, record, testedCodexVersion, validateCodexThread, type RpcId } from './codexProtocol';
+import { CodexMessages, CodexTurn, providerId, record, validateCodexThread, type RpcId } from './codexProtocol';
 import { processLaunch, terminateProcessTree } from './process';
 import { SessionStore } from './sessionStore';
 import { version as hydraVersion } from '../../package.json';
@@ -14,6 +14,7 @@ import type { TurnStartParams } from './generated/codex-0.154.0/v2/TurnStartPara
 import type { TurnInterruptParams } from './generated/codex-0.154.0/v2/TurnInterruptParams';
 import { parseEffectiveModel, readModelCatalog, requireAdvertisedSelection, verifyEffectiveModel } from './modelSelection';
 import { codexSandboxPolicy, codexThreadPolicy, defaultPermissionMode, parsePermissionMode } from './permissionMode';
+import { supportedCliDescription, supportedCliVersion, supportedCliVersionIn } from './cliVersions';
 
 export class ManagedCodex {
   private readonly views = new Map<string, SessionView>();
@@ -31,7 +32,7 @@ export class ManagedCodex {
   }
   private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void | Promise<void>, environment: Record<string, string>): Promise<void> {
     const expectedSchedule = task.schedule;
-    if (task.provider !== 'codex' || task.providerVersion !== testedCodexVersion) throw new Error('Managed Codex requires CLI 0.154.0.');
+    if (task.provider !== 'codex' || !supportedCliVersion('codex', task.providerVersion)) throw new Error(`Managed Codex requires ${supportedCliDescription('codex')}.`);
     if (task.sessionId && task.sessionProvider !== 'codex') throw new Error('This recorded session belongs to another provider. Create a separate Codex task.');
     if (task.interface === 'official-extension' || task.state === 'external') throw new Error('Stop the existing task writer first.');
     if (!this.views.has(task.id)) await this.load(task);
@@ -45,7 +46,7 @@ export class ManagedCodex {
     let sequence = 0;
     try {
       await this.store.save(task.id, view);
-      await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'start', cwd: task.worktree, version: testedCodexVersion, prompt });
+      await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'start', cwd: task.worktree, version: task.providerVersion, prompt });
       await this.persistTask();
       if (expectedSchedule && (task.schedule !== expectedSchedule || expectedSchedule.state === 'cancelled')) {
         turn.status = 'interrupted'; turn.error = 'Cancelled before provider process started.';
@@ -182,7 +183,7 @@ export class ManagedCodex {
     // Run the handshake after handlers/ownership are established. No turn is sent until its thread identity is durably saved.
     void (async () => {
       const init = record(await request('initialize', { clientInfo: { name: 'hydra', title: 'Hydra', version: hydraVersion }, capabilities: { experimentalApi: false, requestAttestation: false } } satisfies InitializeParams));
-      if (typeof init.userAgent !== 'string' || !init.userAgent.includes(testedCodexVersion)) throw new Error('Codex initialization did not identify the tested version.');
+      if (!supportedCliVersionIn('codex', init.userAgent)) throw new Error('Codex initialization reported an unsupported version.');
       if (stopped) { await kill(); return; }
       send({ method: 'initialized', params: {} });
       if (process.platform === 'win32') {

@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 import type { Turn } from './model';
 import { parseModelSelection } from './modelSelection';
 import { codexThreadMatches, defaultPermissionMode, permissionModeLabel, type TaskPermissionMode } from './permissionMode';
+import { supportedCliDescription, supportedCliVersion, supportedCliVersionIn } from './cliVersions';
 
 export const testedCodexVersion = '0.154.0';
 export type RpcId = string | number;
@@ -19,7 +20,7 @@ export function validateCodexThread(value: unknown, cwd: string, expectedId?: st
   const id = providerId(thread.id);
   if (expectedId && id !== expectedId) throw new Error('Codex resumed a different thread.');
   if (typeof response.cwd !== 'string' || path.relative(cwd, response.cwd) !== '' || typeof thread.cwd !== 'string' || path.relative(cwd, thread.cwd) !== '') throw new Error('Codex returned a different working directory.');
-  if (thread.cliVersion !== testedCodexVersion) throw new Error('Codex returned an unverified version. Use the provider terminal.');
+  if (!supportedCliVersion('codex', thread.cliVersion)) throw new Error('Codex returned an unverified version. Use the provider terminal.');
   // Assert Codex echoed the requested sandbox and approval policy, rather than a
   // fixed pair: that catches a silently widened sandbox or dropped approvals.
   const requested = permissionMode ?? defaultPermissionMode('codex');

@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23. Phase 0 merged (#178). Phase 1 spikes: go (#179). Phase 2 job store merged (#180). Phase 3 endpoint and bridge: `src/core/helperEndpoint.ts`, `helperDiscovery.ts`, `mcpBridge.ts`, `helperTools.ts`.
+Status: decisions made 2026-09-23. Phases 0–3 merged (#178–#181). Phase 4 helper lifecycle built and verified live (see "As built" under Phase 4).
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -170,6 +170,16 @@ Acceptance, using the fixture CLI:
 - Failed checks re-prompt, and the second attempt passes.
 - An out-of-scope diff is refused.
 
+**As built (Phase 4):**
+- `src/core/helperService.ts` drives every job; `src/core/helperRunner.ts` runs the processes. Helpers are **not** Hydra tasks: they use their own lean runner and reuse `createWorktree` and the verification runner. This keeps them apart from the old delegation fields that Phase 7 deletes.
+- **Claude helper:** one `claude -p` stream-json process per job (`dontAsk`, an allowed-tools list with no web tools, `--max-turns`, `--max-budget-usd`), with the bridge configured inline (`--mcp-config=<json> --strict-mcp-config`).
+- **Codex helper:** `codex exec --json` (workspace-write sandbox, approval `never`), and `codex exec resume` for the nudge. All `-c` values are TOML literal strings, because a `.cmd` launcher strips double quotes.
+- **Hydra commits what a helper leaves uncommitted.** Codex's Windows sandbox denies writes to a worktree's `.git` metadata, so a Codex helper cannot commit itself. Hydra commits with the repository's identity, or "Hydra helper" if none is set.
+- `hydra_done` runs the scope check and the checks **inside the call**, so the helper hears about failures in the same turn (up to 3 attempts). `hydra_stuck` holds the call open until the lead replies. Time spent blocked doesn't count toward the time limit.
+- Checks are read from the **lead's** `.hydra/checks.json`, never the helper's worktree, so a helper can't edit them away. Format: `{ "checks": [{ "id": "unit", "command": ["npm", "test"], "timeoutSeconds": 600, "required": true }] }`.
+- The helper's token is redacted from its log. Every action is logged to the Hydra output channel. `Hydra: Stop All Helpers` stops everything, and `hydra.maxConcurrentHelpers` (default 3) caps concurrency.
+- **Version range (decision 5):** `src/core/cliVersions.ts` now covers the chat panel's managed sessions too. `src/core/cliSelfCheck.ts` checks each new helper binary once (version, then a real Claude `initialize` or `codex exec --help`).
+- **Verified live 2026-09-24:** a real Claude lead delegated through the bridge to a real Claude helper (done in 49s, $0.22) and to a real Codex helper (done in 86s, after Hydra committed for it). Both ran in a probe of the built app.
 ### Phase 5: "Connect Claude Code and Codex" in onboarding (decision 2)
 **Sonnet, after a short research step.**
 - **Research first:** Nico modelled Hydra's onboarding on Zepp's. Look at how Zepp's onboarding connects the agent tools, and copy that flow and wording where it fits. Record what you found here before building.

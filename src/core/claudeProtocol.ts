@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 import type { Turn } from './model';
 import type { ModelSelection } from './modelSelection';
 import { claudeInitMatches, claudePermissionArgument, defaultPermissionMode, permissionModeLabel, type TaskPermissionMode } from './permissionMode';
+import { supportedCliDescription, supportedCliVersion, supportedCliVersionIn } from './cliVersions';
 
 export const testedClaudeVersion = '2.1.270';
 export const sessionIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -36,7 +37,7 @@ export class ClaudeProtocol {
     if (!event || typeof event !== 'object' || typeof event.type !== 'string') throw new Error('Invalid Claude event envelope.');
     if (event.parent_tool_use_id) return; // Subagent text is retained in raw diagnostics, not mixed into the main response.
     if (event.type === 'system' && event.subtype === 'init') {
-      if (this.initialized || event.claude_code_version !== testedClaudeVersion || typeof event.cwd !== 'string' || path.relative(this.cwd, event.cwd) !== '') throw new Error('Claude initialization did not match the tested version or worktree.');
+      if (this.initialized || !supportedCliVersion('claude', event.claude_code_version) || typeof event.cwd !== 'string' || path.relative(this.cwd, event.cwd) !== '') throw new Error('Claude initialization did not match the tested version or worktree.');
       // Assert Claude echoed the mode that was requested, rather than accepting a
       // fixed list: that catches a silent escalation or downgrade of the request.
       const requested = this.permissionMode ?? defaultPermissionMode('claude');

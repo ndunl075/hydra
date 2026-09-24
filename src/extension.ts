@@ -45,6 +45,12 @@ import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
 import { executableFingerprint, findProvider, terminalLaunch } from './core/providers';
+import { JobStore } from './core/jobs';
+import { HelperEndpoint } from './core/helperEndpoint';
+import { HelperService } from './core/helperService';
+import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
+import { startHelperRun } from './core/helperRunner';
+import { selfCheckCli } from './core/cliSelfCheck';
 import { checkProvider } from './core/diagnostics';
 import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
@@ -63,8 +69,7 @@ import { discoverCodexModels } from './core/codexModels';
 import { discoverClaudeModels } from './core/claudeModels';
 import { requireClaudeSelection } from './core/claudeControls';
 import { requireAdvertisedSelection, type ModelCatalog } from './core/modelSelection';
-import { testedClaudeVersion } from './core/claudeProtocol';
-import { testedCodexVersion } from './core/codexProtocol';
+import { supportedCliDescription, supportedCliVersion } from './core/cliVersions';
 import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
@@ -128,6 +133,8 @@ class Manager {
   private budgets: BudgetSettings = emptyBudgets();
   private pendingBudgetSave?: Promise<void>;
   private readonly storageDirectory: string;
+  /** Hydra helpers for this window (docs/Official_Extensions_Plan.md): job store, local endpoint, service, discovery record. */
+  private helpers?: { store: JobStore; endpoint: HelperEndpoint; service: HelperService; record: string };
   private snapshotGeneration = 0;
   private pendingNewTask = false;
   private handoff?: Handoff;
@@ -434,6 +441,12 @@ class Manager {
     command('hydra.configureSchedule', (id: string, dependencies: string[], startFromDependency?: string) => this.handle({ type: 'configureSchedule', id, dependencies, startFromDependency }));
     command('hydra.cancelQueued', (id: string) => this.handle({ type: 'cancelQueued', id }));
     command('hydra.getCapacity', () => structuredClone(this.capacity.view(this.profileLimit())));
+    command('hydra.stopAllHelpers', async () => {
+      const stopped = await this.helpers?.service.stopAll() ?? 0;
+      void vscode.window.showInformationMessage(stopped ? `Stopped ${stopped} Hydra helper${stopped === 1 ? '' : 's'}.` : 'No Hydra helpers are running.');
+      return stopped;
+    });
+    command('hydra.listHelpers', () => structuredClone(this.helpers?.service.list() ?? []));
     command('hydra.reconcileCapacity', (id: string) => this.handle({ type: 'reconcileCapacity', id }));
     command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
@@ -565,12 +578,63 @@ class Manager {
       if (this.handoff) { await this.verifyHandoffWorkspace(); await this.openAgents(); }
     } catch (error) { this.disabled = true; this.report(error); }
     this.schedulerReady = true;
+    await this.startHelpers().catch(error => { this.output.appendLine(`[helpers] not started: ${this.describe(error)}`); });
     await this.publish();
     await this.scheduler.drain();
     for (const parent of this.tasks.filter(task => !task.delegation && task.delegationPlanner?.state === 'accepted' && task.delegationPlanner.preferences.mode === 'auto')) {
       await this.dispatchAcceptedAutoRun(parent).catch(error => this.report(error));
       await this.reconcileAutoParentWakeup(parent.id).catch(error => this.report(error));
     }
+  }
+  /** How a CLI starts Hydra's stdio bridge: this editor's executable as Node, running dist/hydra-mcp.cjs. */
+  helperBridge(): { command: string; args: string[]; env: Record<string, string> } {
+    return { command: process.execPath, args: [path.join(this.context.extensionPath, 'dist', 'hydra-mcp.cjs')], env: { ELECTRON_RUN_AS_NODE: '1', HYDRA_HELPERS_DIR: path.join(this.context.globalStorageUri.fsPath, 'helpers') } };
+  }
+  private async helperExecutable(provider: Provider): Promise<string> {
+    const info = await findProvider(provider, vscode.workspace.getConfiguration('hydra').get<string>(`${provider}Path`));
+    if (!info.executable) throw new Error(`${provider === 'claude' ? 'Claude Code' : 'Codex'} CLI not found. Install it or set Hydra's ${provider} path.`);
+    const check = await selfCheckCli(provider, info.executable);
+    if (!check.ok) throw new Error(check.error);
+    return info.executable;
+  }
+  /** Helpers need a trusted Git folder. The first repository in the window is the lead's folder. */
+  private async startHelpers(): Promise<void> {
+    if (this.disabled || this.handoff || !vscode.workspace.isTrusted || this.helpers) return;
+    const folders = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath);
+    let leadFolder: string | undefined;
+    for (const folder of folders) { try { leadFolder = await repositoryRoot(folder); break; } catch { /* not a Git folder */ } }
+    if (!leadFolder) return;
+    const directory = path.join(this.storageDirectory, 'helpers');
+    const store = new JobStore(directory);
+    await store.load();
+    const leadKey = path.basename(this.storageDirectory);
+    let service: HelperService | undefined;
+    const endpoint = new HelperEndpoint(async (caller, tool, args, signal) => {
+      if (!service) throw new Error('Hydra helpers are still starting.');
+      // Every action is logged, whoever calls it (plan, Phase 3 security note).
+      this.output.appendLine(`[helpers] ${caller.role}${caller.jobId ? ` ${caller.jobId}` : ''}: ${tool}`);
+      return service.handle(caller, tool, args, signal);
+    });
+    const port = await endpoint.start();
+    service = new HelperService({
+      store, endpoint, leadFolder, leadKey,
+      worktreeRoot: () => vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot') || undefined,
+      startRun: startHelperRun, executable: provider => this.helperExecutable(provider),
+      bridge: this.helperBridge(), logDirectory: path.join(directory, 'logs'),
+      maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
+      onChange: () => this.publishSoon(), log: line => this.output.appendLine(line),
+    });
+    await service.recover();
+    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, token: endpoint.issue({ role: 'lead', leadKey }), pid: process.pid, folders });
+    this.helpers = { store, endpoint, service, record };
+    this.output.appendLine(`[helpers] ready for ${leadFolder}`);
+  }
+  private async stopHelpers(): Promise<void> {
+    const helpers = this.helpers; this.helpers = undefined;
+    if (!helpers) return;
+    await removeWindowRecord(helpers.record).catch(() => undefined);
+    await helpers.service.dispose();
+    await helpers.endpoint.close();
   }
   async showFirstRun(): Promise<void> {
     await this.collapseSidebarOnce();
@@ -1124,8 +1188,7 @@ class Manager {
         const info = await findProvider(message.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${message.provider}Path`));
         const cwd = this.repositories[0] || this.context.extensionUri.fsPath;
         const diagnostic = await checkProvider(info, cwd, controller.signal);
-        const testedVersion = message.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
-        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Model discovery requires the configured official ${message.provider} ${testedVersion} executable.`);
+        if (!info.executable || diagnostic.status !== 'checked' || !supportedCliVersion(message.provider, diagnostic.version)) throw new Error(`Model discovery requires the configured official ${supportedCliDescription(message.provider)} executable.`);
         const models = await (message.provider === 'claude' ? discoverClaudeModels : discoverCodexModels)(info.executable, cwd, controller.signal);
         if (generation === this.diagnosticGeneration && !this.closing) this.draftModelCatalogs.set(message.provider, { status: 'ready', models, checkedAt: new Date().toISOString() });
       } catch (error) {
@@ -1328,8 +1391,7 @@ class Manager {
         await this.verifyWorktree(task);
         const info = await findProvider(task.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${task.provider}Path`));
         const diagnostic = await checkProvider(info, task.worktree, controller.signal);
-        const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
-        if (!info.executable || diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Model discovery requires the configured official ${task.provider} ${testedVersion} executable.`);
+        if (!info.executable || diagnostic.status !== 'checked' || !supportedCliVersion(task.provider, diagnostic.version)) throw new Error(`Model discovery requires the configured official ${supportedCliDescription(task.provider)} executable.`);
         const models = await (task.provider === 'claude' ? discoverClaudeModels : discoverCodexModels)(info.executable, task.worktree, controller.signal);
         if (generation === this.diagnosticGeneration && !this.closing) this.modelCatalogs.set(task.id, { status: 'ready', models, checkedAt: new Date().toISOString() });
       } catch (error) {
@@ -1525,8 +1587,7 @@ class Manager {
         this.mark(task.id, 'provider probed');
         if (controller.signal.aborted || this.closing || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because the window closed or provider configuration changed.');
         this.diagnostics.set(task.provider, diagnostic);
-        const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
-        if (diagnostic.status !== 'checked' || diagnostic.version !== testedVersion) throw new Error(`Managed ${task.provider} supports tested CLI ${testedVersion} only. Use the terminal for another version; see provider diagnostics.`);
+        if (diagnostic.status !== 'checked' || !supportedCliVersion(task.provider, diagnostic.version)) throw new Error(`Managed sessions support ${supportedCliDescription(task.provider)}. Use the terminal for another version; see provider diagnostics.`);
         assertLaunchCurrent();
         this.checkBudget(task, true);
         await this.resources.check(task.id);
@@ -1622,6 +1683,7 @@ class Manager {
   }
   async shutdown(): Promise<void> {
     this.closing = true;
+    await this.stopHelpers().catch(error => this.report(error));
     await Promise.allSettled(this.autoDispatching.values());
     this.pendingResource?.controller.abort(); await this.pendingResource?.done;
     await this.accounts.shutdown();

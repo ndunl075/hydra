@@ -39,7 +39,7 @@ export const leadTools: readonly HelperToolDefinition[] = [
 ];
 
 export const helperTools: readonly HelperToolDefinition[] = [
-  { name: 'hydra_done', description: 'Report that your work is finished. Commit all your changes first. Hydra then checks the changes are inside your write scope and runs the project checks; if they fail you will be told what to fix.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: string('What you changed and why, and anything the lead must know. Under 8000 characters.') } } },
+  { name: 'hydra_done', description: 'Report that your work is finished. Hydra commits any uncommitted changes for you, then checks the changes are inside your write scope and runs the project checks; if they fail you will be told what to fix.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: string('What you changed and why, and anything the lead must know. Under 8000 characters.') } } },
   { name: 'hydra_stuck', description: 'Report that you cannot continue without a decision or information from the lead. Ask one clear question. You will receive the answer as your next message.', inputSchema: { type: 'object', additionalProperties: false, required: ['reason'], properties: { reason: string('What is blocking you.'), question: string('The question for the lead.') } } },
   { name: 'hydra_progress', description: 'Optionally report a short progress note shown in Hydra\'s helper dashboard.', inputSchema: { type: 'object', additionalProperties: false, required: ['note'], properties: { note: string('Under 500 characters.') } } },
 ];
@@ -49,4 +49,4 @@ export const toolAllowed = (role: HelperRole, name: string): boolean => toolsFor
 
 /** Guidance sent to the lead's agent when it connects (MCP `instructions`). */
 export const leadInstructions = 'Hydra can run helper agents in parallel, each in its own git worktree. For independent pieces of a larger task, call hydra_start_helper with a complete brief and a narrow write_scope, then hydra_wait_for_helpers. When helpers finish, review and merge their branches yourself with git. Don\'t start helpers for small or tightly coupled work.';
-export const helperInstructions = 'You are a Hydra helper working in your own git worktree. Stay inside your write scope, commit your work, then call hydra_done with a summary. If you cannot continue, call hydra_stuck with one clear question. Never stop without calling one of them.';
+export const helperInstructions = 'You are a Hydra helper working in your own git worktree. Stay inside your write scope, then call hydra_done with a summary (Hydra commits your changes). If you cannot continue, call hydra_stuck with one clear question. Never stop without calling one of them.';

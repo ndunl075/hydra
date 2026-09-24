@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23. Phases 0–3 merged (#178–#181). Phase 4 helper lifecycle built and verified live (see "As built" under Phase 4).
+Status: decisions made 2026-09-23. Phases 0–4 merged (#178–#182). Phase 5 connecting Claude Code and Codex built and verified live (see "As built" under Phase 5).
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -190,6 +190,22 @@ Acceptance:
 - Connect, then disconnect, leaves `~/.claude.json`, `~/.claude/settings.json` and `~/.codex/config.toml` byte-identical apart from Hydra's own entries.
 - Nothing is written inside any project folder.
 
+**Research (2026-09-24):** no product called "Zepp" could be found. Hydra's own spec uses a Zed screenshot as its reference, so this is Zed. Zed's pattern ([external agents](https://zed.dev/docs/ai/external-agents), [AI quick start](https://zed.dev/docs/ai/configuration)):
+- Choose Zed's agent or an external agent.
+- Each external agent is installed from a registry, then appears in the new-thread menu.
+- The docs say plainly that each agent "owns its own authentication and billing".
+
+Hydra copies that shape: one row per agent, showing its install state and one next action, with the same plain note about sign-in and billing.
+
+**As built (Phase 5):**
+- `src/core/helperRegistration.ts` does the connecting.
+  - **Claude:** Claude's own `claude mcp add-json -s user` does the registration (the configured or PATH CLI, else the extension's bundled `claude.exe`). A `"mcp__hydra"` allow rule is inserted into `~/.claude/settings.json` in place, without reformatting the file.
+  - **Codex:** Hydra appends a marked block to `~/.codex/config.toml`. It uses literal strings, the file's own line endings, `tool_timeout_sec = 3600` and `default_tools_approval_mode = 'approve'`.
+  - Disconnecting removes exactly what was added. Hydra refuses to overwrite an `hydra` server it didn't add.
+- `src/helperConnectionsView.ts` is shared by onboarding (the Providers step, now "Connect Claude Code and Codex.") and Settings. Settings' old Solo/Auto "Agent delegation" section, which Phase 0 missed, is replaced by "Hydra helpers".
+- Commands: `hydra.helperConnections`, `hydra.connectHelpers`, `hydra.disconnectHelpers` and `hydra.installProviderExtension`. The last installs from the gallery (Open VSX in the desktop app).
+- A connection made by an older Hydra (a different executable path) is refreshed on start. Hydra never connects anything the user didn't connect.
+- **Verified live 2026-09-24** in a probe of the built app. Onboarding's Connect buttons registered both providers. Plain `claude -p` and `codex exec` sessions, with no flags, then listed the window's helpers with no permission prompts. Disconnect restored `~/.codex/config.toml` and `~/.claude/settings.json` byte for byte and `~/.claude.json`'s servers exactly.
 ### Phase 6: lead actions and the helper dashboard
 **Opus for `wait` and `reply`; Sonnet for the dashboard UI.**
 - The lead actions from "How it will work".

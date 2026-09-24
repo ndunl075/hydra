@@ -30,5 +30,13 @@
     "channel": "stable",
     "target": { "platform": "win32", "architecture": "x64", "installTarget": "user" }
   },
-  "builtInExtensions": []
+  "builtInExtensions": [],
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "extensionUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+    "resourceUrlTemplate": "https://open-vsx.org/vscode/asset/{publisher}/{name}/{version}/Microsoft.VisualStudio.Code.WebResources/{path}",
+    "controlUrl": "",
+    "nlsBaseUrl": ""
+  },
+  "linkProtectionTrustedDomains": ["https://open-vsx.org"]
 }

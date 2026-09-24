@@ -38,11 +38,37 @@ export function installedUpdateTrust(value) {
   return value;
 }
 
+/**
+ * Hydra installs extensions from Open VSX only. Microsoft's marketplace terms
+ * restrict it to Microsoft's own products, so upstream's gallery is always
+ * dropped, and the one Hydra's product config names is accepted only when every
+ * URL in it points at open-vsx.org. Anything else fails the build rather than
+ * shipping an editor that talks to an unexpected extension source.
+ */
+const openVsxGalleryKeys = ['serviceUrl', 'extensionUrlTemplate', 'resourceUrlTemplate', 'controlUrl', 'nlsBaseUrl'];
+export function openVsxGallery(value) {
+  const refuse = reason => { throw new Error(`Extension gallery must be Open VSX: ${reason}`); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) refuse('missing gallery configuration');
+  const keys = Object.keys(value);
+  if (keys.length !== openVsxGalleryKeys.length || !openVsxGalleryKeys.every(key => keys.includes(key))) refuse(`expected exactly ${openVsxGalleryKeys.join(', ')}`);
+  for (const key of openVsxGalleryKeys) {
+    const url = value[key];
+    if (typeof url !== 'string') refuse(`${key} is not a string`);
+    // An empty control or NLS URL disables that optional lookup; the three
+    // endpoints that actually fetch extensions are never allowed to be empty.
+    if (!url) { if (key === 'controlUrl' || key === 'nlsBaseUrl') continue; refuse(`${key} is empty`); }
+    let parsed;
+    try { parsed = new URL(url.replaceAll(/\{[a-z]+\}/g, 'x')); } catch { refuse(`${key} is not a URL`); }
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'open-vsx.org' || parsed.username || parsed.password) refuse(`${key} does not point at https://open-vsx.org`);
+  }
+  return { ...value };
+}
 export function brandedProduct(upstream, version) {
   // Keep upstream MIT notices and shape; replace the application's identity.
   installedUpdateTrust(brand.hydraUpdateTrust);
   const result = { ...upstream, ...brand, hydraVersion: version };
   delete result.extensionsGallery;
+  if (brand.extensionsGallery) result.extensionsGallery = openVsxGallery(brand.extensionsGallery);
   delete result.updateUrl;
   return result;
 }
@@ -645,7 +671,8 @@ export async function verify() {
   const exe = await fs.readFile(path.join(output, 'Hydra.exe'));
   if (exe.subarray(0, 2).toString() !== 'MZ') throw new Error('Hydra Windows executable is missing or invalid.');
   const product = await readJson(path.join(output, 'resources', 'app', 'product.json'));
-  if (product.nameShort !== 'Hydra' || product.dataFolderName !== '.hydra' || product.win32AppUserModelId !== 'Hydra.IDE' || product.extensionsGallery) throw new Error('Desktop identity/profile isolation failed.');
+  const expectedGallery = brand.extensionsGallery ? openVsxGallery(brand.extensionsGallery) : undefined;
+  if (product.nameShort !== 'Hydra' || product.dataFolderName !== '.hydra' || product.win32AppUserModelId !== 'Hydra.IDE' || !isDeepStrictEqual(product.extensionsGallery, expectedGallery)) throw new Error('Desktop identity/profile isolation failed.');
   installedUpdateTrust(product.hydraUpdateTrust);
   if (!isDeepStrictEqual(product.hydraUpdateTrust, brand.hydraUpdateTrust)) throw new Error('Installed desktop update trust differs from the reviewed release configuration.');
   const bundled = path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager');

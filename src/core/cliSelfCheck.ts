@@ -38,7 +38,7 @@ export async function selfCheckCli(provider: CliProvider, executable: string): P
   const versionRun = await run(executable, ['--version'], undefined, () => false, 30_000);
   const version = supportedCliVersionIn(provider, versionRun.output);
   let result: CliCheckResult;
-  if (!version) result = { ok: false, error: `Hydra helpers need ${supportedCliDescription(provider)}; ${executable} reports "${versionRun.output.trim().slice(0, 120) || 'no version'}".` };
+  if (!version) result = { ok: false, error: `Hydra heads need ${supportedCliDescription(provider)}; ${executable} reports "${versionRun.output.trim().slice(0, 120) || 'no version'}".` };
   else if (provider === 'claude') {
     const init = JSON.stringify({ type: 'control_request', request_id: 'hydra-self-check', request: { subtype: 'initialize' } }) + '\n';
     const answered = await run(executable, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config'], init, output => /"type":"control_response"[^\n]*"request_id":"hydra-self-check"/.test(output) || /"request_id":"hydra-self-check"[^\n]*"type":"control_response"/.test(output), 45_000);

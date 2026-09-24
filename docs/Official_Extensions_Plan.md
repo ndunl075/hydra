@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: **complete** (2026-09-24). All phases built, verified and merged: Phase 0 #178, 1 #179, 2 #180, 3 #181, 4 #182, 5 #183, 6 #184, 7 #185, 8 (this doc's final PR). See each phase's "As built" notes. The user guide is [Helpers.md](Helpers.md).
+Status: **complete** (2026-09-24). All phases built, verified and merged: Phase 0 #178, 1 #179, 2 #180, 3 #181, 4 #182, 5 #183, 6 #184, 7 #185, 8 (this doc's final PR). See each phase's "As built" notes. The user guide is [Heads.md](Heads.md) (helpers were renamed Hydra heads).
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -246,9 +246,9 @@ Acceptance:
   - `tests/retiredDelegation.test.ts` asserts that no source file carries the old modules or the `HYDRA_DELEGATION_V1` marker, with one deliberate exception: `src/core/plannerSuffix.ts` keeps a display filter so transcripts recorded before Phase 0 still read cleanly.
 ### Phase 8: docs
 **Sonnet.**
-- Replace `docs/Adaptive_Delegation.md` and the `Auto_Delegation_*` docs with one `docs/Helpers.md` covering the actions, states, limits and security notes.
+- Replace `docs/Adaptive_Delegation.md` and the `Auto_Delegation_*` docs with one `docs/Heads.md` covering the actions, states, limits and security notes.
 
-**As built (Phase 8), 2026-09-24:** [docs/Helpers.md](Helpers.md) is the single guide. It covers connecting, the actions, the lifecycle, limits and permissions, checks, the dashboard, security (including the known gap), supported versions and troubleshooting. Live links to the deleted delegation docs now point to it. Historical plan documents are left as they were written.
+**As built (Phase 8), 2026-09-24:** [docs/Heads.md](Heads.md) is the single guide. It covers connecting, the actions, the lifecycle, limits and permissions, checks, the dashboard, security (including the known gap), supported versions and troubleshooting. Live links to the deleted delegation docs now point to it. Historical plan documents are left as they were written.
 
 ## Decisions (Nico, 2026-09-23)
 

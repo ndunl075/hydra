@@ -95,7 +95,7 @@ export class HelperEndpoint {
       let parsed: { tool?: unknown; arguments?: unknown };
       try { parsed = JSON.parse(body); } catch { return reply(400, { ok: false, error: 'Invalid JSON.' }); }
       if (typeof parsed.tool !== 'string') return reply(400, { ok: false, error: 'Missing tool.' });
-      if (!toolAllowed(caller.role, parsed.tool)) return reply(403, { ok: false, error: `${parsed.tool} is not available to a Hydra ${caller.role}.` });
+      if (!toolAllowed(caller.role, parsed.tool)) return reply(403, { ok: false, error: `${parsed.tool} is not available to a Hydra ${caller.role === 'helper' ? 'head' : 'lead'}.` });
       const args = parsed.arguments && typeof parsed.arguments === 'object' && !Array.isArray(parsed.arguments) ? parsed.arguments as Record<string, unknown> : {};
       const controller = new AbortController();
       response.on('close', () => { if (!response.writableEnded) controller.abort(); });

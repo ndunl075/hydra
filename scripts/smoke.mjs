@@ -9,6 +9,10 @@ const localCode = process.platform === 'win32' ? path.join(process.env.LOCALAPPD
 const desktopCode = process.env.HYDRA_TEST_DESKTOP;
 if (desktopCode && path.resolve(desktopCode) !== path.join(root, '.desktop', 'VSCode-win32-x64', 'Hydra.exe')) throw new Error('Desktop smoke must use the workspace-built Hydra executable.');
 await fs.mkdir(path.join(root, '.test-build'), { recursive: true });
+// The smoke assumes a fresh Hydra profile. A run that stopped early leaves capacity
+// reservations in the reused test user data, which fills the slot limit and makes the
+// next run queue its terminals, so each run starts from clean Hydra state.
+for (const userData of ['vscode-user-data', 'hydra-user-data']) await fs.rm(path.join(root, '.test-build', userData, 'User', 'globalStorage', 'nico-dunlap.hydra-agent-manager'), { recursive: true, force: true });
 const fixture = await fs.mkdtemp(path.join(root, '.test-build', 'smoke spaces ü-'));
 let developmentPath = root, testsPath = path.join(root, 'dist', 'smoke.cjs');
 if (desktopCode) {

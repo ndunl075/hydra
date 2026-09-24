@@ -21,7 +21,7 @@ import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
 import { executableFingerprint, findProvider, terminalLaunch } from './core/providers';
-import { JobStore } from './core/jobs';
+import { JobStore, resolveHeadDefaults } from './core/jobs';
 import { HelperEndpoint } from './core/helperEndpoint';
 import { HelperService } from './core/helperService';
 import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
@@ -388,7 +388,14 @@ class Manager {
     for (const folder of folders) { try { leadFolder = await repositoryRoot(folder); break; } catch { /* not a Git folder */ } }
     if (!leadFolder) return;
     const directory = path.join(this.storageDirectory, 'helpers');
-    const store = new JobStore(directory);
+    const store = new JobStore(directory, undefined, undefined, () => {
+      const config = vscode.workspace.getConfiguration('hydra');
+      return resolveHeadDefaults({
+        minutes: config.get<number>('heads.defaultMinutes'),
+        maxTurns: config.get<number>('heads.defaultMaxTurns'),
+        budgetUsd: config.get<number>('heads.defaultBudgetUsd'),
+      });
+    });
     await store.load();
     const leadKey = path.basename(this.storageDirectory);
     let service: HelperService | undefined;
@@ -518,7 +525,13 @@ class Manager {
   }
   async showFirstRun(): Promise<void> {
     await this.collapseSidebarOnce();
-    if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
+    const onboarding = this.disabled ? false : await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
+    // Onboarding has its own path into the Agents view (the Providers step); a
+    // handoff window is already forced to Agents in initialize(). Neither is
+    // overridden by the startup layout setting.
+    if (!onboarding && !this.handoff && this.mode === 'editor' && vscode.workspace.getConfiguration('hydra').get<string>('startupLayout') === 'agents') {
+      await this.openAgents();
+    }
   }
   private async collapseSidebarOnce(): Promise<void> {
     // The primary side bar has no configurationDefaults-controlled initial

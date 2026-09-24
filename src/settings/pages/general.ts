@@ -7,10 +7,9 @@ import type { SettingsContext, SettingsPage } from '../types';
  * General: editor/keyboard entry points, the existing preference importer
  * (moved intact from extensionSettings.ts), dismissed-prompt reset, chat
  * location (setting + command owned by the Phase 3 agent — handled gracefully
- * if not present yet), and a same-window Editor/Agents switch. There is no
- * persisted "startup mode" anywhere in the codebase today (hydra.mode is
- * in-memory, reset to 'editor' each window); the tiles below only switch the
- * current window's view now, they do not set a future startup default.
+ * if not present yet), and an Editor/Agents switch: the tiles set
+ * hydra.startupLayout (Global, applied to new windows at activation) and
+ * also switch the current window to match.
  */
 export const generalPage: SettingsPage = {
   id: 'general',
@@ -21,7 +20,7 @@ export const generalPage: SettingsPage = {
     { title: 'Import from VS Code or Cursor', description: 'Bring settings, keybindings and snippets. Preview first; one-click undo.' },
     { title: 'Reset "Don\'t ask again" dialogs', description: 'Clear prompts you told Hydra to stop showing.' },
     { title: 'Chat location', description: 'Docked in the side bar, or open as editor tabs.' },
-    { title: 'Window layout', description: 'Switch this window between the code editor and the Agents view.' },
+    { title: 'Window layout', description: 'Editor or Agents. Sets the startup view for new windows, and switches this window now.' },
     { title: 'Provider accounts', description: 'Sign in and manage Claude Code and Codex accounts.' },
     { title: 'Onboarding', description: 'Revisit the first-run setup.' },
   ],
@@ -38,7 +37,7 @@ export const generalPage: SettingsPage = {
     <div class="group">
       <h2>Chat</h2>
       <div class="row"><div class="row-text"><div class="row-title">Chat location</div><div class="row-desc">Docked in the side bar (default), or open as renameable editor tabs.</div></div><div class="row-action"><div class="segmented" role="group" aria-label="Chat location" id="gs-chat-location"><button data-value="docked" aria-pressed="true">Docked</button><button data-value="tabs" aria-pressed="false">Tabs</button></div></div></div>
-      <div class="row"><div class="row-text"><div class="row-title">Window layout</div><div class="row-desc">Switch this window between the code editor and the Agents view.</div></div><div class="row-action"><div class="tiles" role="group" aria-label="Window layout" id="gs-layout"><button class="tile" data-value="editor" aria-pressed="true">Editor</button><button class="tile" data-value="agents" aria-pressed="false">Agents</button></div></div></div>
+      <div class="row"><div class="row-text"><div class="row-title">Window layout</div><div class="row-desc">Editor or Agents. Sets the startup view for new windows, and switches this window now.</div></div><div class="row-action"><div class="tiles" role="group" aria-label="Window layout" id="gs-layout"><button class="tile" data-value="editor" aria-pressed="true">Editor</button><button class="tile" data-value="agents" aria-pressed="false">Agents</button></div></div></div>
     </div>
     <div class="group">
       <h2>Reset</h2>
@@ -111,8 +110,8 @@ export const generalPage: SettingsPage = {
   `,
   async onReady(ctx: SettingsContext): Promise<void> {
     if (ctx.imports.available) await ctx.post({ type: 'importStatus', ...await ctx.imports.status() });
-    const state = await Promise.resolve(vscode.commands.executeCommand<{ mode: 'editor' | 'agents' }>('hydra.getConversationState')).catch(() => undefined);
-    if (state) await ctx.post({ type: 'windowLayoutState', value: state.mode });
+    const startupLayout = vscode.workspace.getConfiguration('hydra').get<string>('startupLayout', 'editor');
+    await ctx.post({ type: 'windowLayoutState', value: startupLayout === 'agents' ? 'agents' : 'editor' });
     const chatLocation = vscode.workspace.getConfiguration('hydra').get<string>('chatLocation', 'docked');
     await ctx.post({ type: 'chatLocationState', value: chatLocation });
   },
@@ -148,9 +147,11 @@ export const generalPage: SettingsPage = {
       }
       case 'windowLayout': {
         const value = message.value === 'agents' ? 'agents' : 'editor';
+        await vscode.workspace.getConfiguration('hydra').update('startupLayout', value, vscode.ConfigurationTarget.Global);
         const state = await Promise.resolve(vscode.commands.executeCommand<{ mode: 'editor' | 'agents' }>('hydra.getConversationState')).catch(() => undefined);
         if (state && state.mode !== value) await vscode.commands.executeCommand('hydra.toggleMode');
         await ctx.post({ type: 'windowLayoutState', value });
+        await ctx.post({ type: 'status', text: `Window layout set to ${value === 'agents' ? 'Agents' : 'Editor'}.` });
         return true;
       }
       case 'previewImport': {

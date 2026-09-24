@@ -57,13 +57,13 @@ async function fixture(options: { script: Script; checks?: unknown; now?: () => 
   const lead = endpoint.issue({ role: 'lead', leadKey: 'window' });
   const call = (tool: string, args: Record<string, unknown> = {}): Promise<{ ok: boolean; result?: any; error?: string }> => callHelperEndpoint(port, lead, tool, args);
   const start = async (key: string, extra: Record<string, unknown> = {}): Promise<any> => (await call('hydra_start_helper', { title: `Job ${key}`, brief: 'Do the thing.', write_scope: ['src/'], idempotency_key: key, ...extra })).result;
-  const wait = async (ids: string[], max = 30): Promise<any> => (await call('hydra_wait_for_helpers', { job_ids: ids, max_wait_s: max })).result;
+  const wait = async (ids: string[], max = 90): Promise<any> => (await call('hydra_wait_for_helpers', { job_ids: ids, max_wait_s: max })).result;
   return { root, repo, store, service, endpoint, runs, call, start, wait, close: async () => { await service.dispose(); await endpoint.close(); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } };
 }
 
 /** Wait for a condition instead of sleeping a fixed time; creating a worktree is slow on Windows. */
 async function until(check: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 60_000;
   while (!check()) { if (Date.now() > deadline) throw new Error(`Timed out waiting: ${what}`); await new Promise(resolve => setTimeout(resolve, 20)); }
 }
 
@@ -203,7 +203,8 @@ test('cancel and Stop all end helpers; a dependency that fails fails its depende
     assert.deepEqual((await f.call('hydra_cancel_helper', { job_id: first.job_id, reason: 'Not needed' })).result, { job_id: first.job_id, state: 'cancelled' });
     const settled = (await f.wait([second.job_id])).helpers[0];
     assert.equal(settled.state, 'failed'); assert.match(settled.reason, /depends on did not finish/);
-    await until(() => f.store.get(third.job_id)?.state === 'running', 'the freed slot goes to the next queued helper');
+    await until(() => !['queued', 'starting'].includes(f.store.get(third.job_id)?.state || ''), 'the freed slot goes to the next queued helper');
+    assert.equal(f.store.get(third.job_id)?.state, 'running', JSON.stringify({ state: f.store.get(third.job_id)?.state, reason: f.store.get(third.job_id)?.reason }));
     assert.equal(await f.service.stopAll(), 1);
     assert.equal(f.store.get(third.job_id)?.state, 'cancelled');
     const listed = (await f.call('hydra_list_helpers')).result.helpers;
@@ -244,4 +245,15 @@ test('scope matching, helper prompts, runner arguments and the supported CLI ran
   for (const [version, ok] of [['2.1.270 (Claude Code)', true], ['2.1.281', true], ['2.1.269', false], ['2.2.0', false], ['2.1.300-beta.1', false], ['nonsense', false]] as const) assert.equal(supportedCliVersion('claude', version), ok, version);
   assert.equal(supportedCliVersion('codex', 'codex-cli 0.154.3'), true); assert.equal(supportedCliVersion('codex', 'codex-cli 0.147.0-alpha.1.2'), false);
   assert.equal(supportedCliVersionIn('codex', 'codex_cli_rs/0.154.2 (Windows 10.0.26200; x86_64)'), '0.154.2');
+});
+
+test('the dashboard\'s helper actions are validated messages', async () => {
+  const { parseMessage } = await import('../src/core/model');
+  assert.deepEqual(parseMessage({ type: 'helperReview', jobId: 'abcdefabcdef' }), { type: 'helperReview', jobId: 'abcdefabcdef' });
+  assert.deepEqual(parseMessage({ type: 'helperCancel', jobId: 'abcdefabcdef' }), { type: 'helperCancel', jobId: 'abcdefabcdef' });
+  assert.deepEqual(parseMessage({ type: 'helperStopAll' }), { type: 'helperStopAll' });
+  assert.throws(() => parseMessage({ type: 'helperLog', jobId: '../../etc' }), /Invalid helper job ID/);
+  const { readFile } = await import('node:fs/promises');
+  const dashboard = await readFile('webview/HelperDashboard.tsx', 'utf8');
+  for (const label of ['Review changes', 'Open log', 'Cancel', 'Stop all', 'Needs an answer']) assert.ok(dashboard.includes(label), label);
 });

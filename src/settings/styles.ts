@@ -62,4 +62,38 @@ input[type="number"], input[type="text"], select { font: inherit; background: va
 [hidden] { display: none !important; }
 @media (forced-colors: active) { .nav-item[aria-current="page"], button.primary, .segmented button[aria-pressed="true"], .tile[aria-pressed="true"] { forced-color-adjust: none; border: 1px solid Highlight; } }
 @media (max-width: 640px) { .shell { flex-direction: column; } .nav { width: 100%; border-right: none; border-bottom: 1px solid var(--vscode-panel-border); } }
+
+/* ---- MCP servers page (Settings plan, Phase 4) ---- */
+textarea { font: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px; padding: 4px 8px; resize: vertical; width: 100%; }
+textarea.mcp-masked { -webkit-text-security: disc; }
+.mcp-hint { margin: 0 14px 12px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+.mcp-hint.mcp-error { color: var(--vscode-errorForeground); }
+.mcp-empty { margin: 0; padding: 14px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+.mcp-row { flex-wrap: wrap; }
+.mcp-differs { color: var(--vscode-descriptionForeground); font-style: italic; }
+.mcp-lock { display: inline-flex; vertical-align: middle; margin-right: 2px; opacity: .75; }
+.linklike { background: none; border: none; padding: 0; color: var(--vscode-textLink-foreground); text-decoration: underline; font: inherit; }
+.linklike:hover { color: var(--vscode-textLink-activeForeground); }
+.mcp-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 10px; border: 1px solid var(--vscode-panel-border); font-size: 11px; background: transparent; color: var(--vscode-descriptionForeground); }
+.mcp-chip[aria-checked="true"], .mcp-chip-on { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); background: var(--vscode-list-activeSelectionBackground); }
+.mcp-chip-locked { opacity: .7; }
+.mcp-caret { padding: 4px 6px; }
+.mcp-details { flex-basis: 100%; border-top: 1px solid var(--vscode-panel-border); padding: 10px 0 4px; }
+.mcp-details pre { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--vscode-textCodeBlock-background); overflow: auto; font-size: 12px; }
+.mcp-details-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; flex-wrap: wrap; }
+.mcp-test-area { display: flex; align-items: center; gap: 8px; }
+.mcp-test-result { font-size: 12px; color: var(--vscode-descriptionForeground); }
+.mcp-test-result.mcp-error { color: var(--vscode-errorForeground); }
+.mcp-confirm { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+details.mcp-add summary { list-style: none; padding: 12px 14px; cursor: pointer; }
+details.mcp-add summary::-webkit-details-marker { display: none; }
+details.mcp-add summary .row-title { display: block; }
+details.mcp-add summary .row-desc { display: block; font-size: 12px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+.mcp-add-body { padding: 4px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.mcp-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+.mcp-field input, .mcp-field textarea { color: var(--vscode-input-foreground); font-size: 13px; }
+.mcp-use-with { border: none; padding: 0; margin: 0; display: flex; gap: 16px; }
+.mcp-use-with legend { font-size: 12px; color: var(--vscode-descriptionForeground); padding: 0; margin-bottom: 4px; }
+.mcp-show { font-size: 11px; color: var(--vscode-descriptionForeground); display: flex; align-items: center; gap: 4px; }
+.mcp-footer { font-size: 11px; color: var(--vscode-descriptionForeground); margin: 4px 4px 0; }
 `;

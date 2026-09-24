@@ -3,6 +3,13 @@
   "name": "Hydra Dark",
   "type": "dark",
   "colors": {
+    "editorGutter.addedBackground": "#3FA266", "editorGutter.deletedBackground": "#E34671", "editorGutter.modifiedBackground": "#D2943E",
+    "gitDecoration.addedResourceForeground": "#70B489", "gitDecoration.deletedResourceForeground": "#FC6B83", "gitDecoration.ignoredResourceForeground": "#F0F0F099",
+    "gitDecoration.modifiedResourceForeground": "#F1B467", "gitDecoration.untrackedResourceForeground": "#88C0D0", "list.deemphasizedForeground": "#F0F0F0BD",
+    "list.dropBackground": "#F0F0F011", "list.errorForeground": "#FC6B83", "list.focusBackground": "#F0F0F01E",
+    "list.focusForeground": "#F0F0F0", "list.highlightForeground": "#88C0D0", "list.hoverForeground": "#F0F0F0",
+    "list.inactiveSelectionForeground": "#F0F0F0", "list.invalidItemForeground": "#F0F0F099", "list.warningForeground": "#F1B467",
+    "tree.inactiveIndentGuidesStroke": "#F0F0F013",
     "editor.background": "#141414", "editor.foreground": "#F5F5F5",
     "sideBar.background": "#141414", "sideBar.foreground": "#F0F0F0BD",
     "sideBarSectionHeader.background": "#141414", "sideBarSectionHeader.foreground": "#F0F0F05C", "sideBarTitle.foreground": "#F0F0F0BD",

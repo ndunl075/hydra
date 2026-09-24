@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { createPublicKey } from 'node:crypto';
+import { createHash, createPublicKey } from 'node:crypto';
 import { isIP } from 'node:net';
 import { promisify } from 'node:util';
 import { isDeepStrictEqual } from 'node:util';
@@ -395,10 +395,68 @@ const hydraSidebarCss = `
 .monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon.checked .active-item-indicator::before { background: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.12)) !important; }
 .monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.icon:not(.checked):hover .active-item-indicator::before { background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.07)) !important; }
 `;
+// File and folder icons in sidebar trees are drawn a little smaller than
+// upstream's 16px, centred in the same slot, so rows keep their alignment.
+const hydraSidebarIconCss = `
+/* Hydra: slightly smaller file icons in sidebar trees. */
+.monaco-workbench .part.sidebar .monaco-list .monaco-icon-label::before { background-size: 14px !important; background-position: center center !important; }
+`;
 export function brandedSidebarCss(text) {
   if (text.includes('Hydra: rounded pill')) throw new Error('Pinned sidebar stylesheet already has Hydra styles.');
   if (!text.includes('.monaco-workbench .part.sidebar')) throw new Error('Pinned sidebar stylesheet changed.');
-  return `${text}\n${hydraSidebarCss}`;
+  return `${text}\n${hydraSidebarCss}${hydraSidebarIconCss}`;
+}
+// The app icon at the top left of the title bar is Hydra's logo, not Code - OSS's.
+export function brandedTitlebarIcon(text) {
+  const before = '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'../../../media/code-icon.svg\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 16px;\n}';
+  if (text.split(before).length !== 2) throw new Error('Pinned title bar app icon changed.');
+  return text.replace(before, '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'./hydra-logo.png\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 18px;\n}');
+}
+// Agent chat panels stay where they are, as in Cursor, which registers its chat
+// views with `canMoveView: false` and its chat container with `rejectAddedViews`.
+// The Claude Code, Codex and Hydra views can't be dragged out, their containers
+// accept no other views, and a container can't be dragged to another part of
+// the window (so no drop zones light up over the editor or Explorer). Reordering
+// icons within one bar still works.
+export const lockedAgentExtensions = ['anthropic.claude-code', 'openai.chatgpt', 'nico-dunlap.hydra-agent-manager'];
+const replaceOnceIn = (label, text, before, after) => {
+  if (text.split(before).length !== 2) throw new Error(`Pinned ${label} changed: ${before.trim().slice(0, 80)}`);
+  return text.replace(before, () => after);
+};
+export function lockedAgentViewsCommon(text) {
+  if (text.includes('isHydraLockedAgentExtension')) throw new Error('Pinned views.ts already has Hydra\'s panel lock.');
+  if (!text.includes('\nexport interface ViewContainer extends IViewContainerDescriptor { }') || !text.includes('\treadonly extensionId?: ExtensionIdentifier;')) throw new Error('Pinned views.ts ViewContainer changed.');
+  return `${text}
+// Hydra: agent chat panels are locked in place (scripts/desktop.mjs).
+const hydraLockedAgentExtensions: ReadonlySet<string> = new Set(${JSON.stringify(lockedAgentExtensions).replace(/"/g, '\'')});
+export function isHydraLockedAgentExtension(id: string | undefined): boolean { return !!id && hydraLockedAgentExtensions.has(id.toLowerCase()); }
+export function isHydraLockedViewContainer(container: ViewContainer | undefined): boolean { return isHydraLockedAgentExtension(container?.extensionId?.value); }
+`;
+}
+export function lockedAgentViewsExtensionPoint(text) {
+  const label = 'viewsExtensionPoint.ts';
+  text = replaceOnceIn(label, text, ', ViewContainerLocation } from \'../../common/views.js\';', ', ViewContainerLocation, isHydraLockedAgentExtension } from \'../../common/views.js\';');
+  text = replaceOnceIn(label, text, '\t\t\t\t\t\tcanMoveView: viewContainer?.id !== REMOTE,', '\t\t\t\t\t\tcanMoveView: viewContainer?.id !== REMOTE && !isHydraLockedAgentExtension(extension.description.identifier.value),');
+  return replaceOnceIn(label, text, '\t\t\t\thideIfEmpty: true,\n\t\t\t\torder,\n\t\t\t\ticon,\n\t\t\t}, location);', '\t\t\t\thideIfEmpty: true,\n\t\t\t\trejectAddedViews: isHydraLockedAgentExtension(extensionId?.value),\n\t\t\t\torder,\n\t\t\t\ticon,\n\t\t\t}, location);');
+}
+export function lockedAgentCompositeBar(text) {
+  const label = 'compositeBar.ts';
+  text = replaceOnceIn(label, text, 'import { ViewContainerLocation, IViewDescriptorService } from \'../../common/views.js\';', 'import { ViewContainerLocation, IViewDescriptorService, isHydraLockedViewContainer } from \'../../common/views.js\';');
+  return replaceOnceIn(label, text, '\t\t\t\treturn dragData.id !== targetCompositeId;\n\t\t\t}\n\n\t\t\treturn true;', '\t\t\t\treturn dragData.id !== targetCompositeId;\n\t\t\t}\n\n\t\t\t// Hydra: an agent chat panel never moves to another part of the window.\n\t\t\treturn !isHydraLockedViewContainer(currentContainer);');
+}
+export function lockedAgentViewDescriptorService(text) {
+  const label = 'viewDescriptorService.ts';
+  text = replaceOnceIn(label, text, ', VIEWS_LOG_ID, VIEWS_LOG_NAME, WindowVisibility } from \'../../../common/views.js\';', ', VIEWS_LOG_ID, VIEWS_LOG_NAME, WindowVisibility, isHydraLockedViewContainer } from \'../../../common/views.js\';');
+  return replaceOnceIn(label, text,
+    '\tmoveViewContainerToLocation(viewContainer: ViewContainer, location: ViewContainerLocation, requestedIndex?: number, reason?: string): void {\n\t\tif (!this.canMoveViews()) {\n\t\t\treturn;\n\t\t}',
+    '\tmoveViewContainerToLocation(viewContainer: ViewContainer, location: ViewContainerLocation, requestedIndex?: number, reason?: string): void {\n\t\tif (!this.canMoveViews()) {\n\t\t\treturn;\n\t\t}\n\t\t// Hydra: dragging never moves an agent chat panel to another part of the window.\n\t\tif (reason === \'dnd\' && isHydraLockedViewContainer(viewContainer) && this.getViewContainerLocation(viewContainer) !== location) {\n\t\t\treturn;\n\t\t}');
+}
+export function lockedAgentViewPaneContainer(text) {
+  const label = 'viewPaneContainer.ts';
+  text = replaceOnceIn(label, text, ', ViewContainer, ViewContainerLocation, ViewVisibilityState } from \'../../../common/views.js\';', ', ViewContainer, ViewContainerLocation, ViewVisibilityState, isHydraLockedViewContainer } from \'../../../common/views.js\';');
+  const before = 'dropData.type === \'composite\' && dropData.id !== this.viewContainer.id && !this.viewContainer.rejectAddedViews)';
+  if (text.split(before).length !== 3) throw new Error('Pinned viewPaneContainer.ts composite drop changed.');
+  return text.split(before).join('dropData.type === \'composite\' && dropData.id !== this.viewContainer.id && !this.viewContainer.rejectAddedViews && !isHydraLockedViewContainer(this.viewDescriptorService.getViewContainerById(dropData.id) ?? undefined))');
 }
 export function brandedStartupPage(text) {
   const replaceOnce = (before, after) => {
@@ -648,18 +706,57 @@ export async function prepare() {
   await fs.writeFile(path.join(source, sidebarPartPath), brandedSidebarTitleBar(await git(['show', `${pin.commit}:${sidebarPartPath}`])));
   const sidebarCssPath = 'src/vs/workbench/browser/parts/sidebar/media/sidebarpart.css';
   await fs.writeFile(path.join(source, sidebarCssPath), brandedSidebarCss(await git(['show', `${pin.commit}:${sidebarCssPath}`])));
+  for (const [file, lock] of [
+    ['src/vs/workbench/common/views.ts', lockedAgentViewsCommon],
+    ['src/vs/workbench/api/browser/viewsExtensionPoint.ts', lockedAgentViewsExtensionPoint],
+    ['src/vs/workbench/browser/parts/compositeBar.ts', lockedAgentCompositeBar],
+    ['src/vs/workbench/services/views/browser/viewDescriptorService.ts', lockedAgentViewDescriptorService],
+    ['src/vs/workbench/browser/parts/views/viewPaneContainer.ts', lockedAgentViewPaneContainer],
+  ]) await fs.writeFile(path.join(source, file), lock(await git(['show', `${pin.commit}:${file}`])));
+  const titlebarMedia = path.join(source, 'src', 'vs', 'workbench', 'browser', 'parts', 'titlebar', 'media');
+  await fs.copyFile(path.join(root, 'hydra-logo.png'), path.join(titlebarMedia, 'hydra-logo.png'));
+  const titlebarCssPath = 'src/vs/workbench/browser/parts/titlebar/media/titlebarpart.css';
+  await fs.writeFile(path.join(source, titlebarCssPath), brandedTitlebarIcon(await git(['show', `${pin.commit}:${titlebarCssPath}`])));
   const startupPagePath = 'src/vs/workbench/contrib/welcomeGettingStarted/browser/startupPage.ts';
   await fs.writeFile(path.join(source, startupPagePath), brandedStartupPage(await git(['show', `${pin.commit}:${startupPagePath}`])));
   const gettingStartedContentPath = 'src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts';
   await fs.writeFile(path.join(source, gettingStartedContentPath), brandedGettingStartedContent(await git(['show', `${pin.commit}:${gettingStartedContentPath}`])));
   console.log(`Prepared Hydra ${manifest.version}: Code - OSS ${pin.tag} at ${pin.commit}.`);
 }
+// vscode-icons (MIT, github.com/vscode-icons/vscode-icons): the file and folder
+// icons Cursor users see, bundled as a built-in extension and Hydra's default
+// icon theme. Pinned by version and SHA-256 from Open VSX.
+export const vscodeIcons = { id: 'vscode-icons-team.vscode-icons', version: '12.19.0', sha256: '6891095459234809b9c5161850f2dabc91a80b3eca2daf599d050a88b455e960' };
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+export async function stageVscodeIcons(destination) {
+  const cache = path.join(root, '.desktop', 'artifacts', `${vscodeIcons.id}-${vscodeIcons.version}.vsix`);
+  let vsix = await fs.readFile(cache).catch(() => undefined);
+  if (!vsix || sha256(vsix) !== vscodeIcons.sha256) {
+    const [namespace, name] = vscodeIcons.id.split('.');
+    const response = await fetch(`https://open-vsx.org/api/${namespace}/${name}/${vscodeIcons.version}/file/${vscodeIcons.id}-${vscodeIcons.version}.vsix`);
+    if (!response.ok) throw new Error(`Downloading ${vscodeIcons.id} ${vscodeIcons.version} failed (${response.status}).`);
+    vsix = Buffer.from(await response.arrayBuffer());
+    if (sha256(vsix) !== vscodeIcons.sha256) throw new Error(`${vscodeIcons.id} ${vscodeIcons.version} does not match its pinned SHA-256.`);
+    await fs.mkdir(path.dirname(cache), { recursive: true });
+    await fs.writeFile(cache, vsix);
+  }
+  const unpacked = `${destination}.unpacking`;
+  await fs.rm(unpacked, { recursive: true, force: true });
+  await fs.mkdir(unpacked, { recursive: true });
+  await run(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', cache, '-C', unpacked, 'extension'], root);
+  const manifest = await readJson(path.join(unpacked, 'extension', 'package.json'));
+  if (`${manifest.publisher}.${manifest.name}` !== vscodeIcons.id || manifest.version !== vscodeIcons.version) throw new Error('Bundled vscode-icons manifest differs from the pin.');
+  await fs.rm(destination, { recursive: true, force: true });
+  await fs.rename(path.join(unpacked, 'extension'), destination);
+  await fs.rm(unpacked, { recursive: true, force: true });
+}
 export async function stageHydra(destination) {
   const manifest = await readJson(path.join(root, 'package.json'));
   manifest.contributes.configurationDefaults = { ...manifest.contributes.configurationDefaults,
     'workbench.colorTheme': 'Hydra Dark', 'workbench.preferredDarkColorTheme': 'Hydra Dark',
     'window.autoDetectColorScheme': false,
-    'workbench.secondarySideBar.defaultVisibility': 'visible' };
+    'workbench.secondarySideBar.defaultVisibility': 'visible',
+    'workbench.iconTheme': 'vscode-icons', 'vsicons.dontShowNewVersionMessage': true };
   await fs.mkdir(destination, { recursive: true });
   for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.
@@ -695,6 +792,8 @@ export async function verify() {
   }
   await fs.access(path.join(bundled, 'dist', 'extension.cjs'));
   await fs.access(path.join(bundled, 'themes', 'hydra-light.json'));
+  const icons = await readJson(path.join(output, 'resources', 'app', 'extensions', vscodeIcons.id, 'package.json'));
+  if (icons.version !== vscodeIcons.version || !icons.contributes?.iconThemes?.some(theme => theme.id === 'vscode-icons') || manifest.contributes.configurationDefaults?.['workbench.iconTheme'] !== 'vscode-icons') throw new Error('Bundled vscode-icons theme is missing or not the default.');
   await verifyWatermarks(path.join(output, 'resources', 'app', 'out', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
   const stagedLogo = await fs.readFile(path.join(output, 'resources', 'app', 'out', 'media', 'hydra-logo.png'));
   if (!stagedLogo.equals(await fs.readFile(path.join(root, 'hydra-logo.png')))) throw new Error('Staged start-surface logo differs from the source hydra-logo.png.');
@@ -720,6 +819,7 @@ export async function build() {
   helperVersion['version-string'].OriginalFilename = 'HydraUpdateVerify.exe';
   await rcedit(path.join(output, 'tools', 'HydraUpdateVerify.exe'), helperVersion);
   await stageHydra(path.join(output, 'resources', 'app', 'extensions', 'hydra-agent-manager'));
+  await stageVscodeIcons(path.join(output, 'resources', 'app', 'extensions', vscodeIcons.id));
   await verify();
 }
 export async function smoke() {

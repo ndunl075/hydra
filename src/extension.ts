@@ -30,9 +30,9 @@ import { createLeadVerifier } from './core/leadVerification';
 import { claudeMemStatus, setupClaudeMem } from './core/claudeMem';
 import { downloadOpenVsx } from './core/openVsx';
 import { selfCheckCli } from './core/cliSelfCheck';
-import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, providerPaths, type ConnectableProvider, type HelperServerSpec } from './core/helperRegistration';
+import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, helperWrittenEntries, providerPaths, type ConnectableProvider, type HelperServerSpec, type WrittenEntries } from './core/helperRegistration';
 import type { ProviderConnectionView } from './helperConnectionsView';
-import { addMcpServer, configuredSpec, defaultMcpContext, enableMcpServerFor, listMcpServers, removeMcpServer, testMcpServer, validateServerSpec, type McpAgent } from './core/mcpServers';
+import { addMcpServer, configuredSpec, defaultMcpContext, enableMcpServerFor, listMcpServers, maskSecret, removeMcpServer, testMcpServer, validateServerSpec, type McpAgent } from './core/mcpServers';
 import { checkProvider } from './core/diagnostics';
 import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
@@ -236,6 +236,8 @@ class Manager {
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
     command('hydra.installProviderExtension', async (provider: ConnectableProvider) => { await this.installProviderExtension(provider); return this.helperConnections(); });
+    command('hydra.repairClaudeMem', () => this.repairClaudeMem());
+    command('hydra.helperWrittenEntries', () => this.helperWrittenEntries());
     // MCP servers (Settings plan, Phase 4). Lists come back with secrets masked; changes return the fresh list.
     const mcp = async () => defaultMcpContext(await this.claudeForRegistration());
     command('hydra.mcpServers.list', async () => listMcpServers(await mcp()));
@@ -437,10 +439,23 @@ class Manager {
   async helperConnections(): Promise<ProviderConnectionView[]> {
     const paths = providerPaths(), spec = this.helperServerSpec();
     const [claude, codex, memory] = await Promise.all([claudeStatus(paths, spec), codexStatus(paths.codexConfig, spec), claudeMemStatus()]);
+    const accounts = this.accounts.snapshot();
+    const claudeExtension = vscode.extensions.getExtension('anthropic.claude-code');
+    const codexExtension = vscode.extensions.getExtension('openai.chatgpt');
     return [
-      { ...claude, name: 'Claude Code', extensionInstalled: !!vscode.extensions.getExtension('anthropic.claude-code'), memory: memory.plugin && memory.bun && memory.dependencies ? 'ready' : 'missing' },
-      { ...codex, name: 'Codex', extensionInstalled: !!vscode.extensions.getExtension('openai.chatgpt') },
+      { ...claude, name: 'Claude Code', extensionInstalled: !!claudeExtension, extensionVersion: (claudeExtension?.packageJSON as { version?: string } | undefined)?.version, memory: memory.plugin && memory.bun && memory.dependencies ? 'ready' : 'missing', signedIn: accounts.claude.status },
+      { ...codex, name: 'Codex', extensionInstalled: !!codexExtension, extensionVersion: (codexExtension?.packageJSON as { version?: string } | undefined)?.version, signedIn: accounts.codex.status },
     ];
+  }
+  /** "What Hydra wrote" (Settings, Connectors): the exact user-level entries read back off disk, secrets masked. */
+  async helperWrittenEntries(): Promise<WrittenEntries> {
+    return helperWrittenEntries(providerPaths(), maskSecret);
+  }
+  /** Re-run claude-mem's setup idempotently: the Repair button, and reused by Connect. */
+  private async repairClaudeMem(): Promise<{ status: Awaited<ReturnType<typeof claudeMemStatus>>; installed: string[] }> {
+    const claude = await this.claudeForRegistration();
+    if (!claude) throw new Error('Install the Claude Code extension or CLI first.');
+    return setupClaudeMem(claude);
   }
   /** Install an official extension from the gallery, or straight from Open VSX when this build has no gallery. */
   private async installProviderExtension(provider: ConnectableProvider): Promise<void> {

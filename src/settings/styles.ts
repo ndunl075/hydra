@@ -62,4 +62,10 @@ input[type="number"], input[type="text"], select { font: inherit; background: va
 [hidden] { display: none !important; }
 @media (forced-colors: active) { .nav-item[aria-current="page"], button.primary, .segmented button[aria-pressed="true"], .tile[aria-pressed="true"] { forced-color-adjust: none; border: 1px solid Highlight; } }
 @media (max-width: 640px) { .shell { flex-direction: column; } .nav { width: 100%; border-right: none; border-bottom: 1px solid var(--vscode-panel-border); } }
+
+/* ---- Connectors page (Phase 2): the .cards wrapper around one .group per
+   agent, and the note under them. .group/.row/.chip/details.disclosure above
+   already cover the card, row and "What Hydra wrote" styling. ---- */
+.cards { display: flex; flex-direction: column; }
+.connection-note { font-size: 12px; color: var(--vscode-descriptionForeground); line-height: 1.6; margin: 0 0 24px; }
 `;

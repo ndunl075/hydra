@@ -92,6 +92,18 @@ export function removeMarkedBlock(text: string, start: string, end: string, dama
   }
   return { text, had: false };
 }
+/** The block itself (markers included, trimmed), read back the same way removeMarkedBlock finds it. Undefined when absent. */
+export function readMarkedBlock(text: string, start: string, end: string): string | undefined {
+  for (const eol of ['\r\n', '\n']) {
+    const from = text.indexOf(`${eol}${start}${eol}`);
+    if (from < 0) continue;
+    const endMarker = `${eol}${end}${eol}`;
+    const to = text.indexOf(endMarker, from);
+    if (to < 0) return undefined;
+    return text.slice(from + eol.length, to + eol.length + end.length);
+  }
+  return undefined;
+}
 export function addCodexBlock(text: string, spec: HelperServerSpec): string {
   const without = removeCodexBlock(text).text;
   if (new RegExp(`^\\s*\\[mcp_servers\\.${serverName}(\\]|\\.)`, 'm').test(without)) throw new Error(`Your Codex config already has an "${serverName}" MCP server that Hydra didn't add. Rename or remove it first.`);
@@ -206,4 +218,59 @@ export async function disconnectClaude(executable: string | undefined, paths: Pr
   const settings = await read(paths.claudeSettings);
   const updated = removeClaudeAllowRule(settings);
   if (settings !== undefined && updated !== settings) await writeAtomic(paths.claudeSettings, updated!);
+}
+
+// ---- "What Hydra wrote" (Settings, Connectors page): the exact user-level
+// entries read back off disk now, secrets masked, falling back to undefined
+// ("not written") when absent. Pure and read-only; never touches a file. ----
+
+/** Mask any `KEY = 'value'`-shaped line whose key looks like a secret (used on the Codex block, read back as plain text). */
+function maskAssignmentLines(text: string, mask: (key: string, value: string) => string): string {
+  return text.replace(/^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)'([^']*)'/gm, (line, indent: string, key: string, equals: string, value: string) => {
+    const shown = mask(key, value);
+    return shown === value ? line : `${indent}${key}${equals}'${shown}'`;
+  });
+}
+
+/** The exact `mcpServers.hydra` entry in ~/.claude.json now, env values masked. Undefined when Claude has none. */
+export async function claudeWrittenServer(paths: ProviderPaths, mask: (key: string | undefined, value: string) => string): Promise<string | undefined> {
+  const raw = await read(paths.claudeJson);
+  if (!raw) return undefined;
+  try {
+    const config = JSON.parse(raw) as { mcpServers?: Record<string, { env?: Record<string, string> } & Record<string, unknown>> };
+    const entry = config.mcpServers?.[serverName];
+    if (!entry) return undefined;
+    const masked = entry.env ? { ...entry, env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, mask(key, String(value))])) } : entry;
+    return JSON.stringify({ [serverName]: masked }, null, 2);
+  } catch { return undefined; }
+}
+/** The exact allow rule Hydra inserted into ~/.claude/settings.json. Undefined when it isn't there. */
+export async function claudeWrittenAllowRule(paths: ProviderPaths): Promise<string | undefined> {
+  const raw = await read(paths.claudeSettings);
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { permissions?: { allow?: unknown } };
+    const allow = parsed.permissions?.allow;
+    return Array.isArray(allow) && allow.includes(claudeAllowRule) ? `"${claudeAllowRule}"` : undefined;
+  } catch { return undefined; }
+}
+/** The exact `[mcp_servers.hydra]` block in ~/.codex/config.toml now, env values masked. Undefined when it isn't there. */
+export async function codexWrittenBlock(file: string, mask: (key: string, value: string) => string): Promise<string | undefined> {
+  const text = await read(file);
+  const block = text ? readMarkedBlock(text, blockStart, blockEnd) : undefined;
+  return block ? maskAssignmentLines(block, mask) : undefined;
+}
+/** The exact Hydra guidance block in Codex's AGENTS.md now. Undefined when it isn't there. */
+export async function codexWrittenGuidance(file: string): Promise<string | undefined> {
+  const agents = await read(codexAgentsFile(file));
+  return agents ? readMarkedBlock(agents, guidanceStart, guidanceEnd) : undefined;
+}
+export interface WrittenEntries { claude: { server?: string; allowRule?: string }; codex: { config?: string; agents?: string } }
+/** Everything Hydra has written for both providers, read straight off disk. */
+export async function helperWrittenEntries(paths: ProviderPaths, mask: (key: string | undefined, value: string) => string): Promise<WrittenEntries> {
+  const [server, allowRule, config, agents] = await Promise.all([
+    claudeWrittenServer(paths, mask), claudeWrittenAllowRule(paths),
+    codexWrittenBlock(paths.codexConfig, mask), codexWrittenGuidance(paths.codexConfig),
+  ]);
+  return { claude: { server, allowRule }, codex: { config, agents } };
 }

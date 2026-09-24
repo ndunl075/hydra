@@ -10,11 +10,15 @@ export interface ProviderConnectionView {
   provider: 'claude' | 'codex';
   name: string;
   extensionInstalled: boolean;
+  /** The installed extension's own version (vscode.extensions...packageJSON.version), when installed. */
+  extensionVersion?: string;
   connected: boolean;
   current: boolean;
   error?: string;
   /** Claude only: claude-mem (and the Bun it needs) is set up. */
   memory?: 'ready' | 'missing';
+  /** From hydra.getAccountSetupState; 'unchecked' until the user opens Accounts. */
+  signedIn?: 'unchecked' | 'working' | 'pending' | 'signed-in' | 'signed-out' | 'other' | 'cancelled' | 'error';
 }
 
 /** Handle one connections message from a webview. Returns true when the message was ours. */

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ClientMessage, Draft, Provider, ProviderInfo, Snapshot } from '../src/core/model';
 import type { ModelCatalog, ModelSelection } from '../src/core/modelSelection';
-import { ModelPicker, DelegationModePicker, PermissionModePicker, asTaskPermissionMode, isPermissionModeFor, useOutsideClose, type PermissionModeName } from './ComposerPickers';
+import { ModelPicker, PermissionModePicker, asTaskPermissionMode, isPermissionModeFor, useOutsideClose, type PermissionModeName } from './ComposerPickers';
 import { SessionThread } from './SessionThread';
 import { pendingSchedule } from '../src/core/scheduler';
 import { CapacityStatus } from './CapacityStatus';
@@ -46,7 +46,6 @@ function NewConversation({ snapshot, send, onSubmit }: { snapshot: Snapshot; sen
             <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this task" disabled={snapshot.busy} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
             <ModelPicker selection={selection} provider={draft.provider} catalogs={snapshot.draftModelCatalogs || {}} providers={snapshot.providers} busy={snapshot.busy} send={send}
               onSelect={(next, provider) => { setSelection(next); if (provider !== draft.provider) setPermissionMode(null); update({ provider }); }} />
-            <DelegationModePicker mode={snapshot.delegation?.mode === 'auto' ? 'auto' : 'solo'} send={send} />
           </div>
           <div className="task-prompt-toolbar-group">
             <PermissionModePicker provider={draft.provider} mode={permissionMode} busy={snapshot.busy} onSelect={setPermissionMode} />

@@ -10,7 +10,7 @@ import type { ModelCatalog } from '../src/core/modelSelection';
 import type { Provider, ProviderInfo } from '../src/core/model';
 import { canEditBrief, emptyBrief } from '../src/core/taskContext';
 import { latestContextUsage } from '../src/core/contextUsage';
-import { ContextRing, DelegationModePicker, ModelPicker, PermissionModePicker, asTaskPermissionMode, type DelegationMode } from './ComposerPickers';
+import { ContextRing, ModelPicker, PermissionModePicker, asTaskPermissionMode, type DelegationMode } from './ComposerPickers';
 
 /** What the sidebar composer needs beyond the task: catalogs to pick from and the delegation preference. */
 export interface ComposerContext { catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; delegationMode: DelegationMode }
@@ -140,7 +140,6 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
             <ContextRing usage={latestContextUsage(session.turns)} />
             <ModelPicker selection={task.modelSelection || null} effective={[...session.turns].reverse().find(turn => turn.modelSettings?.effective)?.modelSettings?.effective} provider={task.provider} catalogs={composer?.catalogs || {}} providers={composer?.providers || []} busy={busy} send={send} locked={editable ? undefined : locked}
               onSelect={(selection, provider) => send({ type: 'saveProviderSelection', id: task.id, provider, selection })} />
-            <DelegationModePicker mode={composer?.delegationMode || 'solo'} send={send} />
           </div>
           <div className="task-prompt-toolbar-group">
             <PermissionModePicker provider={task.provider} mode={task.permissionMode?.mode ?? null} busy={busy} locked={editable ? undefined : locked}

@@ -7,7 +7,6 @@ import { git } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
 import { buildTaskPrompt, emptyBrief, emptyHandoffSummary } from '../src/core/taskContext';
-import { plannerPromptSuffix } from '../src/core/delegationPlannerIngestion';
 import type { UsageSummary } from '../src/core/usage';
 import type { BudgetSettings, BudgetObservation } from '../src/core/budgets';
 import type { QuotaState } from '../src/core/quota';
@@ -353,8 +352,10 @@ export async function run(): Promise<void> {
     assert.equal(completed?.turns[0]?.text, 'Hello ü');
     assert.equal(completed.turns[0]?.usage?.input, 12);
     const plannerRun = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.delegationPlanner;
-    assert.ok(plannerRun, 'Normal parent turn has a saved planner receipt');
-    const normalTurnPrompt = submittedPrompt + plannerPromptSuffix(plannerRun);
+    // Auto is paused (Official_Extensions_Plan Phase 0): a Solo turn saves no planner run and
+    // the provider receives exactly the brief, with no planning suffix.
+    assert.equal(plannerRun, undefined, 'Solo turn saves no planner receipt');
+    const normalTurnPrompt = submittedPrompt;
     assert.equal(completed.turns[0]?.prompt, normalTurnPrompt);
     const reported = await vscode.commands.executeCommand<{ tasks: Record<string, UsageSummary> }>('hydra.getUsage');
     assert.equal(reported?.tasks[tasks[0]!.id]?.claude?.input, 12);
@@ -364,7 +365,7 @@ export async function run(): Promise<void> {
     await assert.rejects(async () => vscode.commands.executeCommand('hydra.followUp', tasks[0]!.id, 'hold', 'smoke-accepted-1'), /already submitted|in progress/);
     await waitFor(async () => { try { await readFile(path.join(tasks[0]!.worktree, 'heartbeat.txt')); return true; } catch { return false; } });
     const requests = (await readFile(path.join(tasks[0]!.worktree, 'requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    assert.equal(requests[0].prompt, normalTurnPrompt, 'The provider receives the saved brief and visible Solo planning instruction in one normal turn');
+    assert.equal(requests[0].prompt, normalTurnPrompt, 'The provider receives exactly the saved brief in one normal turn');
     assert.equal(requests.length, 2);
     assert.equal(requests[1].args[requests[1].args.indexOf('--resume') + 1], '12345678-1234-1234-1234-123456789abc');
     assert.equal(path.relative(await realpath(requests[0].cwd), await realpath(tasks[0]!.worktree)), '');

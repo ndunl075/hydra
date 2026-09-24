@@ -5,7 +5,7 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+import { openVsxGallery, brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
 
 test('pinned Electron app uses only Hydra update service on Windows and refuses source drift', () => {
   const source = "import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';\nservices.set(IUpdateService, new SyncDescriptor(Win32UpdateService));";
@@ -104,7 +104,9 @@ test('standalone identity isolates Hydra from VS Code/Code OSS and retains upstr
   assert.equal(product.licenseUrl, 'upstream-license');
   assert.equal(product.hydraVersion, '0.8.0');
   assert.equal(product.enableTelemetry, false);
-  assert.equal(product.extensionsGallery, undefined);
+  // Upstream's Microsoft gallery is dropped; the only gallery is Hydra's Open VSX.
+  assert.equal(product.extensionsGallery.serviceUrl, 'https://open-vsx.org/vscode/gallery');
+  assert.doesNotMatch(JSON.stringify(product.extensionsGallery), /microsoft-marketplace|visualstudio\.com|vsassets|vscode-unpkg/);
   assert.equal(product.updateUrl, undefined);
   assert.equal(installedUpdateTrust(product.hydraUpdateTrust).status, 'disabled');
   assert.deepEqual(product.builtInExtensions, []);
@@ -272,4 +274,17 @@ test('the active sidebar icon gets a pill drawn behind it, never on the icon lab
   assert.doesNotMatch(branded, /\.action-label \{[^}]*background/);
   assert.throws(() => brandedSidebarCss(branded), /already has Hydra styles/);
   assert.throws(() => brandedSidebarCss('.something-else {}'), /sidebar stylesheet changed/);
+});
+
+test('the extension gallery is accepted only when every URL points at Open VSX', () => {
+  const good = { serviceUrl: 'https://open-vsx.org/vscode/gallery', extensionUrlTemplate: 'https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest', resourceUrlTemplate: 'https://open-vsx.org/vscode/asset/{publisher}/{name}/{version}/Microsoft.VisualStudio.Code.WebResources/{path}', controlUrl: '', nlsBaseUrl: '' };
+  assert.deepEqual(openVsxGallery(good), good);
+  // Microsoft's marketplace, a lookalike host, plain http, an empty fetch endpoint, and extra or missing keys all refuse.
+  for (const [key, value] of [['serviceUrl', 'https://marketplace.visualstudio.com/_apis/public/gallery'], ['serviceUrl', 'https://open-vsx.org.evil.example/vscode/gallery'], ['serviceUrl', 'http://open-vsx.org/vscode/gallery'], ['resourceUrlTemplate', ''], ['controlUrl', 'https://az764295.vo.msecnd.net/extensions/marketplace.json']]) {
+    assert.throws(() => openVsxGallery({ ...good, [key]: value }), /must be Open VSX/, `${key}=${value}`);
+  }
+  assert.throws(() => openVsxGallery({ ...good, itemUrl: 'https://open-vsx.org/vscode/item' }), /expected exactly/);
+  const { nlsBaseUrl, ...missing } = good;
+  assert.throws(() => openVsxGallery(missing), /expected exactly/);
+  assert.throws(() => openVsxGallery(undefined), /missing gallery/);
 });

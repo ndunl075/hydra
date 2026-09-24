@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { addClaudeAllowRule, addCodexBlock, claudeAllowRule, claudeStatus, codexStatus, connectCodex, disconnectCodex, providerPaths, removeClaudeAllowRule, removeCodexBlock, type HelperServerSpec } from '../src/core/helperRegistration';
+import { addClaudeAllowRule, addCodexBlock, addGuidanceBlock, removeGuidanceBlock, claudeAllowRule, claudeStatus, codexStatus, connectCodex, disconnectCodex, providerPaths, removeClaudeAllowRule, removeCodexBlock, type HelperServerSpec } from '../src/core/helperRegistration';
 
 const spec: HelperServerSpec = { command: 'C:\\Program Files\\Hydra\\Hydra.exe', args: ['C:\\Program Files\\Hydra\\resources\\app\\extensions\\hydra\\dist\\hydra-mcp.cjs'], env: { ELECTRON_RUN_AS_NODE: '1', HYDRA_HELPERS_DIR: 'C:\\Users\\n\\AppData\\Roaming\\Hydra\\helpers' } };
 
@@ -41,9 +41,31 @@ test('Codex connection status and file round trip', async () => {
     assert.equal((await codexStatus(file, { ...spec, command: 'C:\\New\\Hydra.exe' })).current, false, 'an updated Hydra path is noticed');
     await connectCodex(file, { ...spec, command: 'C:\\New\\Hydra.exe' });
     assert.equal((await codexStatus(file, { ...spec, command: 'C:\\New\\Hydra.exe' })).current, true);
+    const agents = path.join(directory, 'AGENTS.md');
+    assert.match(await readFile(agents, 'utf8'), /hydra_start_head[\s\S]*without being asked/, 'Codex gets the lead guidance in its AGENTS.md');
     await disconnectCodex(file);
     assert.equal(await readFile(file, 'utf8'), original);
+    await assert.rejects(readFile(agents, 'utf8'), /ENOENT/, 'an AGENTS.md that Hydra created is removed');
     await disconnectCodex(path.join(directory, 'missing.toml'));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('the Codex AGENTS.md guidance is added once and removed byte-exactly', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-registration-'));
+  try {
+    const file = path.join(directory, 'config.toml'), agents = path.join(directory, 'AGENTS.md');
+    const mine = '# My rules\r\n\r\n- Be brief.';
+    await writeFile(agents, mine);
+    await connectCodex(file, spec);
+    await connectCodex(file, spec);
+    const text = await readFile(agents, 'utf8');
+    assert.equal(text.split('>>> Hydra heads').length, 2, 'reconnecting keeps one block');
+    assert.ok(text.startsWith(mine) && text.includes('\r\n<!-- <<< Hydra heads -->\r\n'), 'the user\'s text and line endings are kept');
+    assert.equal(removeGuidanceBlock(addGuidanceBlock('x\n')).text, 'x\n');
+    await writeFile(agents, text.replace('Work alone', 'Work solo'));
+    assert.equal((await codexStatus(file, spec)).current, false, 'changed guidance is refreshed on the next start');
+    await disconnectCodex(file);
+    assert.equal(await readFile(agents, 'utf8'), mine);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

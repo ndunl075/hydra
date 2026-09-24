@@ -22,12 +22,12 @@ export function createBridge(options: BridgeOptions) {
   const connection = async (): Promise<{ port: number; token: string } | string> => {
     if (role === 'helper') {
       const port = Number(options.env.HYDRA_HELPER_PORT);
-      return Number.isInteger(port) && port > 0 ? { port, token: options.env.HYDRA_HELPER_TOKEN! } : 'This helper was started without a Hydra port.';
+      return Number.isInteger(port) && port > 0 ? { port, token: options.env.HYDRA_HELPER_TOKEN! } : 'This head was started without a Hydra port.';
     }
     const root = options.env.HYDRA_HELPERS_DIR;
-    if (!root) return 'Hydra helpers are not set up for this CLI. Connect Claude Code or Codex to Hydra from Hydra\'s onboarding or Settings.';
+    if (!root) return 'Hydra heads are not set up for this CLI. Connect Claude Code or Codex to Hydra from Hydra\'s onboarding or Settings.';
     const record = await findWindowFor(root, options.cwd);
-    if (!record) return `Hydra isn't open for this folder (${options.cwd}). Open the folder in Hydra to use helpers.`;
+    if (!record) return `Hydra isn't open for this folder (${options.cwd}). Open the folder in Hydra to use heads.`;
     // The lead token is asked for once per window and kept only in memory.
     const cached = leadTokens.get(record.port);
     if (cached) return { port: record.port, token: cached };
@@ -48,7 +48,7 @@ export function createBridge(options: BridgeOptions) {
       return result(id, {
         protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'hydra', title: 'Hydra helpers', version: options.version },
+        serverInfo: { name: 'hydra', title: 'Hydra heads', version: options.version },
         instructions: role === 'lead' ? leadInstructions : helperInstructions,
       });
     }

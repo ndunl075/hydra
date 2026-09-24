@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { leadGuidanceMarkdown } from './helperTools';
 import { processLaunch } from './process';
 
 /**
@@ -49,7 +50,7 @@ const eolOf = (text: string) => text.includes('\r\n') ? '\r\n' : '\n';
 
 /** A TOML literal string. Paths never contain a single quote; refuse rather than mis-quote. */
 function literal(value: string): string {
-  if (value.includes("'") || /[\r\n]/.test(value)) throw new Error('A Hydra helper setting contains a quote or line break.');
+  if (value.includes("'") || /[\r\n]/.test(value)) throw new Error('A Hydra head setting contains a quote or line break.');
   return `'${value}'`;
 }
 export function codexBlock(spec: HelperServerSpec, eol = '\n'): string {
@@ -84,19 +85,58 @@ export function addCodexBlock(text: string, spec: HelperServerSpec): string {
   if (new RegExp(`^\\s*\\[mcp_servers\\.${serverName}(\\]|\\.)`, 'm').test(without)) throw new Error(`Your Codex config already has an "${serverName}" MCP server that Hydra didn't add. Rename or remove it first.`);
   return without + codexBlock(spec, eolOf(without || '\n'));
 }
+/**
+ * Codex may not read an MCP server's instructions, so the lead guidance (when to
+ * start heads without being asked) also goes into Codex's global AGENTS.md, next
+ * to config.toml, as a marked block removed byte-exactly on disconnect.
+ */
+const guidanceStart = '<!-- >>> Hydra heads (managed by Hydra: connect or disconnect in Hydra Settings) -->';
+const guidanceEnd = '<!-- <<< Hydra heads -->';
+export const codexAgentsFile = (configFile: string) => path.join(path.dirname(configFile), 'AGENTS.md');
+export function guidanceBlock(eol = '\n'): string { return ['', guidanceStart, ...leadGuidanceMarkdown.trimEnd().split('\n'), guidanceEnd, ''].join(eol); }
+export function removeGuidanceBlock(text: string): { text: string; had: boolean } {
+  for (const eol of ['\r\n', '\n']) {
+    const start = text.indexOf(`${eol}${guidanceStart}${eol}`);
+    if (start < 0) continue;
+    const endMarker = `${eol}${guidanceEnd}${eol}`;
+    const end = text.indexOf(endMarker, start);
+    if (end < 0) throw new Error('Hydra\'s block in Codex\'s AGENTS.md is damaged. Remove the lines between the Hydra markers by hand.');
+    return { text: text.slice(0, start) + text.slice(end + endMarker.length), had: true };
+  }
+  return { text, had: false };
+}
+export function addGuidanceBlock(text: string): string {
+  const without = removeGuidanceBlock(text).text;
+  return without + guidanceBlock(eolOf(without || '\n'));
+}
+
 export async function codexStatus(file: string, spec: HelperServerSpec): Promise<ConnectionStatus> {
   try {
-    const text = await read(file) ?? '';
+    const text = await read(file) ?? '', agents = await read(codexAgentsFile(file)) ?? '';
     const had = removeCodexBlock(text).had;
-    return { provider: 'codex', connected: had, current: had && text.includes(codexBlock(spec, eolOf(text)).trim()) };
+    const guided = agents.includes(guidanceBlock(eolOf(agents)).trim());
+    return { provider: 'codex', connected: had, current: had && guided && text.includes(codexBlock(spec, eolOf(text)).trim()) };
   } catch (error) { return { provider: 'codex', connected: false, current: false, error: error instanceof Error ? error.message : String(error) }; }
 }
-export async function connectCodex(file: string, spec: HelperServerSpec): Promise<void> { await writeAtomic(file, addCodexBlock(await read(file) ?? '', spec)); }
+export async function connectCodex(file: string, spec: HelperServerSpec): Promise<void> {
+  const config = addCodexBlock(await read(file) ?? '', spec);
+  const agentsFile = codexAgentsFile(file);
+  await writeAtomic(agentsFile, addGuidanceBlock(await read(agentsFile) ?? ''));
+  await writeAtomic(file, config);
+}
 export async function disconnectCodex(file: string): Promise<void> {
   const text = await read(file);
-  if (text === undefined) return;
-  const removed = removeCodexBlock(text);
-  if (removed.had) await writeAtomic(file, removed.text);
+  if (text !== undefined) {
+    const removed = removeCodexBlock(text);
+    if (removed.had) await writeAtomic(file, removed.text);
+  }
+  const agentsFile = codexAgentsFile(file), agents = await read(agentsFile);
+  if (agents === undefined) return;
+  const removed = removeGuidanceBlock(agents);
+  if (!removed.had) return;
+  // Hydra created the file if nothing else is left in it.
+  if (removed.text === '') await rm(agentsFile, { force: true });
+  else await writeAtomic(agentsFile, removed.text);
 }
 
 // ---- Claude ----

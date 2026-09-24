@@ -482,11 +482,19 @@ class Manager {
     }
   }
   /** Dashboard actions: review a helper's changes as a diff, open its log, or cancel it. */
-  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel', jobId: string): Promise<void> {
+  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer', jobId: string): Promise<void> {
     const helpers = this.helpers;
     const job = helpers?.store.get(jobId);
     if (!helpers || !job) throw new Error('That head is not in this window.');
-    if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason: 'Cancelled from the head dashboard.' }, new AbortController().signal); return; }
+    if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason: 'Cancelled from the Agents view.' }, new AbortController().signal); return; }
+    if (action === 'helperAnswer') {
+      // The head is waiting on the lead; you can answer in its place from the Agents view.
+      if (job.state !== 'blocked') throw new Error('That head is not waiting for an answer.');
+      const message = await vscode.window.showInputBox({ title: `Answer "${job.title}"`, prompt: job.question || 'The head is waiting for an answer.', placeHolder: 'Your answer', ignoreFocusOut: true, validateInput: value => value.trim() && value.length <= 8000 ? undefined : 'Write an answer (up to 8000 characters).' });
+      if (message === undefined) return;
+      await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_reply_to_head', { job_id: jobId, message }, new AbortController().signal);
+      return;
+    }
     if (action === 'helperLog') {
       const log = path.join(this.storageDirectory, 'helpers', 'logs', `${jobId}.jsonl`);
       await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true, viewColumn: vscode.ViewColumn.Beside });
@@ -802,7 +810,7 @@ class Manager {
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'newTask') { await vscode.commands.executeCommand('hydra.newTask'); return; }
     if (message.type === 'helperStopAll') { await vscode.commands.executeCommand('hydra.stopAllHelpers'); return; }
-    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel') { await this.helperAction(message.type, message.jobId); return; }
+    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer') { await this.helperAction(message.type, message.jobId); return; }
     // A reply draft changes on every keystroke. The typing panel gets its own ack
     // (conversationDraftAck) and send-time validation reads the draft map, which
     // updates here immediately; the publish only carries the draft to the other

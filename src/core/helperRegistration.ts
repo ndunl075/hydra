@@ -189,8 +189,11 @@ function runClaude(executable: string, args: string[]): Promise<{ code: number; 
   });
 }
 export async function connectClaude(executable: string, paths: ProviderPaths, spec: HelperServerSpec): Promise<void> {
+  const add = () => runClaude(executable, ['mcp', 'add-json', '-s', 'user', serverName, JSON.stringify({ type: 'stdio', command: spec.command, args: spec.args, env: spec.env, timeout: 3_600_000 })]);
   await runClaude(executable, ['mcp', 'remove', '-s', 'user', serverName]);
-  const added = await runClaude(executable, ['mcp', 'add-json', '-s', 'user', serverName, JSON.stringify({ type: 'stdio', command: spec.command, args: spec.args, env: spec.env, timeout: 3_600_000 })]);
+  let added = await add();
+  // Another Hydra window can re-add its own entry between our remove and add; remove it once more and retry.
+  if (added.code !== 0 && /already exists/i.test(added.output)) { await runClaude(executable, ['mcp', 'remove', '-s', 'user', serverName]); added = await add(); }
   if (added.code !== 0) throw new Error(`Claude Code could not add Hydra: ${added.output.trim().slice(0, 300)}`);
   const settings = await read(paths.claudeSettings);
   const updated = addClaudeAllowRule(settings);

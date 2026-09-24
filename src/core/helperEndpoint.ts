@@ -2,6 +2,7 @@ import http from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { toolAllowed, type HelperRole } from './helperTools';
+import type { Provider } from './model';
 
 /**
  * Hydra's local endpoint for helper actions (docs/Official_Extensions_Plan.md,
@@ -9,7 +10,12 @@ import { toolAllowed, type HelperRole } from './helperTools';
  * token, and the token alone decides who is calling (a window's lead, or one
  * helper job) and which actions it may use.
  */
-export interface HelperCaller { role: HelperRole; leadKey: string; jobId?: string }
+/**
+ * A lead's token also names its session (one bridge process = one Claude Code or
+ * Codex chat) and, when known, its provider, so the Agents canvas can show which
+ * chat started which head.
+ */
+export interface HelperCaller { role: HelperRole; leadKey: string; jobId?: string; leadSessionId?: string; provider?: Provider }
 export type HelperHandler = (caller: HelperCaller, tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
 /**
  * Decides whether the process on the other end of a connection may act as this
@@ -17,7 +23,8 @@ export type HelperHandler = (caller: HelperCaller, tool: string, args: Record<st
  * one once, and Hydra answers only after checking which process connected
  * (see src/core/leadVerification.ts). Returns a reason when refused.
  */
-export type LeadVerifier = (socket: import('node:net').Socket) => Promise<{ ok: true } | { ok: false; reason: string }>;
+export type LeadVerifier = (socket: import('node:net').Socket) => Promise<{ ok: true; provider?: Provider } | { ok: false; reason: string }>;
+const asProvider = (value: unknown): Provider | undefined => value === 'claude' || value === 'codex' ? value : undefined;
 export interface HelperCallResponse { ok: boolean; result?: unknown; error?: string }
 
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -80,7 +87,13 @@ export class HelperEndpoint {
         if (!this.options.verifyLead || !this.options.leadKey) return reply(403, { ok: false, error: 'This Hydra window does not accept lead connections.' });
         const verdict = await this.options.verifyLead(request.socket);
         if (!verdict.ok) return reply(403, { ok: false, error: `Hydra refused this lead: ${verdict.reason}` });
-        return reply(200, { ok: true, result: { token: this.issue({ role: 'lead', leadKey: this.options.leadKey }) } });
+        // The bridge says which agent it serves (set at Connect); the process chain is the fallback.
+        const sessionBody = await readBody(request, 1024);
+        let declared: Provider | undefined;
+        try { declared = asProvider((JSON.parse(sessionBody || '{}') as { provider?: unknown }).provider); } catch { declared = undefined; }
+        const provider = declared ?? verdict.provider;
+        const leadSessionId = randomBytes(6).toString('hex');
+        return reply(200, { ok: true, result: { token: this.issue({ role: 'lead', leadKey: this.options.leadKey, leadSessionId, ...(provider ? { provider } : {}) }), session: leadSessionId } });
       }
       const auth = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(request.headers.authorization || '');
       const key = auth ? digest(auth[1]!) : undefined;
@@ -122,15 +135,16 @@ function readBody(request: http.IncomingMessage, max: number): Promise<string | 
 }
 
 /** Client side, used by a lead bridge: ask the window for this bridge's lead token. */
-export function requestLeadSession(port: number): Promise<HelperCallResponse> {
+export function requestLeadSession(port: number, provider?: Provider): Promise<HelperCallResponse> {
+  const body = JSON.stringify(provider ? { provider } : {});
   return new Promise((resolve, reject) => {
-    const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/hydra/v1/lead-session', headers: { 'content-type': 'application/json', 'content-length': 2 } }, response => {
+    const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/hydra/v1/lead-session', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, response => {
       const chunks: Buffer[] = [];
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as HelperCallResponse); } catch { resolve({ ok: false, error: `Hydra answered ${response.statusCode}.` }); } });
     });
     request.on('error', reject);
-    request.end('{}');
+    request.end(body);
   });
 }
 

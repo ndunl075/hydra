@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23. Phase 0 merged (#178). Phase 1 spikes: go (#179). Phase 2 job store: `src/core/jobs.ts`.
+Status: decisions made 2026-09-23. Phase 0 merged (#178). Phase 1 spikes: go (#179). Phase 2 job store merged (#180). Phase 3 endpoint and bridge: `src/core/helperEndpoint.ts`, `helperDiscovery.ts`, `mcpBridge.ts`, `helperTools.ts`.
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -141,7 +141,7 @@ Acceptance:
 - HTTP endpoint on 127.0.0.1 only, random port, 32-byte random tokens.
 - Discovery file readable only by the current user where the OS allows it, removed on deactivate.
 - Calls are rate-capped and size-capped.
-- `dist/hydra-mcp.cjs`: the stdio MCP server. It depends on `@modelcontextprotocol/sdk`, bundled by esbuild, and forwards each call to the endpoint.
+- `dist/hydra-mcp.cjs`: the stdio MCP server, built from `src/hydraMcp.ts` and `src/core/mcpBridge.ts`. It forwards each call to the endpoint. It speaks newline-delimited JSON-RPC directly rather than using `@modelcontextprotocol/sdk`: that adds no dependency, and it was verified live against Claude Code CLI 2.1.270 and Codex CLI 0.154.0.
 
 Acceptance:
 - A wrong or missing token is refused.

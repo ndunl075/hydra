@@ -294,6 +294,9 @@ export class HelperService {
       this.active.set(job.id, active);
       run.onTurnEnd(() => { void this.turnEnded(job.id); });
       void run.exited.then(({ code }) => this.exited(job.id, code));
+      // A cancel (or Stop all) can land while the launch is still writing its state: the job
+      // then reads as running but had no process to stop. Honour it now.
+      if (finalJobStates.has(this.options.store.get(job.id)?.state ?? 'failed')) { void this.stopRun(job.id); return; }
       this.options.log?.(`[helpers] ${job.id} started (${job.provider}) in ${created.worktree}`);
     } catch (error) {
       if (token) this.options.endpoint.revokeJob(job.id);

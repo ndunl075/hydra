@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23. Phases 0–4 merged (#178–#182). Phase 5 connecting Claude Code and Codex built and verified live (see "As built" under Phase 5).
+Status: decisions made 2026-09-23. Phases 0–5 merged (#178–#183). Phase 6 dashboard built and the plan's end-to-end test passed for both providers (see "As built" under Phase 6).
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -215,6 +215,14 @@ Acceptance:
 - End to end in the probe with the scratch repo: the lead in the Claude extension starts two helpers, waits, gets both results and merges them itself with git.
 - The same with Codex.
 
+**As built (Phase 6):**
+- The lead actions (`hydra_start_helper`, `hydra_wait_for_helpers`, `hydra_get_helper`, `hydra_list_helpers`, `hydra_reply_to_helper`, `hydra_cancel_helper`) live in `helperService` and are tested there.
+- The Agents view shows a **Helpers** dashboard (`webview/HelperDashboard.tsx`). Each helper shows its state ("Needs an answer" when blocked), progress or question, summary, number of changed files, check results and commit.
+- Dashboard actions: **Review changes** (a diff document naming the branch to merge), **Open log**, **Cancel**, and **Stop all**.
+- **Verified live 2026-09-24** in a probe of the built app:
+  - **Claude:** in the real Claude Code extension, a new session started two helpers in parallel, waited, and merged both branches into `main` with git.
+  - **Codex:** a Codex lead (`codex exec`, the same engine as the extension, whose first-run screen can't be automated) started two Codex helpers, waited, and merged both, in 104s.
+  - Both providers were connected and disconnected from Hydra Settings, and the configs were restored exactly.
 ### Phase 7: remove the old pipeline
 **Sonnet, after Phase 6 has been used for real for a while.**
 - Delete the planner suffix and marker ingestion, the orchestration journal, the receipt and wake chain, and the six test-only modules, together with their docs.

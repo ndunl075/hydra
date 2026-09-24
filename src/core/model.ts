@@ -89,8 +89,15 @@ export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
 export interface DelegationPlanView { runId: string; id: string; rationale: string; mode: 'solo' | 'auto'; decision: 'solo' | 'delegate'; children: { key: string; goal: string; provider: Provider; writeScope: string[]; dependencies: string[]; brief: string }[] }
+/** One Hydra helper as the dashboard shows it (docs/Official_Extensions_Plan.md, Phase 6). */
+export interface HelperJobView {
+  id: string; title: string; state: string; provider: Provider; createdAt: string; finishedAt?: string;
+  progress?: string; question?: string; reason?: string; branch?: string; commit?: string; summary?: string;
+  changedFiles: number; checks: { id: string; passed: boolean }[];
+}
 export interface Snapshot {
   capacity?: CapacityView;
+  helpers?: HelperJobView[];
   /** Current selected child only; stale historical decisions are never presented as current. */
   parentReview?: { decision: ParentReviewDecision; reviewedAt: string; reason: string };
   resources?: Record<string, ResourceView>;
@@ -145,6 +152,8 @@ export type ClientMessage =
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'openFile'; id: string; path: string }
   | { type: 'openDiff'; id: string; path: string; layer: DiffLayer }
+  | { type: 'helperReview' | 'helperLog' | 'helperCancel'; jobId: string }
+  | { type: 'helperStopAll' }
   | { type: 'prepareCommitReview'; id: string }
   | { type: 'prepareDiscard' | 'restoreDiscarded' | 'copyDiscardLocation'; id: string }
   | { type: 'confirmDiscard'; id: string; token: string }
@@ -167,6 +176,11 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel') {
+    const jobId = string('jobId'); if (!/^[a-f0-9]{12}$/.test(jobId)) throw new Error('Invalid helper job ID.');
+    return { type, jobId };
+  }
+  if (type === 'helperStopAll') return { type };
   if (type === 'supplyDelegationContext' || type === 'reviewDelegationResult') {
     const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     if (type === 'supplyDelegationContext') { const requestKey = string('requestKey'); if (!/^[a-f0-9]{24}$/.test(requestKey)) throw new Error('Invalid context request.'); return { type, id, requestKey }; }

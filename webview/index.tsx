@@ -8,6 +8,7 @@ import { BudgetControls } from './BudgetControls';
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentMap } from './AgentMap';
+import { HelperDashboard } from './HelperDashboard';
 import { BriefFields, PromptPreview, TaskContext, UsagePanel } from './TaskContext';
 import { buildTaskPrompt, emptyBrief } from '../src/core/taskContext';
 import { ModelControls } from './ModelControls';
@@ -164,6 +165,7 @@ function App() {
       <button className="icon-button" title="Hydra settings" aria-label="Hydra settings" onClick={() => send({ type: 'settings' })}>···</button>
     </header>
     {!snapshot.handoff && snapshot.tasks.some(task => task.state !== 'discarded') && <AgentMap snapshot={{ ...snapshot, tasks: snapshot.tasks.filter(task => task.state !== 'discarded') }} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} eventRuns={Object.values(snapshot.delegationOrchestration || {}).map(journal => journal.events)} />}
+    {!snapshot.handoff && <HelperDashboard helpers={snapshot.helpers || []} busy={snapshot.busy} send={send} />}
     <div className="workspace">
       <aside className="task-rail" aria-label="Tasks">
         <div className="rail-header"><h1>Tasks <span>{snapshot.tasks.length}</span></h1><button className="icon-button" disabled={!!snapshot.handoff} aria-label="New task" title="New task" onClick={() => setCreating(true)}><Icon name="plus" /></button></div>

@@ -684,6 +684,23 @@ class Manager {
       }
     }
   }
+  /** Dashboard actions: review a helper's changes as a diff, open its log, or cancel it. */
+  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel', jobId: string): Promise<void> {
+    const helpers = this.helpers;
+    const job = helpers?.store.get(jobId);
+    if (!helpers || !job) throw new Error('That helper is not in this window.');
+    if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_helper', { job_id: jobId, reason: 'Cancelled from the helper dashboard.' }, new AbortController().signal); return; }
+    if (action === 'helperLog') {
+      const log = path.join(this.storageDirectory, 'helpers', 'logs', `${jobId}.jsonl`);
+      await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true, viewColumn: vscode.ViewColumn.Beside });
+      return;
+    }
+    if (!job.worktree || !job.baseCommit) throw new Error('This helper has no changes yet.');
+    const head = job.result?.commit || (await git(job.worktree, ['rev-parse', 'HEAD'])).trim();
+    const diff = await git(job.worktree, ['diff', '--stat', '--patch', '--no-color', job.baseCommit, head, '--']);
+    const document = await vscode.workspace.openTextDocument({ language: 'diff', content: `# ${job.title} (Hydra helper ${job.id})\n# ${job.branch} ${job.baseCommit.slice(0, 12)}..${head.slice(0, 12)}\n# Merge it yourself with git when you're happy: git merge ${job.branch}\n\n${diff || '(no changes)'}` });
+    await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+  }
   private async stopHelpers(): Promise<void> {
     const helpers = this.helpers; this.helpers = undefined;
     if (!helpers) return;
@@ -1106,6 +1123,12 @@ class Manager {
       usage: { ...usageSnapshot(this.tasks, id => this.managed.view(id)), delegationRuns: Object.fromEntries(this.tasks.filter(task => !task.delegation).map(task => [task.id, delegationRunUsage(task.id, this.tasks, id => this.managed.view(id))])) },
       budgets: this.budgetSnapshot(),
       delegation: this.delegationPreferences(),
+      helpers: this.helpers?.service.list().map(job => ({
+        id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
+        progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
+        branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
+        checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
+      })).reverse(),
       delegationPlans: Object.fromEntries(this.delegationPlans),
       delegationOrchestration,
       delegationRunAccounting,
@@ -1199,6 +1222,8 @@ class Manager {
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'newTask') { await vscode.commands.executeCommand('hydra.newTask'); return; }
+    if (message.type === 'helperStopAll') { await vscode.commands.executeCommand('hydra.stopAllHelpers'); return; }
+    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel') { await this.helperAction(message.type, message.jobId); return; }
     // A reply draft changes on every keystroke. The typing panel gets its own ack
     // (conversationDraftAck) and send-time validation reads the draft map, which
     // updates here immediately; the publish only carries the draft to the other

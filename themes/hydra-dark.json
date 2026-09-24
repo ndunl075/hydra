@@ -3,6 +3,7 @@
   "name": "Hydra Dark",
   "type": "dark",
   "colors": {
+    "foreground": "#F0F0F0",
     "editorGutter.addedBackground": "#3FA266", "editorGutter.deletedBackground": "#E34671", "editorGutter.modifiedBackground": "#D2943E",
     "gitDecoration.addedResourceForeground": "#70B489", "gitDecoration.deletedResourceForeground": "#FC6B83", "gitDecoration.ignoredResourceForeground": "#F0F0F099",
     "gitDecoration.modifiedResourceForeground": "#F1B467", "gitDecoration.untrackedResourceForeground": "#88C0D0", "list.deemphasizedForeground": "#F0F0F0BD",

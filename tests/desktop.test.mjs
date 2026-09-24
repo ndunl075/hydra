@@ -316,6 +316,9 @@ test('the title bar app icon is the Hydra logo, sidebar file icons are a little 
   assert.match(branded, /background-position: calc\(50% \+ 2px\) center;/, 'nudged a hair right');
   assert.throws(() => brandedTitlebarIcon(css.replace('16px', '20px')), /title bar app icon changed/);
   assert.match(brandedSidebarCss('.monaco-workbench .part.sidebar {}'), /\.part\.sidebar \.monaco-list \.monaco-icon-label::before \{ background-size: 14px/);
+  const chrome = brandedSidebarCss('.monaco-workbench .part.sidebar {}');
+  assert.match(chrome, /\.pane-header \.actions \.action-label\.codicon \{ color: inherit !important; \}/, 'header buttons take the section title colour, as in Cursor');
+  assert.match(chrome, /\.monaco-tl-twistie\.codicon::before \{ font-size: 11px;/, 'compact folder chevrons');
 });
 
 test('the classic codicon font replaces only the exact pinned font it was made from', async () => {

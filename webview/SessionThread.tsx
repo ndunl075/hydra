@@ -5,7 +5,7 @@ import { pendingSchedule } from '../src/core/scheduler';
 import { TurnModelLabel } from './ModelControls';
 import { HydraMark } from './HydraMark';
 import { ComposerIcon } from './ComposerIcons';
-import { withoutPlannerSuffix } from '../src/core/plannerSuffix';
+import { withoutPlannerMarker, withoutPlannerSuffix } from '../src/core/plannerSuffix';
 import type { ModelCatalog } from '../src/core/modelSelection';
 import type { Provider, ProviderInfo } from '../src/core/model';
 import { canEditBrief, emptyBrief } from '../src/core/taskContext';
@@ -55,20 +55,44 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compact, prompt]);
   const running = task.state === 'running' || !!session.active;
+  const turnCount = session.totalTurns || session.turns.length;
+  // A send in flight: shown at once, cleared when its turn appears. If no turn
+  // appears and nothing is running after a while, the send failed (the host
+  // reports why); the typed text goes back in the box.
+  const [sending, setSending] = useState<{ prompt: string; turns: number; at: number } | null>(null);
+  useEffect(() => {
+    if (!sending) return;
+    if (turnCount > sending.turns || running && !sending.prompt) { setSending(null); return; }
+    const timer = setTimeout(() => {
+      if (running) return;
+      if (sending.prompt && !prompt.trim()) setPrompt(sending.prompt);
+      setSending(null);
+    }, 12000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sending, turnCount, running]);
   // Before the first launch the box is not dead: what is typed extends the task's
   // first message (the brief is still editable then), and send starts the task.
   // saveBrief updates the prompt synchronously on receipt, so the start that
   // follows it reads the extended message.
   const submitCompact = () => {
     if (blocked) return;
-    if (retryable) { send({ type: 'retryBlocked', id: task.id }); return; }
-    if (task.sessionId) { if (prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); return; }
+    if (retryable) { send({ type: 'retryBlocked', id: task.id }); setSending({ prompt: '', turns: turnCount, at: Date.now() }); return; }
+    if (task.sessionId) {
+      if (!prompt.trim()) return;
+      send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version });
+      // Show the message and a working state now, as the provider's own panel
+      // does; the host takes a few seconds to start the provider process.
+      setSending({ prompt, turns: turnCount, at: Date.now() }); setPrompt('');
+      return;
+    }
     if (prompt.trim()) {
       const base = task.brief || { ...emptyBrief(), goal: task.prompt };
       send({ type: 'saveBrief', id: task.id, brief: { ...base, goal: `${base.goal.trim()}\n\n${prompt.trim()}` } });
       setPrompt('');
     }
     send({ type: 'startManaged', id: task.id });
+    setSending({ prompt: '', turns: turnCount, at: Date.now() });
   };
   // Only these make a reply impossible; while a turn runs or the host is busy you
   // can still click in and type (as in the provider's own panel), only Send waits.
@@ -76,14 +100,14 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
   // A launch that failed at startup leaves its schedule blocked. Send then
   // retries that same launch instead of sitting disabled with only Cancel.
   const retryable = task.schedule?.state === 'blocked' && !!task.schedule.request && !task.schedule.uncertain && !task.delegation && !running && !cannotReply;
-  const blocked = busy || (pendingSchedule(task) && !retryable) || !available || running || cannotReply;
+  const blocked = busy || !!sending || (pendingSchedule(task) && !retryable) || !available || running || cannotReply;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>
     {!session.turns.length && <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
     {(session.totalTurns || session.turns.length) > 10 && <p className="quiet">Showing the latest ten turns. Full conversation and process events remain in local storage.</p>}
     {session.turns.slice(-10).map(turn => <React.Fragment key={turn.id}>
       <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={turn.createdAt}>{new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>}<p className="prompt-text">{withoutPlannerSuffix(turn.prompt)}</p></article>
-      <article className="message assistant-message">{!compact && <div className="message-author"><HydraMark className="avatar hydra-avatar" /><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div>}{compact && turn.status !== 'completed' && <span className="turn-status">{turn.status}</span>}<p className="prompt-text">{turn.text || (turn.status === 'running' ? 'Waiting for provider output…' : 'No response text returned.')}</p>
+      <article className="message assistant-message">{!compact && <div className="message-author"><HydraMark className="avatar hydra-avatar" /><strong>{providerName(turn.provider || 'claude')}</strong><span className="local-tag">{turn.status === 'completed' ? 'TURN FINISHED' : turn.status.toUpperCase()}</span></div>}{compact && turn.status !== 'completed' && <span className="turn-status">{turn.status}</span>}{withoutPlannerMarker(turn.text || '') ? <p className="prompt-text">{withoutPlannerMarker(turn.text || '')}</p> : turn.status === 'running' ? <WorkingIndicator label="Thinking" /> : <p className="prompt-text">No response text returned.</p>}
         {(!compact || turn.modelSettings?.rerouted) && <TurnModelLabel turn={turn} />}
         {turn.error && <p className="session-error" role="status">{turn.error}</p>}
         {turn.textTruncated && <p className="session-note">Showing the first 50,000 characters here. Full output is retained in local raw diagnostics; model context is unchanged.</p>}
@@ -91,6 +115,10 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
         {turn.usage && !compact && <p className="session-note">{turn.provider === 'codex' ? 'Latest model response (not a turn total)' : 'Provider result'} tokens: {turn.usage.input.toLocaleString()} input · {turn.usage.output.toLocaleString()} output{turn.usage.cacheRead !== undefined && ` · ${turn.usage.cacheRead.toLocaleString()} cache read`}{turn.usage.cacheCreated !== undefined && ` · ${turn.usage.cacheCreated.toLocaleString()} cache created`}{turn.usage.estimatedUsd !== undefined && ` · $${turn.usage.estimatedUsd.toFixed(4)} provider estimate, not your bill`}</p>}
       </article>
     </React.Fragment>)}
+    {sending && turnCount <= sending.turns && <>
+      {sending.prompt && <article className={compact ? 'message user-card' : 'message'}><p className="prompt-text">{sending.prompt}</p></article>}
+      <article className="message assistant-message"><WorkingIndicator label={`Starting ${providerName(task.provider)}`} /></article>
+    </>}
     {session.approvals?.map(approval => <article key={approval.id} className="approval-request" aria-label={`${approval.kind} approval`}>
       <div className="section-label">{approval.kind.toUpperCase()} APPROVAL</div><p>Review this request before allowing {providerName(task.provider)} to proceed. This grants only the displayed request.</p><pre>{approval.detail}</pre>
       <div className="task-actions"><button className="stop-button" disabled={!running} onClick={() => send({ type: 'approve', id: task.id, approvalId: approval.id, decision: 'decline' })}>Decline</button><button className="secondary" disabled={!running} onClick={() => send({ type: 'approve', id: task.id, approvalId: approval.id, decision: 'accept' })}>Allow this request</button></div>
@@ -110,7 +138,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
           <div className="task-prompt-toolbar-group">
             <button type="button" className="composer-icon-button" aria-label="Attach context" title="Attach a file to this reply" disabled={blocked} onClick={() => send({ type: 'attachContext' })}><ComposerIcon name="plus" /></button>
             <ContextRing usage={latestContextUsage(session.turns)} />
-            <ModelPicker selection={task.modelSelection || null} provider={task.provider} catalogs={composer?.catalogs || {}} providers={composer?.providers || []} busy={busy} send={send} locked={editable ? undefined : locked}
+            <ModelPicker selection={task.modelSelection || null} effective={[...session.turns].reverse().find(turn => turn.modelSettings?.effective)?.modelSettings?.effective} provider={task.provider} catalogs={composer?.catalogs || {}} providers={composer?.providers || []} busy={busy} send={send} locked={editable ? undefined : locked}
               onSelect={(selection, provider) => send({ type: 'saveProviderSelection', id: task.id, provider, selection })} />
             <DelegationModePicker mode={composer?.delegationMode || 'solo'} send={send} />
           </div>
@@ -131,4 +159,9 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
       <button className="secondary" type="button" disabled={busy} onClick={() => send({ type: 'showSessionDiagnostics', id: task.id })}>Raw diagnostics</button>
     </form>}
   </div>;
+}
+
+/** An animated "working" line, shown the moment a send is made. */
+function WorkingIndicator({ label }: { label: string }) {
+  return <p className="working-indicator" role="status"><span className="working-dot" aria-hidden="true" />{label}…</p>;
 }

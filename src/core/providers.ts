@@ -1,4 +1,4 @@
-import { access, realpath } from 'node:fs/promises';
+import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import type { Provider, ProviderInfo } from './model';
@@ -21,4 +21,14 @@ export function terminalLaunch(executable: string): { shellPath: string; shellAr
     return { shellPath, shellArgs: ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] };
   }
   return { shellPath: executable, shellArgs: [] };
+}
+
+/**
+ * Identifies one exact binary on disk. Any replacement or in-place update changes
+ * its size, modification or change time, so a probe result keyed by this is never
+ * reused for a different binary.
+ */
+export async function executableFingerprint(executable: string): Promise<string> {
+  const info = await stat(executable);
+  return `${executable}|${info.size}|${info.mtimeMs}|${info.ctimeMs}`;
 }

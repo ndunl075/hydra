@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { preferenceOnlySettings, settingsRequiringRefresh } from '../src/core/settingsRefresh';
 
-test('only preferences read fresh (the helper cap) skip the provider reset; every other Hydra setting refreshes', async () => {
+test('only preferences read fresh (the head cap) skip the provider reset; every other Hydra setting refreshes', async () => {
   const manifest = JSON.parse(await readFile('package.json', 'utf8'));
   const contributed = [manifest.contributes.configuration].flat().flatMap((section: { properties?: Record<string, unknown> }) => Object.keys(section.properties || {}));
   const refreshing = settingsRequiringRefresh(contributed);

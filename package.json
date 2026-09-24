@@ -112,7 +112,7 @@
       },
       {
         "command": "hydra.stopAllHelpers",
-        "title": "Hydra: Stop All Helpers"
+        "title": "Hydra: Stop All Heads"
       }
     ],
     "keybindings": [
@@ -244,7 +244,7 @@
           "minimum": 1,
           "maximum": 8,
           "default": 3,
-          "description": "Maximum Hydra helpers running at once in this window. More wait in a queue."
+          "description": "Maximum Hydra heads running at once in this window. More wait in a queue."
         }
       }
     }

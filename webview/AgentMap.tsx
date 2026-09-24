@@ -7,7 +7,7 @@ const basename = (value: string) => value.split(/[\\/]/).filter(Boolean).at(-1) 
 const providerName = (task: Task) => task.provider === 'claude' ? 'Claude Code' : 'Codex';
 
 // Hydra helpers started by a Claude Code or Codex chat through Hydra's MCP tools
-// (docs/Helpers.md) are drawn beside tasks: same repository, their own worktree.
+// (docs/Heads.md) are drawn beside tasks: same repository, their own worktree.
 type Row = { kind: 'task'; task: Task } | { kind: 'helper'; helper: HelperJobView };
 const helperLabel: Record<string, string> = { queued: 'Queued', starting: 'Starting', running: 'Working', blocked: 'Needs an answer', checking: 'Checking', done: 'Done · merge it', failed: 'Failed', cancelled: 'Cancelled' };
 const helperActive = (helper: HelperJobView) => ['starting', 'running', 'checking'].includes(helper.state);
@@ -69,7 +69,7 @@ export function AgentMap({ snapshot, selectedId, onSelect, onHelper }: {
       <button className="agent-map-toggle" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded(value => !value)}>
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" aria-hidden="true"><path d={expanded ? 'm4 6 4 4 4-4' : 'm6 4 4 4-4 4'} /></svg>
         <span>Agent orchestration</span>
-        <span className="agent-map-count">{snapshot.tasks.length} {snapshot.tasks.length === 1 ? 'task' : 'tasks'}{helpers.length > 0 && ` · ${helpers.length} ${helpers.length === 1 ? 'helper' : 'helpers'}`}{running > 0 && ` · ${running} working`}</span>
+        <span className="agent-map-count">{snapshot.tasks.length} {snapshot.tasks.length === 1 ? 'task' : 'tasks'}{helpers.length > 0 && ` · ${helpers.length} ${helpers.length === 1 ? 'head' : 'heads'}`}{running > 0 && ` · ${running} working`}</span>
       </button>
       {expanded && <button className="agent-map-motion" aria-pressed={paused} onClick={() => setPaused(value => !value)}>{paused ? 'Resume motion' : 'Pause motion'}</button>}
     </div>
@@ -120,11 +120,11 @@ export function AgentMap({ snapshot, selectedId, onSelect, onHelper }: {
                       if (row.kind === 'helper') {
                         const helper = row.helper, status = helperLabel[helper.state] || helper.state, moving = helperActive(helper);
                         const attention = helper.state === 'blocked' || helper.state === 'failed';
-                        const name = helper.provider === 'claude' ? 'Claude helper' : 'Codex helper';
+                        const name = helper.provider === 'claude' ? 'Claude head' : 'Codex head';
                         return <li className={`agent-map-route agent-map-helper agent-map-provider-${helper.provider}${moving ? ' agent-map-route-running' : ''}`} key={helper.id} style={{ top: y - 32 }}>
                           <div className="agent-map-checkout" title={`${helper.branch || 'Worktree not created yet'}\n${helper.worktree || ''}`}>
                             <div className="agent-map-checkout-icon"><span className="agent-map-port agent-map-port-in" /><BranchIcon /><span className="agent-map-port agent-map-port-out" /></div>
-                            <code>{helper.branch || 'waiting to start'}</code><span className="agent-map-caption">Helper worktree</span>
+                            <code>{helper.branch || 'waiting to start'}</code><span className="agent-map-caption">Head worktree</span>
                           </div>
                           <button className="agent-map-task agent-map-helper-card" disabled={!helper.branch}
                             aria-label={`Review ${helper.title}, ${name}, ${status}${helper.branch ? `, branch ${helper.branch}` : ''}`}
@@ -170,7 +170,7 @@ export function AgentMap({ snapshot, selectedId, onSelect, onHelper }: {
       </div>
       <p className="agent-map-legend" id={legendId}>
         <span><span className="agent-map-line-key" aria-hidden="true" />Repository → worktree → agent</span>
-        <span>Helpers are started by your Claude or Codex chat; click one to review its changes. Arrows between helpers are dependencies.</span>
+        <span>Heads are started by your Claude or Codex chat; click one to review its changes. Arrows between heads are dependencies.</span>
       </p>
     </div>}
   </section>;

@@ -142,12 +142,12 @@ export class JobStore {
       await mkdir(this.directory, { recursive: true });
       let parsed: StoreFile = { version: 1, jobs: [] };
       try { parsed = parseStoreFile(JSON.parse(await readFile(this.file, 'utf8'))); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Hydra helper jobs could not be read: ${error instanceof Error ? error.message : String(error)}`); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Hydra head jobs could not be read: ${error instanceof Error ? error.message : String(error)}`); }
       this.jobs = new Map(parsed.jobs.map(job => [job.id, job]));
       this.loaded = true;
       let changed = false;
       for (const job of this.jobs.values()) {
-        if (job.state === 'starting' || job.state === 'running' || job.state === 'checking') { this.apply(job, 'failed', 'Hydra stopped while this helper was running.'); changed = true; }
+        if (job.state === 'starting' || job.state === 'running' || job.state === 'checking') { this.apply(job, 'failed', 'Hydra stopped while this head was running.'); changed = true; }
       }
       if (changed) await this.write();
       return this.list();
@@ -186,8 +186,8 @@ export class JobStore {
     return this.serialize(async () => {
       this.assertLoaded();
       const job = this.jobs.get(id);
-      if (!job) throw new Error(`Unknown helper job ${id}.`);
-      if (!canTransition(job.state, to)) throw new Error(`Helper job ${id} cannot go from ${job.state} to ${to}.`);
+      if (!job) throw new Error(`Unknown head job ${id}.`);
+      if (!canTransition(job.state, to)) throw new Error(`Head job ${id} cannot go from ${job.state} to ${to}.`);
       const previous = structuredClone(job);
       Object.assign(job, patch);
       this.apply(job, to, reason);
@@ -201,8 +201,8 @@ export class JobStore {
     return this.serialize(async () => {
       this.assertLoaded();
       const job = this.jobs.get(id);
-      if (!job) throw new Error(`Unknown helper job ${id}.`);
-      if (finalJobStates.has(job.state)) throw new Error(`Helper job ${id} is ${job.state}.`);
+      if (!job) throw new Error(`Unknown head job ${id}.`);
+      if (finalJobStates.has(job.state)) throw new Error(`Head job ${id} is ${job.state}.`);
       const previous = structuredClone(job);
       Object.assign(job, patch, { updatedAt: this.now().toISOString() });
       try { await this.write(); } catch (error) { this.jobs.set(id, previous); throw error; }
@@ -219,7 +219,7 @@ export class JobStore {
     job.state = to; job.updatedAt = at;
     if (reason !== undefined || finalJobStates.has(to)) job.reason = reason;
   }
-  private assertLoaded(): void { if (!this.loaded) throw new Error('Hydra helper jobs are not loaded yet.'); }
+  private assertLoaded(): void { if (!this.loaded) throw new Error('Hydra head jobs are not loaded yet.'); }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const run = this.queue.then(work, work);
     this.queue = run.catch(() => undefined);
@@ -244,7 +244,7 @@ export class JobStore {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         if (await this.clearStaleLock()) continue;
-        if (attempt >= 100) throw new Error('Hydra helper jobs are locked by another Hydra window.');
+        if (attempt >= 100) throw new Error('Hydra head jobs are locked by another Hydra window.');
         await new Promise(resolve => setTimeout(resolve, 20));
       }
     }
@@ -270,9 +270,9 @@ export function processAlive(pid: number): boolean {
 
 function parseStoreFile(value: unknown): StoreFile {
   const source = value as Partial<StoreFile>;
-  if (!source || source.version !== 1 || !Array.isArray(source.jobs)) throw new Error('Unsupported helper job store.');
+  if (!source || source.version !== 1 || !Array.isArray(source.jobs)) throw new Error('Unsupported head job store.');
   for (const job of source.jobs) {
-    if (!job || job.version !== 1 || typeof job.id !== 'string' || !/^[a-f0-9]{12}$/.test(job.id) || !jobStates.includes(job.state) || !Array.isArray(job.history)) throw new Error('A stored helper job is malformed.');
+    if (!job || job.version !== 1 || typeof job.id !== 'string' || !/^[a-f0-9]{12}$/.test(job.id) || !jobStates.includes(job.state) || !Array.isArray(job.history)) throw new Error('A stored head job is malformed.');
   }
   return { version: 1, jobs: source.jobs };
 }

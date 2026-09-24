@@ -224,7 +224,7 @@ class Manager {
     command('hydra.getCapacity', () => structuredClone(this.capacity.view(this.profileLimit())));
     command('hydra.stopAllHelpers', async () => {
       const stopped = await this.helpers?.service.stopAll() ?? 0;
-      void vscode.window.showInformationMessage(stopped ? `Stopped ${stopped} Hydra helper${stopped === 1 ? '' : 's'}.` : 'No Hydra helpers are running.');
+      void vscode.window.showInformationMessage(stopped ? `Stopped ${stopped} Hydra head${stopped === 1 ? '' : 's'}.` : 'No Hydra heads are running.');
       return stopped;
     });
     command('hydra.listHelpers', () => structuredClone(this.helpers?.service.list() ?? []));
@@ -354,7 +354,7 @@ class Manager {
       if (this.handoff) { await this.verifyHandoffWorkspace(); await this.openAgents(); }
     } catch (error) { this.disabled = true; this.report(error); }
     this.schedulerReady = true;
-    await this.startHelpers().catch(error => { this.output.appendLine(`[helpers] not started: ${this.describe(error)}`); });
+    await this.startHelpers().catch(error => { this.output.appendLine(`[heads] not started: ${this.describe(error)}`); });
     await this.publish();
     await this.scheduler.drain();
   }
@@ -388,13 +388,13 @@ class Manager {
       deniedAncestors: service?.helperProcessIds() ?? new Set<number>(),
     }));
     const endpoint = new HelperEndpoint(async (caller, tool, args, signal) => {
-      if (!service) throw new Error('Hydra helpers are still starting.');
+      if (!service) throw new Error('Hydra heads are still starting.');
       // Every action is logged, whoever calls it (plan, Phase 3 security note).
-      this.output.appendLine(`[helpers] ${caller.role}${caller.jobId ? ` ${caller.jobId}` : ''}: ${tool}`);
+      this.output.appendLine(`[heads] ${caller.role}${caller.jobId ? ` ${caller.jobId}` : ''}: ${tool}`);
       return service.handle(caller, tool, args, signal);
     }, { leadKey, verifyLead: async socket => {
       const verdict = await verifyLead(socket);
-      this.output.appendLine(`[helpers] lead connection ${verdict.ok ? 'accepted' : `refused: ${verdict.reason}`}`);
+      this.output.appendLine(`[heads] lead connection ${verdict.ok ? 'accepted' : `refused: ${verdict.reason}`}`);
       return verdict;
     } });
     const port = await endpoint.start();
@@ -409,7 +409,7 @@ class Manager {
     await service.recover();
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
     this.helpers = { store, endpoint, service, record };
-    this.output.appendLine(`[helpers] ready for ${leadFolder}`);
+    this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
   }
   // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
@@ -439,7 +439,7 @@ class Manager {
     try { await vscode.commands.executeCommand('workbench.extensions.installExtension', id); }
     catch (error) {
       if (!/gallery/i.test(this.describe(error))) throw error;
-      this.output.appendLine(`[helpers] no extension gallery; installing ${id} from Open VSX`);
+      this.output.appendLine(`[heads] no extension gallery; installing ${id} from Open VSX`);
       await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(await downloadOpenVsx(id)));
     }
   }
@@ -456,14 +456,14 @@ class Manager {
       const claude = await this.claudeForRegistration();
       if (!claude) throw new Error('Install the Claude Code extension or CLI first; Hydra connects through it.');
       await connectClaude(claude, paths, spec);
-      this.output.appendLine('[helpers] connected claude to Hydra');
+      this.output.appendLine('[heads] connected claude to Hydra');
       try {
         const memory = await setupClaudeMem(claude);
-        if (memory.installed.length) this.output.appendLine(`[helpers] set up ${memory.installed.join(' and ')} for claude-mem`);
+        if (memory.installed.length) this.output.appendLine(`[heads] set up ${memory.installed.join(' and ')} for claude-mem`);
         return undefined;
-      } catch (error) { this.output.appendLine(`[helpers] claude-mem setup failed: ${this.describe(error)}`); return `Connected, but claude-mem could not be set up: ${this.describe(error)}`; }
+      } catch (error) { this.output.appendLine(`[heads] claude-mem setup failed: ${this.describe(error)}`); return `Connected, but claude-mem could not be set up: ${this.describe(error)}`; }
     } else throw new Error('Unknown provider.');
-    this.output.appendLine(`[helpers] connected ${provider} to Hydra`);
+    this.output.appendLine(`[heads] connected ${provider} to Hydra`);
     return undefined;
   }
   private async disconnectHelpers(provider: ConnectableProvider): Promise<void> {
@@ -471,13 +471,13 @@ class Manager {
     if (provider === 'codex') await disconnectCodex(paths.codexConfig);
     else if (provider === 'claude') await disconnectClaude(await this.claudeForRegistration(), paths);
     else throw new Error('Unknown provider.');
-    this.output.appendLine(`[helpers] disconnected ${provider} from Hydra`);
+    this.output.appendLine(`[heads] disconnected ${provider} from Hydra`);
   }
   /** A connection made by an older Hydra (a different executable path) is refreshed; nothing is connected here that the user didn't connect. */
   private async refreshHelperConnections(): Promise<void> {
     for (const connection of await this.helperConnections()) {
       if (connection.connected && !connection.current && !connection.error) {
-        await this.connectHelpers(connection.provider).catch(error => this.output.appendLine(`[helpers] could not refresh ${connection.provider}: ${this.describe(error)}`));
+        await this.connectHelpers(connection.provider).catch(error => this.output.appendLine(`[heads] could not refresh ${connection.provider}: ${this.describe(error)}`));
       }
     }
   }
@@ -485,17 +485,17 @@ class Manager {
   private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel', jobId: string): Promise<void> {
     const helpers = this.helpers;
     const job = helpers?.store.get(jobId);
-    if (!helpers || !job) throw new Error('That helper is not in this window.');
-    if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_helper', { job_id: jobId, reason: 'Cancelled from the helper dashboard.' }, new AbortController().signal); return; }
+    if (!helpers || !job) throw new Error('That head is not in this window.');
+    if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason: 'Cancelled from the head dashboard.' }, new AbortController().signal); return; }
     if (action === 'helperLog') {
       const log = path.join(this.storageDirectory, 'helpers', 'logs', `${jobId}.jsonl`);
       await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true, viewColumn: vscode.ViewColumn.Beside });
       return;
     }
-    if (!job.worktree || !job.baseCommit) throw new Error('This helper has no changes yet.');
+    if (!job.worktree || !job.baseCommit) throw new Error('This head has no changes yet.');
     const head = job.result?.commit || (await git(job.worktree, ['rev-parse', 'HEAD'])).trim();
     const diff = await git(job.worktree, ['diff', '--stat', '--patch', '--no-color', job.baseCommit, head, '--']);
-    const document = await vscode.workspace.openTextDocument({ language: 'diff', content: `# ${job.title} (Hydra helper ${job.id})\n# ${job.branch} ${job.baseCommit.slice(0, 12)}..${head.slice(0, 12)}\n# Merge it yourself with git when you're happy: git merge ${job.branch}\n\n${diff || '(no changes)'}` });
+    const document = await vscode.workspace.openTextDocument({ language: 'diff', content: `# ${job.title} (Hydra head ${job.id})\n# ${job.branch} ${job.baseCommit.slice(0, 12)}..${head.slice(0, 12)}\n# Merge it yourself with git when you're happy: git merge ${job.branch}\n\n${diff || '(no changes)'}` });
     await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.Beside });
   }
   private async stopHelpers(): Promise<void> {

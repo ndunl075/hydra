@@ -12,7 +12,7 @@ import type { Provider } from './model';
  * Hydra helpers, end to end (docs/Official_Extensions_Plan.md, Phases 4 and 6).
  * Every action from the endpoint lands here. Hydra's code, not a model, drives the
  * chain: start the helper, enforce its limits, check its work when it reports, and
- * hand the result back to the lead through hydra_wait_for_helpers.
+ * hand the result back to the lead through hydra_wait_for_heads.
  */
 export interface HelperCheck { id: string; command: string[]; timeoutSeconds: number; required: boolean }
 export interface HelperServiceOptions {
@@ -59,7 +59,7 @@ export class HelperService {
   /** After a restart no helper process survives, so a helper that was waiting for an answer can't continue. */
   async recover(): Promise<void> {
     for (const job of this.options.store.list(this.options.leadKey)) {
-      if (job.state === 'blocked') await this.options.store.transition(job.id, 'failed', 'Hydra restarted while this helper was waiting for an answer.').catch(() => {});
+      if (job.state === 'blocked') await this.options.store.transition(job.id, 'failed', 'Hydra restarted while this head was waiting for an answer.').catch(() => {});
     }
     this.changed();
     void this.dispatch();
@@ -70,12 +70,12 @@ export class HelperService {
     if (caller.leadKey !== this.options.leadKey) throw new Error('This Hydra window does not own that caller.');
     if (caller.role === 'lead') {
       switch (tool) {
-        case 'hydra_start_helper': return this.startHelper(args);
-        case 'hydra_wait_for_helpers': return this.waitForHelpers(args, signal);
-        case 'hydra_get_helper': return this.describe(this.ownJob(args.job_id), true);
-        case 'hydra_list_helpers': return { helpers: this.options.store.list(this.options.leadKey).map(job => this.describe(job, false)) };
-        case 'hydra_reply_to_helper': return this.reply(args);
-        case 'hydra_cancel_helper': return this.cancel(this.ownJob(args.job_id).id, typeof args.reason === 'string' ? clip(args.reason, 500) : 'Cancelled by the lead.');
+        case 'hydra_start_head': return this.startHelper(args);
+        case 'hydra_wait_for_heads': return this.waitForHelpers(args, signal);
+        case 'hydra_get_head': return this.describe(this.ownJob(args.job_id), true);
+        case 'hydra_list_heads': return { heads: this.options.store.list(this.options.leadKey).map(job => this.describe(job, false)) };
+        case 'hydra_reply_to_head': return this.reply(args);
+        case 'hydra_cancel_head': return this.cancel(this.ownJob(args.job_id).id, typeof args.reason === 'string' ? clip(args.reason, 500) : 'Cancelled by the lead.');
       }
     } else {
       const jobId = caller.jobId!;
@@ -92,7 +92,7 @@ export class HelperService {
   helperProcessIds(): ReadonlySet<number> { return this.helperPids; }
   get leadFolder(): string { return this.options.leadFolder; }
 
-  async stopAll(reason = 'Stopped with "Stop all helpers".'): Promise<number> {
+  async stopAll(reason = 'Stopped with "Stop all heads".'): Promise<number> {
     const open = this.list().filter(job => !finalJobStates.has(job.state));
     await Promise.all(open.map(job => this.cancel(job.id, reason).catch(() => undefined)));
     return open.length;
@@ -102,8 +102,8 @@ export class HelperService {
   async dispose(): Promise<void> {
     this.disposed = true; clearInterval(this.watchdog);
     await this.dispatchRun.catch(() => undefined);
-    await Promise.all([...this.active.keys()].map(id => this.finish(id, 'failed', 'The Hydra window closed while this helper was running.').catch(() => undefined)));
-    for (const job of this.list()) if (job.state === 'queued') await this.options.store.transition(job.id, 'failed', 'The Hydra window closed before this helper started.').catch(() => undefined);
+    await Promise.all([...this.active.keys()].map(id => this.finish(id, 'failed', 'The Hydra window closed while this head was running.').catch(() => undefined)));
+    for (const job of this.list()) if (job.state === 'queued') await this.options.store.transition(job.id, 'failed', 'The Hydra window closed before this head started.').catch(() => undefined);
     this.changed();
   }
 
@@ -112,7 +112,7 @@ export class HelperService {
   private async startHelper(args: Record<string, unknown>) {
     const input = parseJobInput(args);
     const open = this.list().filter(job => !finalJobStates.has(job.state)).length;
-    if (open >= 16) throw new Error('This window already has 16 unfinished helpers. Wait for some to finish or cancel them.');
+    if (open >= 16) throw new Error('This window already has 16 unfinished heads. Wait for some to finish or cancel them.');
     const head = (await git(this.options.leadFolder, ['rev-parse', 'HEAD'])).trim();
     const dirty = (await git(this.options.leadFolder, ['status', '--porcelain=v1', '--untracked-files=no'])).trim();
     const { job, created } = await this.options.store.create(this.options.leadKey, input);
@@ -122,13 +122,13 @@ export class HelperService {
     return {
       job_id: job.id, state: job.state, created,
       base_commit: created ? head : job.baseCommit,
-      ...(created && dirty ? { warning: 'Your folder has uncommitted changes. The helper starts from the last commit and will not see them; commit first if it needs them.' } : {}),
+      ...(created && dirty ? { warning: 'Your folder has uncommitted changes. The head starts from the last commit and will not see them; commit first if it needs them.' } : {}),
     };
   }
 
   private async waitForHelpers(args: Record<string, unknown>, signal: AbortSignal) {
     const ids = args.job_ids;
-    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 16) throw new Error('job_ids must list 1–16 helper job ids.');
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 16) throw new Error('job_ids must list 1–16 head job ids.');
     const jobs = ids.map(id => this.ownJob(id));
     const maxWait = Math.max(1, Math.min(3000, typeof args.max_wait_s === 'number' ? args.max_wait_s : 1800)) * 1000;
     const settled = () => jobs.every(job => { const current = this.options.store.get(job.id)!; return finalJobStates.has(current.state) || current.state === 'blocked'; });
@@ -141,14 +141,14 @@ export class HelperService {
       });
     }
     const current = jobs.map(job => this.describe(this.options.store.get(job.id)!, true));
-    return { all_settled: settled(), helpers: current };
+    return { all_settled: settled(), heads: current };
   }
 
   private async reply(args: Record<string, unknown>) {
     const job = this.ownJob(args.job_id);
     if (typeof args.message !== 'string' || !args.message.trim() || args.message.length > 8000) throw new Error('message must be 1–8000 characters.');
     const active = this.active.get(job.id);
-    if (job.state !== 'blocked' || !active?.answer) throw new Error(`Helper ${job.id} is not waiting for an answer (it is ${job.state}).`);
+    if (job.state !== 'blocked' || !active?.answer) throw new Error(`Head ${job.id} is not waiting for an answer (it is ${job.state}).`);
     await this.options.store.update(job.id, { replies: [...job.replies, { at: new Date(this.now()).toISOString(), message: args.message }] });
     active.answer(args.message);
     return { job_id: job.id, delivered: true };
@@ -168,13 +168,13 @@ export class HelperService {
 
   private async done(jobId: string, args: Record<string, unknown>) {
     const job = this.options.store.get(jobId);
-    if (!job || job.state !== 'running') throw new Error(`This helper can't report done while it is ${job?.state ?? 'unknown'}.`);
+    if (!job || job.state !== 'running') throw new Error(`This head can't report done while it is ${job?.state ?? 'unknown'}.`);
     if (typeof args.summary !== 'string' || !args.summary.trim()) throw new Error('summary is required.');
     const summary = clip(args.summary.trim(), 8000);
     const worktree = job.worktree!, base = job.baseCommit!;
     // Hydra commits whatever the helper left uncommitted. Codex's Windows sandbox
     // can't write a worktree's .git metadata, so a helper may be unable to commit.
-    if ((await git(worktree, ['status', '--porcelain=v1', '--untracked-files=all'])).trim()) await commitAll(worktree, `${job.title} (Hydra helper ${job.id})`);
+    if ((await git(worktree, ['status', '--porcelain=v1', '--untracked-files=all'])).trim()) await commitAll(worktree, `${job.title} (Hydra head ${job.id})`);
     const commit = (await git(worktree, ['rev-parse', 'HEAD'])).trim();
     if (commit === base) return { accepted: false, message: 'You have not changed anything yet. Make the changes, then call hydra_done again.' };
     const changedFiles = (await git(worktree, ['diff', '--name-only', '-z', '--no-renames', base, commit, '--'])).split('\0').filter(Boolean);
@@ -208,7 +208,7 @@ export class HelperService {
 
   private async stuck(jobId: string, args: Record<string, unknown>, signal: AbortSignal) {
     const job = this.options.store.get(jobId), active = this.active.get(jobId);
-    if (!job || job.state !== 'running' || !active) throw new Error(`This helper can't ask a question while it is ${job?.state ?? 'unknown'}.`);
+    if (!job || job.state !== 'running' || !active) throw new Error(`This head can't ask a question while it is ${job?.state ?? 'unknown'}.`);
     const reason = typeof args.reason === 'string' && args.reason.trim() ? clip(args.reason.trim(), 2000) : 'Blocked.';
     const question = typeof args.question === 'string' && args.question.trim() ? clip(args.question.trim(), 2000) : reason;
     await this.options.store.transition(jobId, 'blocked', reason, { question });
@@ -221,7 +221,7 @@ export class HelperService {
     active.answer = undefined;
     if (active.blockedSince !== undefined) { active.blockedTotal += this.now() - active.blockedSince; active.blockedSince = undefined; }
     const current = this.options.store.get(jobId)!;
-    if (answer === undefined || current.state !== 'blocked') return { answered: false, message: 'No answer is coming: this helper was stopped. Stop now.' };
+    if (answer === undefined || current.state !== 'blocked') return { answered: false, message: 'No answer is coming: this head was stopped. Stop now.' };
     await this.options.store.transition(jobId, 'running', 'The lead answered.', { question: undefined });
     this.changed();
     return { answered: true, answer };
@@ -229,7 +229,7 @@ export class HelperService {
 
   private async progress(jobId: string, args: Record<string, unknown>) {
     const job = this.options.store.get(jobId);
-    if (!job || finalJobStates.has(job.state)) throw new Error('This helper is finished.');
+    if (!job || finalJobStates.has(job.state)) throw new Error('This head is finished.');
     if (typeof args.note !== 'string') throw new Error('note is required.');
     await this.options.store.update(jobId, { progress: clip(args.note.trim(), 500) });
     this.changed();
@@ -252,7 +252,7 @@ export class HelperService {
       while (this.dispatchAgain && !this.disposed) {
         this.dispatchAgain = false;
         try { await this.dispatchQueued(); }
-        catch (error) { this.options.log?.(`[helpers] dispatch: ${error instanceof Error ? error.message : String(error)}`); }
+        catch (error) { this.options.log?.(`[heads] dispatch: ${error instanceof Error ? error.message : String(error)}`); }
       }
     } finally { this.dispatching = false; }
   }
@@ -270,7 +270,7 @@ export class HelperService {
           if (dependencies.some(dependency => dependency!.state !== 'done')) continue;
           if (this.disposed || this.active.size >= Math.max(1, this.options.maxConcurrent())) continue;
           await this.launch(job);
-        } catch (error) { this.options.log?.(`[helpers] ${job.id}: ${error instanceof Error ? error.message : String(error)}`); }
+        } catch (error) { this.options.log?.(`[heads] ${job.id}: ${error instanceof Error ? error.message : String(error)}`); }
       }
     }
   }
@@ -302,7 +302,7 @@ export class HelperService {
       // A cancel (or Stop all) can land while the launch is still writing its state: the job
       // then reads as running but had no process to stop. Honour it now.
       if (finalJobStates.has(this.options.store.get(job.id)?.state ?? 'failed')) { void this.stopRun(job.id); return; }
-      this.options.log?.(`[helpers] ${job.id} started (${job.provider}) in ${created.worktree}`);
+      this.options.log?.(`[heads] ${job.id} started (${job.provider}) in ${created.worktree}`);
     } catch (error) {
       if (token) this.options.endpoint.revokeJob(job.id);
       await this.active.get(job.id)?.run.stop().catch(() => undefined);
@@ -323,7 +323,7 @@ export class HelperService {
       const sent = await active.run.send('You stopped without reporting to Hydra. Commit your work and call hydra_done with a summary, or call hydra_stuck with one clear question. Do it now.');
       if (sent) return;
     }
-    await this.finish(id, 'failed', 'The helper stopped without calling hydra_done or hydra_stuck.');
+    await this.finish(id, 'failed', 'The head stopped without calling hydra_done or hydra_stuck.');
   }
 
   private async exited(id: string, code: number | null): Promise<void> {
@@ -334,7 +334,7 @@ export class HelperService {
     this.options.endpoint.revokeJob(id);
     const job = this.options.store.get(id);
     if (job && !finalJobStates.has(job.state)) {
-      await this.options.store.transition(id, 'failed', `The helper process exited${code === null ? '' : ` (code ${code})`} without finishing.`).catch(() => undefined);
+      await this.options.store.transition(id, 'failed', `The head process exited${code === null ? '' : ` (code ${code})`} without finishing.`).catch(() => undefined);
     }
     this.changed();
     void this.dispatch();
@@ -382,9 +382,9 @@ export class HelperService {
   }
 
   private ownJob(id: unknown): Job {
-    if (typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw new Error('job_id must be a helper job id.');
+    if (typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw new Error('job_id must be a head job id.');
     const job = this.options.store.get(id);
-    if (!job || job.leadKey !== this.options.leadKey) throw new Error(`No helper ${id} in this window.`);
+    if (!job || job.leadKey !== this.options.leadKey) throw new Error(`No head ${id} in this window.`);
     return job;
   }
 
@@ -411,7 +411,7 @@ async function commitAll(worktree: string, message: string): Promise<void> {
   try { await git(worktree, ['commit', '-q', '-m', message]); }
   catch (error) {
     if (!/tell me who you are|user\.email|user\.name|empty ident/i.test(String(error))) throw error;
-    await git(worktree, ['-c', 'user.name=Hydra helper', '-c', 'user.email=helper@hydra.invalid', 'commit', '-q', '-m', message]);
+    await git(worktree, ['-c', 'user.name=Hydra head', '-c', 'user.email=helper@hydra.invalid', 'commit', '-q', '-m', message]);
   }
 }
 
@@ -442,7 +442,7 @@ export async function loadHelperChecks(folder: string): Promise<HelperCheck[]> {
 
 export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeScope' | 'worktree' | 'branch' | 'baseCommit'>): string {
   return [
-    `You are a Hydra helper (job ${job.id}): ${job.title}`,
+    `You are a Hydra head (job ${job.id}): ${job.title}`,
     '',
     job.brief,
     '',

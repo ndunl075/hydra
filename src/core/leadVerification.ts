@@ -4,7 +4,7 @@ import type { Socket } from 'node:net';
 import type { LeadVerifier } from './helperEndpoint';
 
 /**
- * Who may act as a window's lead (docs/Helpers.md, Security). There is no lead
+ * Who may act as a window's lead (docs/Heads.md, Security). There is no lead
  * token on disk: a lead's bridge asks for one once, and Hydra first asks the OS
  * which process opened that connection and walks its parents.
  *
@@ -28,7 +28,7 @@ export function evaluateLeadChain(chain: readonly ProcessLink[], rules: LeadRule
     if (parent.pid !== child.ppid || parent.created > child.created) break;
     trusted.push(parent);
   }
-  if (trusted.some(link => rules.deniedAncestors.has(link.pid))) return { ok: false, reason: 'it runs inside a Hydra helper, and helpers cannot act as the lead.' };
+  if (trusted.some(link => rules.deniedAncestors.has(link.pid))) return { ok: false, reason: 'it runs inside a Hydra head, and heads cannot act as the lead.' };
   if (trusted.some(link => rules.allowedAncestors.has(link.pid))) return { ok: true };
   return { ok: false, reason: 'it was not started from this Hydra window (use the Claude Code or Codex extension, or a terminal inside Hydra).' };
 }

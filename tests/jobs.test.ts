@@ -74,7 +74,7 @@ test('a lock left by a crashed writer is cleared instead of blocking the store f
   });
 });
 
-test('after a restart, helpers that were running are failed with the reason; queued and blocked jobs keep their state', async () => {
+test('after a restart, heads that were running are failed with the reason; queued and blocked jobs keep their state', async () => {
   await withStore(async (store, directory) => {
     const running = (await store.create('lead', input('r'))).job;
     await store.transition(running.id, 'starting'); await store.transition(running.id, 'running');

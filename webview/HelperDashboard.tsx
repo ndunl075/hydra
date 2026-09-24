@@ -13,9 +13,9 @@ const active = (state: string) => ['queued', 'starting', 'running', 'blocked', '
 export function HelperDashboard({ helpers, busy, send }: { helpers: HelperJobView[]; busy: boolean; send: (message: ClientMessage) => void }) {
   if (!helpers.length) return null;
   const running = helpers.filter(helper => active(helper.state)).length;
-  return <section className="helper-dashboard" aria-label="Hydra helpers">
+  return <section className="helper-dashboard" aria-label="Hydra heads">
     <header className="helper-dashboard-header">
-      <h2>Helpers <span>{running ? `${running} active` : `${helpers.length} finished`}</span></h2>
+      <h2>Heads <span>{running ? `${running} active` : `${helpers.length} finished`}</span></h2>
       {running > 0 && <button className="secondary" disabled={busy} onClick={() => send({ type: 'helperStopAll' })}>Stop all</button>}
     </header>
     <ul className="helper-list">

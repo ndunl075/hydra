@@ -54,7 +54,7 @@ export function claudeHelperArguments(spec: HelperRunSpec): string[] {
 }
 
 /** A TOML literal string. Paths and tokens never contain a single quote; refuse rather than mis-quote. */
-const toml = (value: string) => { if (value.includes("'") || /[\r\n]/.test(value)) throw new Error('A Codex helper setting contains a quote or line break.'); return `'${value}'`; };
+const toml = (value: string) => { if (value.includes("'") || /[\r\n]/.test(value)) throw new Error('A Codex head setting contains a quote or line break.'); return `'${value}'`; };
 export function codexHelperArguments(spec: HelperRunSpec, resumeThread?: string): string[] {
   const env = Object.entries(spec.bridge.env).map(([key, value]) => `${key} = ${toml(value)}`).join(', ');
   const config = ['-c', `mcp_servers.hydra.command=${toml(spec.bridge.command)}`, '-c', `mcp_servers.hydra.args=[${spec.bridge.args.map(toml).join(', ')}]`,

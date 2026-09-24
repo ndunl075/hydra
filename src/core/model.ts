@@ -143,7 +143,7 @@ export function parseMessage(value: unknown): ClientMessage {
   };
   const type = string('type');
   if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel') {
-    const jobId = string('jobId'); if (!/^[a-f0-9]{12}$/.test(jobId)) throw new Error('Invalid helper job ID.');
+    const jobId = string('jobId'); if (!/^[a-f0-9]{12}$/.test(jobId)) throw new Error('Invalid head job ID.');
     return { type, jobId };
   }
   if (type === 'helperStopAll') return { type };

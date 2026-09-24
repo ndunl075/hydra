@@ -6,6 +6,8 @@
 
 Hydra is an IDE built to orchestrate multiple AI coding agents in parallel, giving each agent its own isolated task while you monitor, review, and control everything from one workspace.
 
+**Hydra heads.** In the myth, the Hydra is one creature with many heads, each acting on its own. Hydra's subagents are named after them. You chat with one agent, Claude Code or Codex, which is the body and makes the decisions. When a task splits into independent pieces, it grows heads: separate agents, each working in its own git worktree and branch at the same time. When a head finishes, Hydra checks its work, and the lead reviews it and merges it back. You don't have to ask for heads; the lead decides when splitting a task is worth it. See [Hydra heads](docs/Heads.md).
+
 The 0.18.0 candidate adds a shared reservation limit for managed sessions, provider terminals and setup writers across participating windows in one local profile. Defaults remain two; uncertain writers retain their slots until explicit recovery. See [profile capacity](docs/Profile_Capacity.md) for the boundary and acceptance gates.
 
 ## Standalone editor build

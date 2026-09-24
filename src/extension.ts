@@ -26,6 +26,9 @@ import { HelperEndpoint } from './core/helperEndpoint';
 import { HelperService } from './core/helperService';
 import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
 import { startHelperRun } from './core/helperRunner';
+import { createLeadVerifier } from './core/leadVerification';
+import { claudeMemStatus, setupClaudeMem } from './core/claudeMem';
+import { downloadOpenVsx } from './core/openVsx';
 import { selfCheckCli } from './core/cliSelfCheck';
 import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, providerPaths, type ConnectableProvider, type HelperServerSpec } from './core/helperRegistration';
 import type { ProviderConnectionView } from './helperConnectionsView';
@@ -226,13 +229,9 @@ class Manager {
     });
     command('hydra.listHelpers', () => structuredClone(this.helpers?.service.list() ?? []));
     command('hydra.helperConnections', () => this.helperConnections());
-    command('hydra.connectHelpers', async (provider: ConnectableProvider) => { await this.connectHelpers(provider); return this.helperConnections(); });
+    command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
-    command('hydra.installProviderExtension', async (provider: ConnectableProvider) => {
-      if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
-      await vscode.commands.executeCommand('workbench.extensions.installExtension', provider === 'claude' ? 'anthropic.claude-code' : 'openai.chatgpt');
-      return this.helperConnections();
-    });
+    command('hydra.installProviderExtension', async (provider: ConnectableProvider) => { await this.installProviderExtension(provider); return this.helperConnections(); });
     command('hydra.reconcileCapacity', (id: string) => this.handle({ type: 'reconcileCapacity', id }));
     command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
@@ -382,12 +381,22 @@ class Manager {
     await store.load();
     const leadKey = path.basename(this.storageDirectory);
     let service: HelperService | undefined;
+    const verifyLead = createLeadVerifier(() => ({
+      // This window's extension host and its main process start the official
+      // extensions' CLIs and Hydra's terminals; helpers are refused by process.
+      allowedAncestors: new Set([process.pid, process.ppid]),
+      deniedAncestors: service?.helperProcessIds() ?? new Set<number>(),
+    }));
     const endpoint = new HelperEndpoint(async (caller, tool, args, signal) => {
       if (!service) throw new Error('Hydra helpers are still starting.');
       // Every action is logged, whoever calls it (plan, Phase 3 security note).
       this.output.appendLine(`[helpers] ${caller.role}${caller.jobId ? ` ${caller.jobId}` : ''}: ${tool}`);
       return service.handle(caller, tool, args, signal);
-    });
+    }, { leadKey, verifyLead: async socket => {
+      const verdict = await verifyLead(socket);
+      this.output.appendLine(`[helpers] lead connection ${verdict.ok ? 'accepted' : `refused: ${verdict.reason}`}`);
+      return verdict;
+    } });
     const port = await endpoint.start();
     service = new HelperService({
       store, endpoint, leadFolder, leadKey,
@@ -398,7 +407,7 @@ class Manager {
       onChange: () => this.publishSoon(), log: line => this.output.appendLine(line),
     });
     await service.recover();
-    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, token: endpoint.issue({ role: 'lead', leadKey }), pid: process.pid, folders });
+    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
     this.helpers = { store, endpoint, service, record };
     this.output.appendLine(`[helpers] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
@@ -416,21 +425,46 @@ class Manager {
   }
   async helperConnections(): Promise<ProviderConnectionView[]> {
     const paths = providerPaths(), spec = this.helperServerSpec();
-    const [claude, codex] = await Promise.all([claudeStatus(paths, spec), codexStatus(paths.codexConfig, spec)]);
+    const [claude, codex, memory] = await Promise.all([claudeStatus(paths, spec), codexStatus(paths.codexConfig, spec), claudeMemStatus()]);
     return [
-      { ...claude, name: 'Claude Code', extensionInstalled: !!vscode.extensions.getExtension('anthropic.claude-code') },
+      { ...claude, name: 'Claude Code', extensionInstalled: !!vscode.extensions.getExtension('anthropic.claude-code'), memory: memory.plugin && memory.bun && memory.dependencies ? 'ready' : 'missing' },
       { ...codex, name: 'Codex', extensionInstalled: !!vscode.extensions.getExtension('openai.chatgpt') },
     ];
   }
-  private async connectHelpers(provider: ConnectableProvider): Promise<void> {
+  /** Install an official extension from the gallery, or straight from Open VSX when this build has no gallery. */
+  private async installProviderExtension(provider: ConnectableProvider): Promise<void> {
+    if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
+    const id = provider === 'claude' ? 'anthropic.claude-code' : 'openai.chatgpt';
+    if (vscode.extensions.getExtension(id)) return;
+    try { await vscode.commands.executeCommand('workbench.extensions.installExtension', id); }
+    catch (error) {
+      if (!/gallery/i.test(this.describe(error))) throw error;
+      this.output.appendLine(`[helpers] no extension gallery; installing ${id} from Open VSX`);
+      await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(await downloadOpenVsx(id)));
+    }
+  }
+  /**
+   * One Connect: install the official extension if it's missing, connect it to
+   * Hydra, and for Claude set up claude-mem too. A claude-mem problem doesn't undo
+   * the connection; it's reported and Connect can be pressed again.
+   */
+  private async connectHelpers(provider: ConnectableProvider): Promise<string | undefined> {
+    await this.installProviderExtension(provider);
     const paths = providerPaths(), spec = this.helperServerSpec();
     if (provider === 'codex') await connectCodex(paths.codexConfig, spec);
     else if (provider === 'claude') {
       const claude = await this.claudeForRegistration();
       if (!claude) throw new Error('Install the Claude Code extension or CLI first; Hydra connects through it.');
       await connectClaude(claude, paths, spec);
+      this.output.appendLine('[helpers] connected claude to Hydra');
+      try {
+        const memory = await setupClaudeMem(claude);
+        if (memory.installed.length) this.output.appendLine(`[helpers] set up ${memory.installed.join(' and ')} for claude-mem`);
+        return undefined;
+      } catch (error) { this.output.appendLine(`[helpers] claude-mem setup failed: ${this.describe(error)}`); return `Connected, but claude-mem could not be set up: ${this.describe(error)}`; }
     } else throw new Error('Unknown provider.');
     this.output.appendLine(`[helpers] connected ${provider} to Hydra`);
+    return undefined;
   }
   private async disconnectHelpers(provider: ConnectableProvider): Promise<void> {
     const paths = providerPaths();

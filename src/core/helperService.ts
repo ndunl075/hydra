@@ -41,6 +41,8 @@ const clip = (value: string, max: number) => value.length > max ? `${value.slice
 
 export class HelperService {
   private readonly active = new Map<string, Active>();
+  /** Every process Hydra started for a helper or its checks. None of them, or their children, may act as a lead. */
+  private readonly helperPids = new Set<number>();
   private readonly waiters = new Set<() => void>();
   private dispatching = false;
   private dispatchAgain = false;
@@ -87,6 +89,7 @@ export class HelperService {
   }
 
   list(): Job[] { return this.options.store.list(this.options.leadKey); }
+  helperProcessIds(): ReadonlySet<number> { return this.helperPids; }
 
   async stopAll(reason = 'Stopped with "Stop all helpers".'): Promise<number> {
     const open = this.list().filter(job => !finalJobStates.has(job.state));
@@ -289,6 +292,7 @@ export class HelperService {
         maxTurns: job.limits.maxTurns, maxBudgetUsd: job.limits.maxBudgetUsd,
         bridge: { command: this.options.bridge.command, args: this.options.bridge.args, env: { ...(this.options.bridge.env || {}), HYDRA_HELPER_PORT: String(this.options.endpoint.port), HYDRA_HELPER_TOKEN: token } },
         logFile: path.join(this.options.logDirectory, `${job.id}.jsonl`),
+        spawned: pid => { this.helperPids.add(pid); },
       });
       const active: Active = { run, token, startedAt, blockedTotal: 0 };
       this.active.set(job.id, active);
@@ -369,7 +373,7 @@ export class HelperService {
     for (const check of checks) {
       const logFile = path.join(this.options.logDirectory, `${job.id}-check-${attempt}-${check.id}.log`);
       const started = this.now();
-      const outcome = await runCheckCommand({ executable: check.command[0]!, args: check.command.slice(1) }, job.worktree!, logFile, undefined, undefined, 3000, check.timeoutSeconds * 1000);
+      const outcome = await runCheckCommand({ executable: check.command[0]!, args: check.command.slice(1) }, job.worktree!, logFile, undefined, undefined, 3000, check.timeoutSeconds * 1000, undefined, pid => { this.helperPids.add(pid); });
       const output = await readFile(logFile, 'utf8').catch(() => '');
       results.push({ id: check.id, required: check.required, passed: outcome.exitCode === 0 && !outcome.timedOut, exitCode: outcome.exitCode, durationMs: this.now() - started, outputTail: output.slice(-maxChecksOutput) });
     }

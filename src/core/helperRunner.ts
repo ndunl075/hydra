@@ -29,6 +29,8 @@ export interface HelperRunSpec {
   /** How the CLI starts the hydra-mcp bridge, plus the helper's own endpoint port and token. */
   bridge: { command: string; args: string[]; env: Record<string, string> };
   logFile: string;
+  /** Called with each process started for this helper, so Hydra can refuse it as a lead. */
+  spawned?: (pid: number) => void;
 }
 export interface HelperRun {
   /** Resolves when a turn ends (the helper stopped working and is waiting for a message). */
@@ -72,6 +74,7 @@ function logger(file: string, secret?: string) {
 function spawnLogged(spec: HelperRunSpec, args: string[], log: (kind: string, data: unknown) => void, onLine: (message: Record<string, unknown>) => void): ChildProcess {
   const launch = processLaunch(spec.executable, args);
   const child = spawn(launch.executable, launch.args, { cwd: spec.worktree, env: { ...process.env, DISABLE_AUTOUPDATER: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+  if (child.pid) spec.spawned?.(child.pid);
   let buffer = '';
   child.stdout!.setEncoding('utf8');
   child.stdout!.on('data', (chunk: string) => {

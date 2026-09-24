@@ -13,7 +13,8 @@ async function applyClaudePreferredLocation(): Promise<void> {
 }
 
 export function registerChatLocationController(context: vscode.ExtensionContext): void {
-  void applyClaudePreferredLocation();
+  // Claude rewrites its own setting when a chat moves, so only enforce a mode the user chose in Hydra.
+  if (vscode.workspace.getConfiguration('hydra').inspect('chatLocation')?.globalValue !== undefined) void applyClaudePreferredLocation();
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
     if (event.affectsConfiguration('hydra.chatLocation')) void applyClaudePreferredLocation();
   }));

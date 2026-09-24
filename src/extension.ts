@@ -32,6 +32,7 @@ import { downloadOpenVsx } from './core/openVsx';
 import { selfCheckCli } from './core/cliSelfCheck';
 import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, providerPaths, type ConnectableProvider, type HelperServerSpec } from './core/helperRegistration';
 import type { ProviderConnectionView } from './helperConnectionsView';
+import { addMcpServer, configuredSpec, defaultMcpContext, enableMcpServerFor, listMcpServers, removeMcpServer, testMcpServer, validateServerSpec, type McpAgent } from './core/mcpServers';
 import { checkProvider } from './core/diagnostics';
 import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
@@ -235,6 +236,13 @@ class Manager {
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
     command('hydra.installProviderExtension', async (provider: ConnectableProvider) => { await this.installProviderExtension(provider); return this.helperConnections(); });
+    // MCP servers (Settings plan, Phase 4). Lists come back with secrets masked; changes return the fresh list.
+    const mcp = async () => defaultMcpContext(await this.claudeForRegistration());
+    command('hydra.mcpServers.list', async () => listMcpServers(await mcp()));
+    command('hydra.mcpServers.add', async (name: unknown, spec: unknown, agents: unknown) => { const context = await mcp(); await addMcpServer(context, name, spec, agents); return listMcpServers(context); });
+    command('hydra.mcpServers.remove', async (name: unknown, agent: unknown) => { const context = await mcp(); await removeMcpServer(context, name, agent); return listMcpServers(context); });
+    command('hydra.mcpServers.enable', async (name: unknown, agent: unknown) => { const context = await mcp(); await enableMcpServerFor(context, name, agent); return listMcpServers(context); });
+    command('hydra.mcpServers.test', async (target: unknown, agent?: McpAgent) => testMcpServer(typeof target === 'string' ? await configuredSpec(await mcp(), target, agent) : validateServerSpec(target)));
     command('hydra.reconcileCapacity', (id: string) => this.handle({ type: 'reconcileCapacity', id }));
     command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));

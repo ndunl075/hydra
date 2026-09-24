@@ -143,6 +143,21 @@ export class TaskScheduler {
   async retryBudgetHold(task: Task): Promise<void> {
     const s = task.schedule;
     if (!s?.budgetHold || s.state !== 'blocked' || !s.request || s.uncertain || task.state === 'running' || task.state === 'external') throw new Error('This task has no stopped budget-held launch.');
+    await this.requeueBlocked(task);
+  }
+  /**
+   * Queue a launch that failed and left its schedule blocked (a provider error at
+   * startup, say) again with the same request. Without this, a blocked launch
+   * could only be cancelled. Delegated children keep their own recovery path.
+   */
+  async retryBlocked(task: Task): Promise<void> {
+    const s = task.schedule;
+    if (!s || s.state !== 'blocked' || !s.request || s.uncertain || task.delegation || task.state === 'running' || task.state === 'external') throw new Error('This task has no stopped launch to retry.');
+    await this.requeueBlocked(task);
+  }
+  private async requeueBlocked(task: Task): Promise<void> {
+    const s = task.schedule!;
+    if (!s.request) throw new Error('This task has no stopped launch to retry.');
     const previous = structuredClone(s), previousBudgetReservation = task.delegationBudgetReservation && structuredClone(task.delegationBudgetReservation);
     const restore = () => {
       Object.assign(s, previous);
@@ -153,7 +168,7 @@ export class TaskScheduler {
     let warnings: string[];
     try { this.hooks.guardBudget?.(task, s.request); warnings = this.hooks.budget?.(task) || []; }
     catch (error) { this.hooks.releaseBudgetGuard?.(task); restore(); throw error; }
-    s.state = 'queued'; s.budgetHold = undefined; s.reason = undefined; s.budgetWarnings = warnings;
+    s.state = 'queued'; s.budgetHold = undefined; s.reason = undefined; s.budgetWarnings = warnings; s.queuedAt = new Date().toISOString();
     try { await this.hooks.persist(); }
     catch (error) { this.hooks.releaseBudgetGuard?.(task); restore(); throw error; }
     await this.drain();

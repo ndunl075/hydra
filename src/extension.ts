@@ -1140,8 +1140,8 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'retryBlocked', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveBudgets', 'retryBudgetHold', 'retryBlocked', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -1187,7 +1187,7 @@ class Manager {
     if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
     if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }
-    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
+    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold', 'retryBlocked'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
     if (message.type === 'stopSetup') { const pending = this.pendingResource?.id === task.id ? this.pendingResource : undefined; pending?.controller.abort(); await pending?.done; await this.resources.stop(task.id); return; }
     if (message.type === 'showSetupLog') { const log = this.resources.snapshot()[task.id]?.log; if (!log) throw new Error('No setup diagnostics yet.'); await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true }); return; }
     if (['saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) {
@@ -1234,6 +1234,10 @@ class Manager {
       try { await this.pendingBudgetSave; this.budgets = candidate; }
       finally { this.pendingBudgetSave = undefined; this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
+    }
+    if (message.type === 'retryBlocked') {
+      if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop this writer before retrying.');
+      await this.scheduler.retryBlocked(task); return;
     }
     if (message.type === 'retryBudgetHold') {
       if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop this writer before retrying held work.');

@@ -61,6 +61,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
   // follows it reads the extended message.
   const submitCompact = () => {
     if (blocked) return;
+    if (retryable) { send({ type: 'retryBlocked', id: task.id }); return; }
     if (task.sessionId) { if (prompt.trim()) send({ type: 'followUp', id: task.id, prompt, draftVersion: local.version }); return; }
     if (prompt.trim()) {
       const base = task.brief || { ...emptyBrief(), goal: task.prompt };
@@ -72,7 +73,10 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
   // Only these make a reply impossible; while a turn runs or the host is busy you
   // can still click in and type (as in the provider's own panel), only Send waits.
   const cannotReply = task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
-  const blocked = busy || pendingSchedule(task) || !available || running || cannotReply;
+  // A launch that failed at startup leaves its schedule blocked. Send then
+  // retries that same launch instead of sitting disabled with only Cancel.
+  const retryable = task.schedule?.state === 'blocked' && !!task.schedule.request && !task.schedule.uncertain && !task.delegation && !running && !cannotReply;
+  const blocked = busy || (pendingSchedule(task) && !retryable) || !available || running || cannotReply;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>
     {!session.turns.length && <article className={compact ? 'message user-card' : 'message'}>{!compact && <div className="message-author"><strong>You</strong><span className="local-tag">TASK BRIEF</span></div>}<p className="prompt-text">{task.prompt}</p></article>}
@@ -114,8 +118,8 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
             <PermissionModePicker provider={task.provider} mode={task.permissionMode?.mode ?? null} busy={busy} locked={editable ? undefined : locked}
               onSelect={next => send({ type: 'savePermissionMode', id: task.id, permissionMode: asTaskPermissionMode(task.provider, next) })} />
             {running ? <button className="composer-stop" type="button" disabled={busy} title="Stop process" aria-label="Stop process" onClick={() => send({ type: 'stop', id: task.id })}>■</button>
-              : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !prompt.trim()} title="Send" aria-label="Send"><ComposerIcon name="up" /></button>
-              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title="Start task" aria-label="Start task" onClick={submitCompact}><ComposerIcon name="up" /></button>}
+              : task.sessionId ? <button className="task-prompt-send" type="submit" disabled={blocked || !retryable && !prompt.trim()} title={retryable ? 'Retry the failed launch' : 'Send'} aria-label={retryable ? 'Retry' : 'Send'}><ComposerIcon name="up" /></button>
+              : <button className="task-prompt-send composer-start" type="button" disabled={blocked} title={retryable ? 'Retry the failed launch' : 'Start task'} aria-label={retryable ? 'Retry' : 'Start task'} onClick={submitCompact}><ComposerIcon name="up" /></button>}
           </div>
         </div>
       </div>

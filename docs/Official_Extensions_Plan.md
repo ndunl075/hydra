@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23 (see "Decisions"). Nothing here is built yet; don't start until Nico says so.
+Status: decisions made 2026-09-23. Phase 0 merged (#178). Phase 1 spikes done: go (see "Spike results").
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -240,4 +240,23 @@ Acceptance:
 
 ## Spike results
 
-(Filled in by Phase 1.)
+Run 2026-09-24 with an isolated probe profile, a scratch repo, and a throwaway stdio server (`spike_echo`, `spike_sleep`) run by `Hydra.exe` with `ELECTRON_RUN_AS_NODE=1`. The throwaway entries were removed from `~/.claude.json` and `~/.codex/config.toml` afterwards. **Verdict: go.**
+
+| # | Question | Result |
+| --- | --- | --- |
+| 1 | Both extensions install from Open VSX into Hydra and run | **Pass for Claude.** Claude Code 2.1.281 installed from the Open VSX VSIX, was already signed in (shared `~/.claude` credentials) and ran turns. **Partial for Codex:** 26.5730.61309 installed and loaded, but its first-run carousel wouldn't advance under automation. Codex was verified through the extension's own bundled `codex.exe` (see 3 and 5). Needs one manual click-through by Nico. |
+| 2 | Claude user-scope registration is visible in the extension | **Pass.** `claude mcp add-json -s user` was seen by the pinned CLI 2.1.270 and by the extension's bundled 2.1.281 ("Connected"). In the real extension UI, Claude called `spike_echo` and replied "echo: hydra-ui". No approval prompt appeared (the extension's permission mode was Auto); Phase 5 still adds the allow rule. |
+| 3 | Codex global registration is visible | **Pass.** `codex mcp add` wrote `[mcp_servers.hydra-spike]` to `~/.codex/config.toml`. The extension's bundled `codex.exe` listed it. Note: the Open VSX Codex extension bundles **codex-cli 0.147.0-alpha**, older than Hydra's pinned 0.154.0. |
+| 4 | Claude long wait wakes the lead | **Pass, by blocking rather than backgrounding.** In stream-json mode (the extension's mode), a 100s `spike_sleep` call was not moved to the background, even with `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=15000`. It blocked, with `tool_progress` events every 30s, and then Claude carried on in the same turn ("WOKE: slept 100"). In the real extension UI it showed "Claude is working" for 45s, then "WOKE: slept 45". The per-server `timeout` of 3,600,000 ms was honoured. |
+| 5 | Codex long wait | **Pass.** `codex exec`, run by the extension's bundled binary with `default_tools_approval_mode="approve"`, waited through a 90s and a 200s tool call with the default timeout and resumed ("WOKE: slept 200"). No approval prompt. Hydra will still set `tool_timeout_sec` explicitly. |
+| 6 | `Hydra.exe` with `ELECTRON_RUN_AS_NODE=1` runs a stdio server from both CLIs | **Pass.** The server's `cwd` was the chat's working folder, which is what the bridge uses to find its Hydra window. Claude also offers MCP `roots`. |
+| 7 | Unattended Claude helper with `dontAsk` | **Pass, with a caveat.** With `--permission-mode dontAsk --allowedTools Write`, `mkdir` was denied and the run continued and finished. A read-only `echo` was still allowed. Helpers also inherit the allow rules in the user's `~/.claude/settings.json`. |
+| 8 | Claude channels in the extension | **Dropped.** They aren't needed, since blocking waits already wake both CLIs, and custom channels are gated behind an allowlist or a dangerous flag. |
+
+### What this changes in the design
+
+- **`hydra_wait_for_helpers` blocks.** Both CLIs keep the lead's turn open ("working") and resume by themselves. Default `max_wait_s` is 1800. The Claude server `timeout` is 3,600,000 ms and Codex `tool_timeout_sec` is 3600, so the call always returns before either client gives up.
+- **Discovery by working folder works.** The bridge's `cwd` is the lead's folder.
+- **Helpers:** keep `dontAsk` plus an explicit allowed-tools list. Document that user-level allow rules also apply to helpers.
+- **Codex registration: Hydra edits only its own block.** `codex mcp add` / `remove` rewrite the whole `~/.codex/config.toml` (reordered keys, `120` became `120.0`, an `args = []` dropped). Hydra writes and removes a clearly marked `[mcp_servers.hydra]` block itself, so the rest of the file stays byte-identical. The spike restored Nico's file from a backup.
+- **Version range:** the Codex *extension* ships an older CLI than Hydra's pin. The pin only applies to helpers, which Hydra runs with its own configured CLI, so this doesn't block anything.

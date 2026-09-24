@@ -35,6 +35,7 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
 - Standalone Hydra looks and behaves like Cursor in the Explorer and around the agent chats:
   - [vscode-icons](https://github.com/vscode-icons/vscode-icons) (MIT) is bundled and set as the default file icon theme, pinned by version and SHA-256. Sidebar file icons are drawn at 14px instead of 16px.
   - The app icon at the top left of the title bar is the Hydra logo.
+  - UI icons use the classic codicon designs, as Cursor does (for example the plain "+" New File and New Folder buttons). `desktop/codicon-classic.ttf` is the pinned codicon font with glyphs from [@vscode/codicons](https://github.com/microsoft/vscode-codicons) 0.0.41 by Microsoft, licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), and modified by merging them into the newer font. `scripts/desktop-classic-codicons.py` regenerates it.
   - The built-in GitHub Copilot chat and inline suggestions are off by default (`chat.disableAIFeatures`); Hydra's agents are Claude Code and Codex.
   - Hydra Dark and Hydra Light use Cursor's colours for the Explorer, lists and git decorations.
   - The Claude Code, Codex and Hydra chat panels are locked in place, as Cursor's chat is. They can't be dragged into the editor, the Explorer or the panel, and other views can't be dropped into them. You can still reorder icons in a bar, or move a panel on purpose from its icon's right-click menu.

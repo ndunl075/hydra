@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { openVsxGallery, brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, brandedTitlebarIcon, lockedAgentExtensions, lockedAgentViewsCommon, lockedAgentViewsExtensionPoint, lockedAgentCompositeBar, lockedAgentViewDescriptorService, lockedAgentViewPaneContainer, vscodeIcons, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+import { openVsxGallery, brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, brandedTitlebarIcon, classicCodicons, stageClassicCodicons, lockedAgentExtensions, lockedAgentViewsCommon, lockedAgentViewsExtensionPoint, lockedAgentCompositeBar, lockedAgentViewDescriptorService, lockedAgentViewPaneContainer, vscodeIcons, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
 
 test('pinned Electron app uses only Hydra update service on Windows and refuses source drift', () => {
   const source = "import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';\nservices.set(IUpdateService, new SyncDescriptor(Win32UpdateService));";
@@ -316,6 +316,26 @@ test('the title bar app icon is the Hydra logo, sidebar file icons are a little 
   assert.match(branded, /background-position: calc\(50% \+ 2px\) center;/, 'nudged a hair right');
   assert.throws(() => brandedTitlebarIcon(css.replace('16px', '20px')), /title bar app icon changed/);
   assert.match(brandedSidebarCss('.monaco-workbench .part.sidebar {}'), /\.part\.sidebar \.monaco-list \.monaco-icon-label::before \{ background-size: 14px/);
+});
+
+test('the classic codicon font replaces only the exact pinned font it was made from', async () => {
+  const classic = await fs.readFile(path.join(root, 'desktop', 'codicon-classic.ttf'));
+  assert.equal(createHash('sha256').update(classic).digest('hex'), classicCodicons.classic);
+  const parent = path.join(root, '.test-build');
+  await fs.mkdir(parent, { recursive: true });
+  const fixture = await fs.mkdtemp(path.join(parent, 'codicons-'));
+  try {
+    const dist = path.join(fixture, 'node_modules', '@vscode', 'codicons', 'dist');
+    await fs.mkdir(dist, { recursive: true });
+    await fs.writeFile(path.join(dist, 'codicon.ttf'), 'a different upstream font');
+    await assert.rejects(stageClassicCodicons(fixture), /pinned codicon font changed/);
+    await fs.writeFile(path.join(dist, 'codicon.ttf'), classic);
+    await stageClassicCodicons(fixture);
+    assert.deepEqual(await fs.readFile(path.join(dist, 'codicon.ttf')), classic, 'already classic: left alone');
+  } finally {
+    if (!fixture.startsWith(parent + path.sep)) throw new Error('Unsafe desktop test cleanup.');
+    await fs.rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('vscode-icons is pinned by version and SHA-256', () => {

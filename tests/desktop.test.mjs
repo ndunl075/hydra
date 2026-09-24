@@ -5,7 +5,7 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { openVsxGallery, brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
+import { openVsxGallery, brandedSidebarTitleBar, brandedSidebarCss, brandedProduct, brandedElectronMain, brandedElectronApp, brandedInstaller, brandedThemeStartup, brandedNativeThemeStartup, installerVersionSource, windowsExecutableVersion, installedUpdateTrust, isolatedEditorTypes, stageHydra, stageHydraMainUpdatePrimitives, brandedTitlebarIcon, lockedAgentExtensions, lockedAgentViewsCommon, lockedAgentViewsExtensionPoint, lockedAgentCompositeBar, lockedAgentViewDescriptorService, lockedAgentViewPaneContainer, vscodeIcons, hydraMainUpdateModules, root } from '../scripts/desktop.mjs';
 
 test('pinned Electron app uses only Hydra update service on Windows and refuses source drift', () => {
   const source = "import { Win32UpdateService } from '../../platform/update/electron-main/updateService.win32.js';\nservices.set(IUpdateService, new SyncDescriptor(Win32UpdateService));";
@@ -239,6 +239,8 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     assert.equal(staged.contributes.configurationDefaults['workbench.preferredDarkColorTheme'], 'Hydra Dark');
     assert.equal(staged.contributes.configurationDefaults['window.autoDetectColorScheme'], false);
     assert.equal(staged.contributes.configurationDefaults['workbench.secondarySideBar.defaultVisibility'], 'visible');
+    assert.equal(staged.contributes.configurationDefaults['workbench.iconTheme'], 'vscode-icons', 'the bundled vscode-icons theme is the default');
+    assert.equal(staged.contributes.configurationDefaults['vsicons.dontShowNewVersionMessage'], true);
     assert.equal(original.contributes.configurationDefaults?.['workbench.secondarySideBar.defaultVisibility'], undefined);
     assert.equal(original.contributes.configurationDefaults?.['workbench.colorTheme'], undefined);
     assert.deepEqual(await fs.readFile(path.join(fixture, 'dist', 'extension.cjs')), await fs.readFile(path.join(root, 'dist', 'extension.cjs')));
@@ -274,6 +276,50 @@ test('the active sidebar icon gets a pill drawn behind it, never on the icon lab
   assert.doesNotMatch(branded, /\.action-label \{[^}]*background/);
   assert.throws(() => brandedSidebarCss(branded), /already has Hydra styles/);
   assert.throws(() => brandedSidebarCss('.something-else {}'), /sidebar stylesheet changed/);
+});
+
+test('agent chat panels are locked in place like Cursor\'s, other views still move, and drift refuses', () => {
+  const views = 'export interface IViewContainerDescriptor {\n\treadonly extensionId?: ExtensionIdentifier;\n}\nexport interface ViewContainer extends IViewContainerDescriptor { }\n';
+  const lockedViews = lockedAgentViewsCommon(views);
+  assert.match(lockedViews, /export function isHydraLockedViewContainer\(container: ViewContainer \| undefined\)/);
+  for (const id of lockedAgentExtensions) assert.ok(lockedViews.includes(`'${id}'`));
+  assert.deepEqual(lockedAgentExtensions, ['anthropic.claude-code', 'openai.chatgpt', 'nico-dunlap.hydra-agent-manager']);
+  assert.throws(() => lockedAgentViewsCommon(lockedViews), /already has/);
+  assert.throws(() => lockedAgentViewsCommon('export interface ViewContainer { }'), /ViewContainer changed/);
+
+  const point = "import { ICustomViewDescriptor, ViewContainerLocation } from '../../common/views.js';\n\t\t\t\thideIfEmpty: true,\n\t\t\t\torder,\n\t\t\t\ticon,\n\t\t\t}, location);\n\t\t\t\t\t\tcanMoveView: viewContainer?.id !== REMOTE,\n";
+  const lockedPoint = lockedAgentViewsExtensionPoint(point);
+  assert.match(lockedPoint, /canMoveView: viewContainer\?\.id !== REMOTE && !isHydraLockedAgentExtension\(extension\.description\.identifier\.value\),/);
+  assert.match(lockedPoint, /rejectAddedViews: isHydraLockedAgentExtension\(extensionId\?\.value\),/);
+  assert.throws(() => lockedAgentViewsExtensionPoint(point.replace('canMoveView', 'canMove')), /viewsExtensionPoint\.ts changed/);
+
+  const bar = "import { ViewContainerLocation, IViewDescriptorService } from '../../common/views.js';\n\t\t\t\treturn dragData.id !== targetCompositeId;\n\t\t\t}\n\n\t\t\treturn true;";
+  const lockedBar = lockedAgentCompositeBar(bar);
+  assert.match(lockedBar, /\/\/ Hydra: an agent chat panel never moves[^\n]*\n\t\t\treturn !isHydraLockedViewContainer\(currentContainer\);/, 'a locked container shows no drop target on another bar');
+  assert.match(lockedBar, /return dragData\.id !== targetCompositeId;/, 'reordering within one bar still works');
+
+  const service = ", VIEWS_LOG_ID, VIEWS_LOG_NAME, WindowVisibility } from '../../../common/views.js';\n\tmoveViewContainerToLocation(viewContainer: ViewContainer, location: ViewContainerLocation, requestedIndex?: number, reason?: string): void {\n\t\tif (!this.canMoveViews()) {\n\t\t\treturn;\n\t\t}";
+  assert.match(lockedAgentViewDescriptorService(service), /if \(reason === 'dnd' && isHydraLockedViewContainer\(viewContainer\) && this\.getViewContainerLocation\(viewContainer\) !== location\) \{/, 'only drags are refused; Move View commands still work');
+
+  const drop = "dropData.type === 'composite' && dropData.id !== this.viewContainer.id && !this.viewContainer.rejectAddedViews)";
+  const pane = `, ViewContainer, ViewContainerLocation, ViewVisibilityState } from '../../../common/views.js';\nif (${drop} {}\nif (${drop} {}`;
+  assert.equal(lockedAgentViewPaneContainer(pane).split('!isHydraLockedViewContainer(this.viewDescriptorService.getViewContainerById(dropData.id) ?? undefined)').length, 3);
+  assert.throws(() => lockedAgentViewPaneContainer(pane.replace(drop, 'changed')), /composite drop changed/);
+});
+
+test('the title bar app icon is the Hydra logo, sidebar file icons are a little smaller, and drift refuses', () => {
+  const css = ".monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .window-appicon:not(.codicon) {\n\tbackground-image: url('../../../media/code-icon.svg');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 16px;\n}";
+  const branded = brandedTitlebarIcon(css);
+  assert.match(branded, /background-image: url\('\.\/hydra-logo\.png'\);/);
+  assert.doesNotMatch(branded, /code-icon\.svg/);
+  assert.throws(() => brandedTitlebarIcon(css.replace('16px', '20px')), /title bar app icon changed/);
+  assert.match(brandedSidebarCss('.monaco-workbench .part.sidebar {}'), /\.part\.sidebar \.monaco-list \.monaco-icon-label::before \{ background-size: 14px/);
+});
+
+test('vscode-icons is pinned by version and SHA-256', () => {
+  assert.equal(vscodeIcons.id, 'vscode-icons-team.vscode-icons');
+  assert.match(vscodeIcons.version, /^\d+\.\d+\.\d+$/);
+  assert.match(vscodeIcons.sha256, /^[a-f0-9]{64}$/);
 });
 
 test('the extension gallery is accepted only when every URL points at Open VSX', () => {

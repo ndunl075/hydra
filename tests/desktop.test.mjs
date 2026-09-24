@@ -241,6 +241,7 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     assert.equal(staged.contributes.configurationDefaults['workbench.secondarySideBar.defaultVisibility'], 'visible');
     assert.equal(staged.contributes.configurationDefaults['workbench.iconTheme'], 'vscode-icons', 'the bundled vscode-icons theme is the default');
     assert.equal(staged.contributes.configurationDefaults['vsicons.dontShowNewVersionMessage'], true);
+    assert.equal(staged.contributes.configurationDefaults['chat.disableAIFeatures'], true, 'the built-in Copilot chat is hidden');
     assert.equal(original.contributes.configurationDefaults?.['workbench.secondarySideBar.defaultVisibility'], undefined);
     assert.equal(original.contributes.configurationDefaults?.['workbench.colorTheme'], undefined);
     assert.deepEqual(await fs.readFile(path.join(fixture, 'dist', 'extension.cjs')), await fs.readFile(path.join(root, 'dist', 'extension.cjs')));
@@ -312,6 +313,7 @@ test('the title bar app icon is the Hydra logo, sidebar file icons are a little 
   const branded = brandedTitlebarIcon(css);
   assert.match(branded, /background-image: url\('\.\/hydra-logo\.png'\);/);
   assert.doesNotMatch(branded, /code-icon\.svg/);
+  assert.match(branded, /background-position: calc\(50% \+ 2px\) center;/, 'nudged a hair right');
   assert.throws(() => brandedTitlebarIcon(css.replace('16px', '20px')), /title bar app icon changed/);
   assert.match(brandedSidebarCss('.monaco-workbench .part.sidebar {}'), /\.part\.sidebar \.monaco-list \.monaco-icon-label::before \{ background-size: 14px/);
 });

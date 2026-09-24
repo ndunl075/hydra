@@ -410,7 +410,7 @@ export function brandedSidebarCss(text) {
 export function brandedTitlebarIcon(text) {
   const before = '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'../../../media/code-icon.svg\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 16px;\n}';
   if (text.split(before).length !== 2) throw new Error('Pinned title bar app icon changed.');
-  return text.replace(before, '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'./hydra-logo.png\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 18px;\n}');
+  return text.replace(before, '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'./hydra-logo.png\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: calc(50% + 2px) center;\n\tbackground-size: 18px;\n}');
 }
 // Agent chat panels stay where they are, as in Cursor, which registers its chat
 // views with `canMoveView: false` and its chat container with `rejectAddedViews`.
@@ -756,7 +756,9 @@ export async function stageHydra(destination) {
     'workbench.colorTheme': 'Hydra Dark', 'workbench.preferredDarkColorTheme': 'Hydra Dark',
     'window.autoDetectColorScheme': false,
     'workbench.secondarySideBar.defaultVisibility': 'visible',
-    'workbench.iconTheme': 'vscode-icons', 'vsicons.dontShowNewVersionMessage': true };
+    'workbench.iconTheme': 'vscode-icons', 'vsicons.dontShowNewVersionMessage': true,
+    // Hydra's agents are Claude Code and Codex; the built-in Copilot chat is hidden.
+    'chat.disableAIFeatures': true };
   await fs.mkdir(destination, { recursive: true });
   for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.

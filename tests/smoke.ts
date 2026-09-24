@@ -200,6 +200,15 @@ export async function run(): Promise<void> {
       await workbench.update('colorTheme', previousTheme, vscode.ConfigurationTarget.Global);
       await windowConfig.update('autoDetectColorScheme', previousAutomatic, vscode.ConfigurationTarget.Global);
     }
+    const hydraConfig = vscode.workspace.getConfiguration('hydra');
+    const previousChatLocation = hydraConfig.inspect<string>('chatLocation')?.globalValue;
+    try {
+      for (const mode of ['tabs', 'docked'] as const) {
+        await vscode.commands.executeCommand('hydra.setChatLocation', mode);
+        await waitFor(() => vscode.workspace.getConfiguration('hydra').get('chatLocation') === mode);
+      }
+      console.log('PASS: hydra.setChatLocation writes the global hydra.chatLocation preference.');
+    } finally { await hydraConfig.update('chatLocation', previousChatLocation, vscode.ConfigurationTarget.Global); }
   } finally { terminal.dispose(); }
   if (process.env.HYDRA_TEST_DESKTOP) {
     const accountsBefore = await vscode.commands.executeCommand<Record<string,{status:string}>>('hydra.getAccountSetupState');

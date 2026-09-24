@@ -63,6 +63,10 @@
         "title": "Hydra: Open Settings"
       },
       {
+        "command": "hydra.setChatLocation",
+        "title": "Hydra: Set Chat Location"
+      },
+      {
         "command": "hydra.checkProvider",
         "title": "Hydra: Check Default Provider Capabilities"
       },
@@ -245,6 +249,19 @@
           "maximum": 8,
           "default": 3,
           "description": "Maximum Hydra heads running at once in this window. More wait in a queue."
+        },
+        "hydra.chatLocation": {
+          "type": "string",
+          "enum": [
+            "docked",
+            "tabs"
+          ],
+          "enumDescriptions": [
+            "Docked: the Claude Code and Codex chats live in the side bar, locked in place.",
+            "Tabs: chats open as editor tabs, one per conversation, like Cursor."
+          ],
+          "default": "docked",
+          "markdownDescription": "Where the Claude Code and Codex chats open. Applies Claude's own `#claudeCode.preferredLocation#` setting and routes Hydra's open-chat actions to each provider's tab command in Tabs mode."
         }
       }
     }

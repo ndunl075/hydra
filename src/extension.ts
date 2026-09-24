@@ -700,6 +700,7 @@ class Manager {
         progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
         branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
         checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
+        repository: this.helpers!.service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
       })).reverse(),
       resources: resourceViews,
       setupPreview,

@@ -91,3 +91,7 @@ body.vscode-high-contrast .agent-map-connection, body.vscode-high-contrast .agen
   .agent-map-task-selected { outline-color: Highlight; }
   .agent-map-connection, .agent-map-context-link { opacity: 1; }
 }
+/* Hydra helpers on the map (docs/Helpers.md). */
+.agent-map-helper-links .agent-map-context-link { stroke-dasharray: 4 4; }
+.agent-map-helper-card:disabled { cursor: default; opacity: .8; }
+.agent-map-dependency path { stroke: var(--map-worktree); stroke-width: 1.5; fill: none; opacity: .8; }

@@ -159,7 +159,7 @@ function App() {
       <div className="mode-switch" aria-label="Workspace mode"><button onClick={() => send({ type: 'editor' })}>Editor</button><button className="current" aria-current="page">Agents</button></div>
       <button className="icon-button" title="Hydra settings" aria-label="Hydra settings" onClick={() => send({ type: 'settings' })}>···</button>
     </header>
-    {!snapshot.handoff && snapshot.tasks.some(task => task.state !== 'discarded') && <AgentMap snapshot={{ ...snapshot, tasks: snapshot.tasks.filter(task => task.state !== 'discarded') }} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />}
+    {!snapshot.handoff && (snapshot.tasks.some(task => task.state !== 'discarded') || !!snapshot.helpers?.length) && <AgentMap snapshot={{ ...snapshot, tasks: snapshot.tasks.filter(task => task.state !== 'discarded') }} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} onHelper={jobId => send({ type: 'helperReview', jobId })} />}
     {!snapshot.handoff && <HelperDashboard helpers={snapshot.helpers || []} busy={snapshot.busy} send={send} />}
     <div className="workspace">
       <aside className="task-rail" aria-label="Tasks">

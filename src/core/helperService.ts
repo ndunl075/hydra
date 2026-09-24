@@ -90,6 +90,7 @@ export class HelperService {
 
   list(): Job[] { return this.options.store.list(this.options.leadKey); }
   helperProcessIds(): ReadonlySet<number> { return this.helperPids; }
+  get leadFolder(): string { return this.options.leadFolder; }
 
   async stopAll(reason = 'Stopped with "Stop all helpers".'): Promise<number> {
     const open = this.list().filter(job => !finalJobStates.has(job.state));

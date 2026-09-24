@@ -257,3 +257,20 @@ test('the dashboard\'s helper actions are validated messages', async () => {
   const dashboard = await readFile('webview/HelperDashboard.tsx', 'utf8');
   for (const label of ['Review changes', 'Open log', 'Cancel', 'Stop all', 'Needs an answer']) assert.ok(dashboard.includes(label), label);
 });
+
+test('the orchestration map draws helpers under their repository, with dependencies and a review action', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentMap } = await import('../webview/AgentMap');
+  const repository = path.resolve('map-repo');
+  const helper = (id: string, state: string, extra: object = {}) => ({ id, title: `Helper ${id.slice(0, 2)}`, state, provider: 'claude' as const, createdAt: `2026-09-24T00:00:0${id[0]}.000Z`, changedFiles: 0, checks: [], repository, dependsOn: [] as string[], ...extra });
+  const snapshot = { tasks: [], mode: 'agents', repositories: [repository], providers: [], files: [], busy: false,
+    helpers: [helper('111111111111', 'running', { branch: 'agent/one-111111111111' }), helper('222222222222', 'blocked', { branch: 'agent/two-222222222222', dependsOn: ['111111111111'], question: 'Which API?' })] } as any;
+  const html = renderToStaticMarkup(React.createElement(AgentMap, { snapshot, onSelect: () => {}, onHelper: () => {} }));
+  assert.match(html, /0 tasks · 2 helpers · 1 working/);
+  assert.match(html, /Claude helper/); assert.match(html, /agent\/one-111111111111/);
+  assert.match(html, /Needs an answer/); assert.match(html, /agent-map-status-attention/);
+  assert.match(html, /agent-map-dependency/, 'the dependent helper gets an arrow from its dependency');
+  assert.match(html, /aria-label="Review Helper 22, Claude helper, Needs an answer, branch agent\/two-222222222222"/);
+  assert.match(html, /agent-map-flow/, 'a working helper animates');
+});

@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23. Phase 0 merged (#178). Phase 1 spikes done: go (see "Spike results").
+Status: decisions made 2026-09-23. Phase 0 merged (#178). Phase 1 spikes: go (#179). Phase 2 job store: `src/core/jobs.ts`.
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words

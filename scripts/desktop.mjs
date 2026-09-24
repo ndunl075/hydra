@@ -408,6 +408,8 @@ const hydraSidebarIconCss = `
 .monaco-workbench .part.sidebar .pane-header > .twisty-container.codicon::before { font-size: 11px !important; -webkit-text-stroke: 0.4px currentColor; }
 .monaco-workbench .part.sidebar .monaco-tl-twistie.codicon { color: var(--vscode-foreground); }
 .monaco-workbench .part.sidebar .monaco-tl-twistie.codicon::before { font-size: 11px; -webkit-text-stroke: 0.4px currentColor; }
+/* Hydra: no maximize button on the chat side bar; the Claude Code and Codex panels stay the size you set. */
+.monaco-workbench .part.auxiliarybar .title-actions .action-item:has(.codicon-auxiliarybar-maximize) { display: none !important; }
 /* Hydra: the view icons at the top of the sidebar (Explorer, Search...) sit centred
    on Cursor's 32px pitch, and the overflow button is a chevron rather than "...". */
 .monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container { flex: 1 1 auto; display: flex; justify-content: center; }
@@ -791,7 +793,10 @@ export async function stageHydra(destination) {
     'workbench.secondarySideBar.defaultVisibility': 'visible',
     'workbench.iconTheme': 'vscode-icons', 'vsicons.dontShowNewVersionMessage': true,
     // Hydra's agents are Claude Code and Codex; the built-in Copilot chat is hidden.
-    'chat.disableAIFeatures': true };
+    'chat.disableAIFeatures': true,
+    // Settings and Keyboard Shortcuts open as tabs, not a centred overlay (Code - OSS
+    // defaults this experimental setting to 'some' outside stable builds).
+    'workbench.editor.useModal': 'off' };
   await fs.mkdir(destination, { recursive: true });
   for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.

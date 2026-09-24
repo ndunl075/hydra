@@ -151,7 +151,7 @@ class Manager {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
-    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
+    this.settings = new AppearanceSettings(context, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
     context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
@@ -200,7 +200,7 @@ class Manager {
     command('hydra.newTask', async () => { this.pendingNewTask = !this.panel; await this.openAgents(); await this.panel?.webview.postMessage({ type: 'newTask' }); });
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
-    command('hydra.openSettings', () => this.settings.show());
+    command('hydra.openSettings', (pageId?: string) => this.settings.show(pageId));
     command('hydra.setChatLocation', (mode?: 'docked' | 'tabs') => setChatLocation(mode));
     command('hydra.openAccounts', (provider?: 'claude' | 'codex', autoLogin?: boolean) => this.accounts.show(provider, autoLogin));
     command('hydra.getAccountSetupState', () => this.accounts.snapshot());

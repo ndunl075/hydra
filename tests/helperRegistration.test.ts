@@ -101,7 +101,7 @@ test('Claude connection status reads the user-level server entry', async () => {
 });
 
 test('onboarding and Settings connect Claude Code and Codex to Hydra; Settings no longer offers Auto', async () => {
-  const [onboarding, settings, view] = await Promise.all(['src/extensionOnboarding.ts', 'src/extensionSettings.ts', 'src/helperConnectionsView.ts'].map(file => readFile(file, 'utf8'))) as [string, string, string];
+  const [onboarding, settings, view] = await Promise.all(['src/extensionOnboarding.ts', 'src/settings/pages/connectors.ts', 'src/helperConnectionsView.ts'].map(file => readFile(file, 'utf8'))) as [string, string, string];
   for (const page of [onboarding, settings]) { assert.match(page, /connectionsSection\(/); assert.match(page, /handleConnectionsMessage\(/); }
   assert.match(onboarding, /Connect Claude Code and Codex\./);
   assert.doesNotMatch(settings, /data-delegation|Agent delegation/);

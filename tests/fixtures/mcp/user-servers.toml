@@ -1,0 +1,37 @@
+# Codex config — hand written, with comments that must survive.
+model = "gpt-5-codex"   # trailing comment
+approval_policy = 'on-request'
+notify = ["notify-send", "Codex ✓"]
+
+[features]
+web_search = true
+limit = 1_000
+ratio = 0.5
+started = 1979-05-27T07:32:00Z
+
+# A stdio server the user added by hand.
+[mcp_servers.github]
+command = "npx"
+args = [
+  "-y",
+  "@modelcontextprotocol/server-github", # the package
+]
+startup_timeout_sec = 120
+
+[mcp_servers.github.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+"QUOTED.KEY" = 'literal \ backslash'
+
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+bearer_token_env_var = "FIGMA_OAUTH_TOKEN"
+http_headers = { "X-Figma-Region" = "us-east-1", Authorization = "Bearer abcdefgh12345678" }
+
+[mcp_servers."docs-ünïcode"]
+command = 'C:\Tools\docs.exe'
+args = ["--name", "Ωmega \"quoted\"", """multi
+line"""]
+enabled = false
+
+[profiles.fast]
+model = "gpt-5-mini"

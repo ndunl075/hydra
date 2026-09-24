@@ -1,0 +1,23 @@
+model = "gpt-5"
+
+# >>> Hydra helpers (managed by Hydra: connect or disconnect in Hydra Settings)
+[mcp_servers.hydra]
+command = 'C:\Program Files\Hydra\Hydra.exe'
+args = ['C:\Program Files\Hydra\resources\app\extensions\hydra\dist\hydra-mcp.cjs']
+startup_timeout_sec = 30
+tool_timeout_sec = 3600
+default_tools_approval_mode = 'approve'
+
+[mcp_servers.hydra.env]
+ELECTRON_RUN_AS_NODE = '1'
+# <<< Hydra helpers
+
+# >>> Hydra MCP: context7
+# Added by Hydra. Remove it in Hydra Settings > MCP servers; Hydra never edits the rest of this file.
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+# <<< Hydra MCP: context7
+
+[mcp_servers.mine]
+url = "http://localhost:3000/mcp"

@@ -3,7 +3,7 @@
  * model catalog or repository state, so changing one only needs the panel
  * republished. The helper cap is read by the helper service on every dispatch.
  */
-export const preferenceOnlySettings: ReadonlySet<string> = new Set(['hydra.maxConcurrentHelpers']);
+export const preferenceOnlySettings: ReadonlySet<string> = new Set(['hydra.maxConcurrentHelpers', 'hydra.chatLocation']);
 
 /**
  * The contributed settings whose change must reset provider state and refresh.

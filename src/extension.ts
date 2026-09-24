@@ -50,6 +50,7 @@ import { supportedCliDescription, supportedCliVersion } from './core/cliVersions
 import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
+import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
 
 let manager: Manager | undefined;
@@ -58,6 +59,7 @@ function otherHydraSettings(context: vscode.ExtensionContext): string[] {
   return settingsRequiringRefresh([context.extension.packageJSON?.contributes?.configuration].flat().flatMap((section: { properties?: Record<string, unknown> } | undefined) => Object.keys(section?.properties || {})));
 }
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  registerChatLocationController(context);
   manager = new Manager(context);
   await manager.initialize();
   await manager.showFirstRun();
@@ -199,6 +201,7 @@ class Manager {
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
     command('hydra.openSettings', () => this.settings.show());
+    command('hydra.setChatLocation', (mode?: 'docked' | 'tabs') => setChatLocation(mode));
     command('hydra.openAccounts', (provider?: 'claude' | 'codex', autoLogin?: boolean) => this.accounts.show(provider, autoLogin));
     command('hydra.getAccountSetupState', () => this.accounts.snapshot());
     command('hydra.openQuotaStatus', () => this.quota.show());

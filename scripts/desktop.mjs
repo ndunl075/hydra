@@ -410,7 +410,7 @@ export function brandedSidebarCss(text) {
 export function brandedTitlebarIcon(text) {
   const before = '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'../../../media/code-icon.svg\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 16px;\n}';
   if (text.split(before).length !== 2) throw new Error('Pinned title bar app icon changed.');
-  return text.replace(before, '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'./hydra-logo.png\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: center center;\n\tbackground-size: 18px;\n}');
+  return text.replace(before, '.window-appicon:not(.codicon) {\n\tbackground-image: url(\'./hydra-logo.png\');\n\tbackground-repeat: no-repeat;\n\tbackground-position: calc(50% + 2px) center;\n\tbackground-size: 18px;\n}');
 }
 // Agent chat panels stay where they are, as in Cursor, which registers its chat
 // views with `canMoveView: false` and its chat container with `rejectAddedViews`.
@@ -726,6 +726,26 @@ export async function prepare() {
 // vscode-icons (MIT, github.com/vscode-icons/vscode-icons): the file and folder
 // icons Cursor users see, bundled as a built-in extension and Hydra's default
 // icon theme. Pinned by version and SHA-256 from Open VSX.
+// Classic codicons (the plain "+" new-file icon, circular refresh and so on), as
+// in Cursor: desktop/codicon-classic.ttf is the pinned editor's codicon font with
+// every glyph that also exists in @vscode/codicons 0.0.41 (CC BY 4.0) swapped for
+// that release's design. scripts/desktop-classic-codicons.py regenerates it.
+// Code - OSS copies node_modules/@vscode/codicons/dist/codicon.ttf into the
+// sources on every compile, so the swap happens there, after `npm ci`, and only
+// over the exact font it was made from.
+export const classicCodicons = {
+  base: '9e69844919a0f8c6dbcfc686363f81ace3a6b3e8363260aea8d969a609b0ba67',
+  classic: '9cd9d6f542912523c445ef442fc6d698fbdf24fb0b75873babffb8f4fd30047e',
+};
+export async function stageClassicCodicons(sourceRoot) {
+  const target = path.join(sourceRoot, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.ttf');
+  const current = sha256(await fs.readFile(target));
+  if (current === classicCodicons.classic) return;
+  if (current !== classicCodicons.base) throw new Error('The pinned codicon font changed; regenerate desktop/codicon-classic.ttf with scripts/desktop-classic-codicons.py.');
+  const classic = await fs.readFile(path.join(root, 'desktop', 'codicon-classic.ttf'));
+  if (sha256(classic) !== classicCodicons.classic) throw new Error('desktop/codicon-classic.ttf differs from its recorded SHA-256.');
+  await fs.writeFile(target, classic);
+}
 export const vscodeIcons = { id: 'vscode-icons-team.vscode-icons', version: '12.19.0', sha256: '6891095459234809b9c5161850f2dabc91a80b3eca2daf599d050a88b455e960' };
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export async function stageVscodeIcons(destination) {
@@ -756,7 +776,9 @@ export async function stageHydra(destination) {
     'workbench.colorTheme': 'Hydra Dark', 'workbench.preferredDarkColorTheme': 'Hydra Dark',
     'window.autoDetectColorScheme': false,
     'workbench.secondarySideBar.defaultVisibility': 'visible',
-    'workbench.iconTheme': 'vscode-icons', 'vsicons.dontShowNewVersionMessage': true };
+    'workbench.iconTheme': 'vscode-icons', 'vsicons.dontShowNewVersionMessage': true,
+    // Hydra's agents are Claude Code and Codex; the built-in Copilot chat is hidden.
+    'chat.disableAIFeatures': true };
   await fs.mkdir(destination, { recursive: true });
   for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.
@@ -792,6 +814,7 @@ export async function verify() {
   }
   await fs.access(path.join(bundled, 'dist', 'extension.cjs'));
   await fs.access(path.join(bundled, 'themes', 'hydra-light.json'));
+  if (sha256(await fs.readFile(path.join(output, 'resources', 'app', 'out', 'media', 'codicon.ttf'))) !== classicCodicons.classic) throw new Error('The built editor does not use the classic codicon font.');
   const icons = await readJson(path.join(output, 'resources', 'app', 'extensions', vscodeIcons.id, 'package.json'));
   if (icons.version !== vscodeIcons.version || !icons.contributes?.iconThemes?.some(theme => theme.id === 'vscode-icons') || manifest.contributes.configurationDefaults?.['workbench.iconTheme'] !== 'vscode-icons') throw new Error('Bundled vscode-icons theme is missing or not the default.');
   await verifyWatermarks(path.join(output, 'resources', 'app', 'out', 'media'), await fs.readFile(path.join(root, 'hydra-logo.png')));
@@ -807,6 +830,7 @@ export async function build() {
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'desktop-icons.ps1'), '-LogoPath', path.join(root, 'hydra-logo.png'), '-ResourceDirectory', path.join(source, 'resources', 'win32')], root);
   await npm(['run', 'build'], root);
   await npm(['ci'], source);
+  await stageClassicCodicons(source);
   await npm(['run', 'gulp', '--', 'vscode-win32-x64'], source);
   await contained(output);
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'desktop-native-helper-build.ps1'), '-OutputPath', path.join(output, 'tools', 'HydraUpdateVerify.exe')], root);

@@ -3,6 +3,7 @@
   "name": "Hydra Dark",
   "type": "dark",
   "colors": {
+    "titleBar.inactiveBackground": "#141414", "activityBarTop.foreground": "#F0F0F0", "activityBarTop.inactiveForeground": "#F0F0F0BD",
     "foreground": "#F0F0F0",
     "editorGutter.addedBackground": "#3FA266", "editorGutter.deletedBackground": "#E34671", "editorGutter.modifiedBackground": "#D2943E",
     "gitDecoration.addedResourceForeground": "#70B489", "gitDecoration.deletedResourceForeground": "#FC6B83", "gitDecoration.ignoredResourceForeground": "#F0F0F099",
@@ -23,7 +24,7 @@
     "editorGroupHeader.tabsBackground": "#111111", "panel.background": "#141414",
     "terminal.background": "#141414", "terminal.foreground": "#F5F5F5",
     "button.background": "#173C2C", "button.foreground": "#FFFFFF", "button.hoverBackground": "#24553F",
-    "focusBorder": "#7EAD93", "list.activeSelectionBackground": "#F0F0F01E",
+    "focusBorder": "#F0F0F026", "list.activeSelectionBackground": "#F0F0F01E",
     "list.activeSelectionForeground": "#F0F0F0", "list.hoverBackground": "#F0F0F011",
     "list.inactiveSelectionBackground": "#F0F0F011", "list.focusOutline": "#F0F0F026", "tree.indentGuidesStroke": "#F0F0F030",
     "input.background": "#1B1B1B", "input.foreground": "#F5F5F5", "input.border": "#363636",

@@ -408,6 +408,11 @@ const hydraSidebarIconCss = `
 .monaco-workbench .part.sidebar .pane-header > .twisty-container.codicon::before { font-size: 11px !important; -webkit-text-stroke: 0.4px currentColor; }
 .monaco-workbench .part.sidebar .monaco-tl-twistie.codicon { color: var(--vscode-foreground); }
 .monaco-workbench .part.sidebar .monaco-tl-twistie.codicon::before { font-size: 11px; -webkit-text-stroke: 0.4px currentColor; }
+/* Hydra: the view icons at the top of the sidebar (Explorer, Search...) sit centred
+   on Cursor's 32px pitch, and the overflow button is a chevron rather than "...". */
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container { flex: 1 1 auto; display: flex; justify-content: center; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item { padding: 0 6px !important; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-label.codicon-more::before { content: '\\eab4'; }
 `;
 export function brandedSidebarCss(text) {
   if (text.includes('Hydra: rounded pill')) throw new Error('Pinned sidebar stylesheet already has Hydra styles.');

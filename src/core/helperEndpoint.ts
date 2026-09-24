@@ -11,6 +11,13 @@ import { toolAllowed, type HelperRole } from './helperTools';
  */
 export interface HelperCaller { role: HelperRole; leadKey: string; jobId?: string }
 export type HelperHandler = (caller: HelperCaller, tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
+/**
+ * Decides whether the process on the other end of a connection may act as this
+ * window's lead. There is no lead token on disk to steal: a lead's bridge asks for
+ * one once, and Hydra answers only after checking which process connected
+ * (see src/core/leadVerification.ts). Returns a reason when refused.
+ */
+export type LeadVerifier = (socket: import('node:net').Socket) => Promise<{ ok: true } | { ok: false; reason: string }>;
 export interface HelperCallResponse { ok: boolean; result?: unknown; error?: string }
 
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -20,7 +27,8 @@ export class HelperEndpoint {
   private readonly callers = new Map<string, HelperCaller>();
   private readonly calls = new Map<string, number[]>();
   private listening = 0;
-  constructor(private readonly handler: HelperHandler, private readonly options: { maxBodyBytes?: number; callsPerMinute?: number } = {}) {}
+  private sessionAttempts: number[] = [];
+  constructor(private readonly handler: HelperHandler, private readonly options: { maxBodyBytes?: number; callsPerMinute?: number; leadKey?: string; verifyLead?: LeadVerifier } = {}) {}
 
   get port(): number { return this.listening; }
 
@@ -57,10 +65,23 @@ export class HelperEndpoint {
       response.end(JSON.stringify(body));
     };
     try {
-      if (request.method !== 'POST' || request.url !== '/hydra/v1/call') return reply(404, { ok: false, error: 'Not found.' });
+      if (request.method !== 'POST' || (request.url !== '/hydra/v1/call' && request.url !== '/hydra/v1/lead-session')) return reply(404, { ok: false, error: 'Not found.' });
       // Only local, non-browser clients: the Host must be this exact loopback address,
       // and any Origin (a web page) is refused, which blocks DNS rebinding.
       if (request.headers.host !== `127.0.0.1:${this.listening}` || request.headers.origin !== undefined) return reply(403, { ok: false, error: 'Forbidden.' });
+      if (request.url === '/hydra/v1/lead-session') {
+        // A lead bridge asks for its token once. It gets one only if the connecting
+        // process passes the window's lead check; the token then lives only in that
+        // bridge's memory.
+        const now = Date.now();
+        this.sessionAttempts = this.sessionAttempts.filter(at => now - at < 60_000);
+        if (this.sessionAttempts.length >= 20) return reply(429, { ok: false, error: 'Too many Hydra lead requests; slow down.' });
+        this.sessionAttempts.push(now);
+        if (!this.options.verifyLead || !this.options.leadKey) return reply(403, { ok: false, error: 'This Hydra window does not accept lead connections.' });
+        const verdict = await this.options.verifyLead(request.socket);
+        if (!verdict.ok) return reply(403, { ok: false, error: `Hydra refused this lead: ${verdict.reason}` });
+        return reply(200, { ok: true, result: { token: this.issue({ role: 'lead', leadKey: this.options.leadKey }) } });
+      }
       const auth = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(request.headers.authorization || '');
       const key = auth ? digest(auth[1]!) : undefined;
       const caller = key ? this.callers.get(key) : undefined;
@@ -97,6 +118,19 @@ function readBody(request: http.IncomingMessage, max: number): Promise<string | 
     });
     request.on('end', () => { if (!done) { done = true; resolve(Buffer.concat(chunks).toString('utf8')); } });
     request.on('error', error => { if (!done) { done = true; reject(error); } });
+  });
+}
+
+/** Client side, used by a lead bridge: ask the window for this bridge's lead token. */
+export function requestLeadSession(port: number): Promise<HelperCallResponse> {
+  return new Promise((resolve, reject) => {
+    const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/hydra/v1/lead-session', headers: { 'content-type': 'application/json', 'content-length': 2 } }, response => {
+      const chunks: Buffer[] = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as HelperCallResponse); } catch { resolve({ ok: false, error: `Hydra answered ${response.statusCode}.` }); } });
+    });
+    request.on('error', reject);
+    request.end('{}');
   });
 }
 

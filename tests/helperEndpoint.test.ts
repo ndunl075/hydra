@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { HelperEndpoint, callHelperEndpoint, type HelperCaller } from '../src/core/helperEndpoint';
+import { HelperEndpoint, callHelperEndpoint, requestLeadSession, type HelperCaller } from '../src/core/helperEndpoint';
+import { createLeadVerifier, evaluateLeadChain, windowsConnectionChain } from '../src/core/leadVerification';
 import { discoveryDirectory, findWindowFor, removeWindowRecord, writeWindowRecord } from '../src/core/helperDiscovery';
 import { createBridge } from '../src/core/mcpBridge';
 import { helperTools, leadTools } from '../src/core/helperTools';
@@ -66,13 +67,15 @@ test('the bridge picks the right window by folder, ignores dead windows, and exp
   const root = await mkdtemp(path.join(tmpdir(), 'hydra-helpers-'));
   const repoA = path.join(root, 'repo-a'), repoB = path.join(root, 'repo-b'), nested = path.join(repoA, 'packages', 'inner');
   await mkdir(nested, { recursive: true }); await mkdir(repoB, { recursive: true });
-  const windowA = new HelperEndpoint(async (caller, tool) => ({ window: 'A', tool, leadKey: caller.leadKey }));
-  const windowB = new HelperEndpoint(async () => ({ window: 'B' }));
+  const accept = async () => ({ ok: true as const });
+  const windowA = new HelperEndpoint(async (caller, tool) => ({ window: 'A', tool, leadKey: caller.leadKey }), { leadKey: 'A', verifyLead: accept });
+  const windowB = new HelperEndpoint(async () => ({ window: 'B' }), { leadKey: 'B', verifyLead: accept });
   const [portA, portB] = [await windowA.start(), await windowB.start()];
   try {
-    const recordA = await writeWindowRecord(root, { port: portA, token: windowA.issue({ role: 'lead', leadKey: 'A' }), pid: process.pid, folders: [repoA] });
-    await writeWindowRecord(root, { port: portB, token: windowB.issue({ role: 'lead', leadKey: 'B' }), pid: process.pid, folders: [repoB] });
-    await writeFile(path.join(discoveryDirectory(root), 'dead.json'), JSON.stringify({ version: 1, port: 1, token: 't', pid: 999999, folders: [nested], writtenAt: '' }));
+    const recordA = await writeWindowRecord(root, { port: portA, pid: process.pid, folders: [repoA] });
+    await writeWindowRecord(root, { port: portB, pid: process.pid, folders: [repoB] });
+    assert.doesNotMatch(await readFile(recordA, 'utf8'), /token/i, 'the discovery file holds no secret');
+    await writeFile(path.join(discoveryDirectory(root), 'dead.json'), JSON.stringify({ version: 2, port: 1, pid: 999999, folders: [nested], writtenAt: '' }));
     assert.equal((await findWindowFor(root, nested))?.port, portA, 'a dead window with a deeper folder is ignored');
     assert.ok(!(await readdir(discoveryDirectory(root))).includes('dead.json'), 'dead records are cleaned up');
     assert.equal((await findWindowFor(root, repoB))?.port, portB);
@@ -101,4 +104,51 @@ test('the bridge picks the right window by folder, ignores dead windows, and exp
     await removeWindowRecord(recordA);
     assert.equal(await findWindowFor(root, repoA), undefined);
   } finally { await windowA.close(); await windowB.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a lead token is issued only to a process that passes the window\'s lead check', async () => {
+  let allow = false;
+  const endpoint = new HelperEndpoint(async caller => ({ role: caller.role }), { leadKey: 'window', verifyLead: async () => allow ? { ok: true } : { ok: false, reason: 'it runs inside a Hydra helper.' } });
+  const port = await endpoint.start();
+  try {
+    const refused = await requestLeadSession(port);
+    assert.equal(refused.ok, false); assert.match(refused.error || '', /Hydra refused this lead: it runs inside a Hydra helper/);
+    allow = true;
+    const granted = await requestLeadSession(port);
+    const token = (granted.result as { token: string }).token;
+    assert.deepEqual(await callHelperEndpoint(port, token, 'hydra_list_helpers', {}), { ok: true, result: { role: 'lead' } });
+    const noVerifier = new HelperEndpoint(async () => 'x');
+    const otherPort = await noVerifier.start();
+    try { assert.match((await requestLeadSession(otherPort)).error || '', /does not accept lead connections/); } finally { await noVerifier.close(); }
+  } finally { await endpoint.close(); }
+});
+
+test('the lead check refuses helper descendants, detached processes and reused PIDs', () => {
+  const rules = { allowedAncestors: new Set([100]), deniedAncestors: new Set([300]) };
+  const link = (pid: number, ppid: number, created: number) => ({ pid, ppid, created });
+  // bridge 500 <- claude 400 <- extension host 100: accepted.
+  assert.deepEqual(evaluateLeadChain([link(500, 400, 30), link(400, 100, 20), link(100, 1, 10)], rules), { ok: true });
+  // bridge <- tool 450 <- helper 300 <- extension host 100: refused as a helper.
+  assert.match((evaluateLeadChain([link(500, 450, 40), link(450, 300, 30), link(300, 100, 20), link(100, 1, 10)], rules) as { reason: string }).reason, /inside a Hydra helper/);
+  // Detached: its parent is gone, so the chain never reaches the window.
+  assert.match((evaluateLeadChain([link(500, 777, 40)], rules) as { reason: string }).reason, /not started from this Hydra window/);
+  // A reused PID: the "parent" was created after the child, so the chain ends there.
+  assert.equal(evaluateLeadChain([link(500, 100, 10), link(100, 1, 99)], rules).ok, false);
+  assert.equal(evaluateLeadChain([], rules).ok, false);
+});
+
+test('on Windows the lead check reads the real connection owner and its parents', { skip: process.platform !== 'win32' }, async () => {
+  const net = await import('node:net');
+  const server = net.createServer();
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const accepted = new Promise<import('node:net').Socket>(resolve => server.once('connection', resolve));
+  const client = net.connect(port, '127.0.0.1');
+  try {
+    const socket = await accepted;
+    const chain = await windowsConnectionChain(socket);
+    assert.equal(chain[0]?.pid, process.pid, 'the owner of the client end is this process');
+    assert.deepEqual(await createLeadVerifier(() => ({ allowedAncestors: new Set([process.pid]), deniedAncestors: new Set() }))(socket), { ok: true });
+    assert.equal((await createLeadVerifier(() => ({ allowedAncestors: new Set([process.pid]), deniedAncestors: new Set([process.pid]) }))(socket)).ok, false);
+  } finally { client.destroy(); server.close(); }
 });

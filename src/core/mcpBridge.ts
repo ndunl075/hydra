@@ -1,4 +1,4 @@
-import { callHelperEndpoint } from './helperEndpoint';
+import { callHelperEndpoint, requestLeadSession } from './helperEndpoint';
 import { findWindowFor } from './helperDiscovery';
 import { helperInstructions, leadInstructions, toolsFor, type HelperRole } from './helperTools';
 
@@ -18,6 +18,7 @@ type Message = { jsonrpc?: string; id?: string | number; method?: string; params
 export function createBridge(options: BridgeOptions) {
   const role: HelperRole = options.env.HYDRA_HELPER_TOKEN ? 'helper' : 'lead';
   const inflight = new Map<string | number, AbortController>();
+  const leadTokens = new Map<number, string>();
   const connection = async (): Promise<{ port: number; token: string } | string> => {
     if (role === 'helper') {
       const port = Number(options.env.HYDRA_HELPER_PORT);
@@ -26,7 +27,15 @@ export function createBridge(options: BridgeOptions) {
     const root = options.env.HYDRA_HELPERS_DIR;
     if (!root) return 'Hydra helpers are not set up for this CLI. Connect Claude Code or Codex to Hydra from Hydra\'s onboarding or Settings.';
     const record = await findWindowFor(root, options.cwd);
-    return record ? { port: record.port, token: record.token } : `Hydra isn't open for this folder (${options.cwd}). Open the folder in Hydra to use helpers.`;
+    if (!record) return `Hydra isn't open for this folder (${options.cwd}). Open the folder in Hydra to use helpers.`;
+    // The lead token is asked for once per window and kept only in memory.
+    const cached = leadTokens.get(record.port);
+    if (cached) return { port: record.port, token: cached };
+    const session = await requestLeadSession(record.port).catch(error => ({ ok: false, error: String(error) }) as { ok: false; error: string });
+    const token = session.ok ? (session.result as { token?: unknown } | undefined)?.token : undefined;
+    if (typeof token !== 'string') return session.error || 'Hydra did not accept this lead.';
+    leadTokens.set(record.port, token);
+    return { port: record.port, token };
   };
   const result = (id: Message['id'], value: unknown) => ({ jsonrpc: '2.0', id, result: value });
   const text = (value: unknown, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }], ...(isError ? { isError: true } : {}) });

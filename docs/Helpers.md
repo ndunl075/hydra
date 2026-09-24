@@ -6,7 +6,16 @@ This replaces the old Auto delegation, which read a `HYDRA_DELEGATION_V1` line o
 
 ## Connecting Claude Code and Codex
 
-Connect in onboarding (step 03, Providers) or in **Hydra Settings → Hydra helpers**. Each agent has one row: its install state, a Connect or Disconnect button, and Sign in. Claude Code and Codex keep their own sign-in and billing.
+Connect in onboarding (step 03, Providers) or in **Hydra Settings → Hydra helpers**. Each agent has one row with a single **Connect to Hydra** button:
+
+1. It installs the official extension if it's missing. It uses the extension gallery, or downloads straight from Open VSX when the editor has none.
+2. It connects the extension to Hydra.
+3. For Claude, it also sets up [claude-mem](https://github.com/thedotmack/claude-mem) memory:
+   - installs Bun into `~/.bun/bin` from Bun's official release, if missing;
+   - installs claude-mem through `claude plugin` if missing, or updates it;
+   - installs claude-mem's dependencies.
+
+Hydra redistributes neither Bun nor claude-mem. The row also has Disconnect and Sign in. Claude Code and Codex keep their own sign-in and billing.
 
 Connecting adds Hydra as a user-level tool server named `hydra`. That's per user, never per project; nothing is written inside a repository.
 
@@ -84,9 +93,14 @@ The Agents view shows a **Helpers** section for each helper:
 
 - **Local endpoint:** Hydra listens on `127.0.0.1` only, on a random port. Requests with a foreign `Host` or any `Origin` are refused, which blocks web pages. Oversized and flooding requests are refused too.
 - **Tokens:** every caller has its own random token, and only its hash is kept. The token alone decides who is calling (a window's lead, or one helper) and which actions it may use. A helper can't use lead actions. Helper tokens are revoked when the job ends.
-- **Discovery file:** the lead's bridge finds its window through a small file in Hydra's global storage, readable only by your user where Windows allows.
-- **Logging:** every action is logged to the Hydra output channel.
-- **Known gap:** a helper runs as your user, so it could read that discovery file and act as the lead. The mitigations are the cap on unfinished helpers per window (16), per-action logging, and helpers' lack of web tools.
+- **No lead secret on disk.** The discovery file (port, pid, folders) contains no token. A lead's bridge asks Hydra for its token once, and Hydra first asks Windows which process opened the connection, then walks that process's parents (`src/core/leadVerification.ts`):
+  - **Refused** if the chain passes through any process Hydra started for a helper or a helper's checks. A helper, and anything it starts, can't act as the lead.
+  - **Refused** if the chain doesn't reach this Hydra window. That covers a detached process trying to escape its helper, and a CLI run outside Hydra; use the extensions or a terminal inside Hydra.
+  - Windows reports the connection's owner, so a caller can't pretend to be another process. A parent created after its child (a reused PID) ends the chain.
+  - The token then lives only in that bridge's memory.
+  - Verified live: a helper's check process asking for a lead token was refused with "it runs inside a Hydra helper".
+  - On other platforms this check isn't implemented yet, and lead connections are accepted.
+- **Logging:** every action, and every accepted or refused lead connection, is logged to the Hydra output channel.
 
 ## Supported versions
 
@@ -98,5 +112,6 @@ Hydra runs Claude Code 2.1.x from 2.1.270 and Codex 0.154.x from 0.154.0 (`src/c
 | --- | --- | --- |
 | "Hydra isn't open for this folder" | No Hydra window has the chat's folder open | Open the folder in Hydra |
 | "Hydra helpers are not set up for this CLI" | The agent isn't connected | Connect it in Settings → Hydra helpers |
+| "Hydra refused this lead: it was not started from this Hydra window" | The CLI runs outside Hydra (for example Windows Terminal) | Use the Claude Code or Codex extension, or a terminal inside Hydra |
 | A helper "exited without finishing" | Its CLI failed to start or crashed | **Open log** on the dashboard |
-| Claude reports failing SessionStart hooks | A plugin hook (for example claude-mem needing Bun) fails | Install what the hook needs, or disable the plugin. Hydra only records the failure. |
+| Claude reports failing SessionStart hooks | A plugin hook fails (for example claude-mem without Bun or its dependencies) | Press Connect on Claude again; it sets up Bun and claude-mem. Hydra records hook failures and carries on. |

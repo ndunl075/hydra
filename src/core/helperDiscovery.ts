@@ -4,11 +4,11 @@ import path from 'node:path';
 
 /**
  * How a lead's bridge finds its Hydra window. Each window writes one small file
- * (port, lead token, pid, folders) into Hydra's global storage, readable only by
+ * (port, pid, folders; no secret) into Hydra's global storage, readable only by
  * this user where the OS supports it, and removes it when the window closes. The
  * bridge matches the folder its CLI runs in (its cwd) against those folders.
  */
-export interface HelperWindowRecord { version: 1; port: number; token: string; pid: number; folders: string[]; writtenAt: string }
+export interface HelperWindowRecord { version: 2; port: number; pid: number; folders: string[]; writtenAt: string }
 
 export const discoveryDirectory = (helpersRoot: string) => path.join(helpersRoot, 'windows');
 
@@ -24,7 +24,7 @@ export async function writeWindowRecord(helpersRoot: string, record: Omit<Helper
   const folders = await Promise.all(record.folders.map(canonical));
   const name = createHash('sha256').update(`${record.pid}\0${folders.join('\0')}`).digest('hex').slice(0, 24);
   const file = path.join(directory, `${name}.json`);
-  const body: HelperWindowRecord = { version: 1, port: record.port, token: record.token, pid: record.pid, folders, writtenAt: new Date().toISOString() };
+  const body: HelperWindowRecord = { version: 2, port: record.port, pid: record.pid, folders, writtenAt: new Date().toISOString() };
   await writeFile(file, JSON.stringify(body), { encoding: 'utf8', mode: 0o600 });
   return file;
 }
@@ -43,7 +43,7 @@ export async function findWindowFor(helpersRoot: string, cwd: string): Promise<H
   for (const name of names) {
     let record: HelperWindowRecord;
     try { record = JSON.parse(await readFile(path.join(directory, name), 'utf8')); } catch { continue; }
-    if (record?.version !== 1 || typeof record.port !== 'number' || typeof record.token !== 'string' || !Array.isArray(record.folders)) continue;
+    if (record?.version !== 2 || typeof record.port !== 'number' || !Array.isArray(record.folders)) continue;
     if (!alive(record.pid)) { await rm(path.join(directory, name), { force: true }).catch(() => {}); continue; }
     for (const folder of record.folders) {
       const relative = path.relative(folder, target);

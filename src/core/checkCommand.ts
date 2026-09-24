@@ -11,14 +11,14 @@ import { processLaunch, terminateProcessTree } from './process';
  */
 export interface CheckCommand { executable: string; args: string[] }
 export interface CheckCommandResult { exitCode: number | null; unavailable: boolean; interrupted: boolean; timedOut: boolean; logFailed: boolean; logged: boolean }
-export async function runCheckCommand(command: CheckCommand, cwd: string, filename: string, signal?: AbortSignal, terminate: (pid: number) => Promise<void> = terminateProcessTree, abortGraceMs = 3000, timeoutMs = 300000, openLog: typeof open = open): Promise<CheckCommandResult> {
+export async function runCheckCommand(command: CheckCommand, cwd: string, filename: string, signal?: AbortSignal, terminate: (pid: number) => Promise<void> = terminateProcessTree, abortGraceMs = 3000, timeoutMs = 300000, openLog: typeof open = open, spawned?: (pid: number) => void): Promise<CheckCommandResult> {
   if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 1 || abortGraceMs > 30000) throw new Error('Invalid check abort grace period.');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 900000) throw new Error('Invalid check timeout.');
   if (signal?.aborted) return { exitCode: null, unavailable: false, interrupted: true, timedOut: false, logFailed: false, logged: false };
   await mkdir(path.dirname(filename), { recursive: true }); const handle = await openLog(filename, 'wx');
   if (signal?.aborted) { await handle.close(); return { exitCode: null, unavailable: false, interrupted: true, timedOut: false, logFailed: false, logged: false }; }
   return new Promise((resolve, reject) => {
-    const launch = processLaunch(command.executable, command.args); const child = spawn(launch.executable, launch.args, { cwd, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    const launch = processLaunch(command.executable, command.args); const child = spawn(launch.executable, launch.args, { cwd, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] }); if (child.pid) spawned?.(child.pid);
     let settled = false, unavailable = false, interrupted = false, timedOut = false, writeError: unknown, cleanup: Promise<void> | undefined, fallback: ReturnType<typeof setTimeout> | undefined, timer: ReturnType<typeof setTimeout> | undefined, writes = Promise.resolve();
     let stop!: (reason: string, options?: { interrupted?: boolean; timedOut?: boolean }) => void;
     const append = (data: string | Buffer) => { if (settled) return; writes = writes.then(async () => { if (writeError) return; if (typeof data === 'string') await handle.write(data); else await handle.write(data); }).catch(error => { if (!writeError) { writeError = error; stop('Hydra could not retain verification output; the owned runner was stopped.'); } }); };

@@ -86,3 +86,45 @@ test('onboarding and Settings connect Claude Code and Codex to Hydra; Settings n
   assert.match(view, /keep their own sign-in and billing/);
   assert.match(view, /never inside a project/);
 });
+
+test('extensions install straight from Open VSX when the editor has no gallery', async () => {
+  const { downloadOpenVsx, openVsxTarget } = await import('../src/core/openVsx');
+  assert.equal(openVsxTarget('win32', 'x64'), 'win32-x64'); assert.equal(openVsxTarget('darwin', 'arm64'), 'darwin-arm64');
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-openvsx-'));
+  try {
+    const asked: string[] = [];
+    const fake = (async (url: string) => {
+      asked.push(url);
+      if (url.includes('/api/')) return { ok: true, json: async () => ({ files: { download: 'https://open-vsx.org/file.vsix' } }) };
+      return { ok: true, arrayBuffer: async () => new TextEncoder().encode('vsix-bytes').buffer };
+    }) as unknown as typeof fetch;
+    const vsix = await downloadOpenVsx('anthropic.claude-code', fake, directory);
+    assert.equal(await readFile(vsix, 'utf8'), 'vsix-bytes');
+    assert.match(asked[0]!, /open-vsx\.org\/api\/anthropic\/claude-code\/[a-z0-9]+-(x64|arm64)\/latest/);
+    const missing = (async () => ({ ok: false, status: 404 })) as unknown as typeof fetch;
+    await assert.rejects(downloadOpenVsx('openai.chatgpt', missing, directory), /not found on Open VSX/);
+    await assert.rejects(downloadOpenVsx('../evil', fake, directory), /Invalid extension id/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('claude-mem counts as set up only with its plugin installed', async () => {
+  const { claudeMemStatus, claudeMemPlugin } = await import('../src/core/claudeMem');
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-claudemem-'));
+  try {
+    assert.equal((await claudeMemStatus(directory)).plugin, false);
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(path.join(directory, 'plugins'), { recursive: true });
+    await writeFile(path.join(directory, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { [claudeMemPlugin]: [{ scope: 'user' }] } }));
+    assert.equal((await claudeMemStatus(directory)).plugin, true);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('one Connect button installs, connects, and sets up claude-mem', async () => {
+  const view = await readFile('src/helperConnectionsView.ts', 'utf8');
+  assert.doesNotMatch(view, /data-install|Install extension/);
+  assert.match(view, /data-connect=/); assert.match(view, /claude-mem/);
+  const extension = await readFile('src/extension.ts', 'utf8');
+  assert.match(extension, /await this\.installProviderExtension\(provider\);/);
+  assert.match(extension, /downloadOpenVsx\(id\)/);
+  assert.match(extension, /setupClaudeMem\(claude\)/);
+});

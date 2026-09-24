@@ -25,13 +25,13 @@ test('native workflow fixture preserves Editor and Agents ownership without a pr
 
 test('native workflow fixture covers the selected workspace, the agent map, and accessibility contracts', async () => {
   const [workspace, map, mapCss, record] = await Promise.all([
-    source('webview/FocusedWorkspace.tsx'), source('webview/AgentMap.tsx'), source('webview/agent-map.css'),
+    source('webview/FocusedWorkspace.tsx'), source('webview/AgentsCanvas.tsx'), source('webview/agents-canvas.css'),
     readFile(fixture, 'utf8').then(JSON.parse)
   ]);
   assert.match(workspace, /aria-label={`Focused workspace for \${task\.title}`}/);
   assert.match(workspace, /Viewing never starts a terminal, preview, check, model turn, or reconciliation action/);
   assert.match(map, /tabIndex={0}/);
-  assert.match(mapCss, /\.agent-map-task:focus-visible/);
+  assert.match(mapCss, /\.canvas-node:focus-visible/);
   assert.match(mapCss, /body\.vscode-high-contrast/);
   assert.match(mapCss, /prefers-reduced-motion: reduce/);
   assert.ok(record.automatedAssertions.every((item: { status: string }) => item.status === 'defined'));

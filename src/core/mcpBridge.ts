@@ -31,7 +31,8 @@ export function createBridge(options: BridgeOptions) {
     // The lead token is asked for once per window and kept only in memory.
     const cached = leadTokens.get(record.port);
     if (cached) return { port: record.port, token: cached };
-    const session = await requestLeadSession(record.port).catch(error => ({ ok: false, error: String(error) }) as { ok: false; error: string });
+    const declared = options.env.HYDRA_LEAD_PROVIDER === 'claude' || options.env.HYDRA_LEAD_PROVIDER === 'codex' ? options.env.HYDRA_LEAD_PROVIDER : undefined;
+    const session = await requestLeadSession(record.port, declared).catch(error => ({ ok: false, error: String(error) }) as { ok: false; error: string });
     const token = session.ok ? (session.result as { token?: unknown } | undefined)?.token : undefined;
     if (typeof token !== 'string') return session.error || 'Hydra did not accept this lead.';
     leadTokens.set(record.port, token);

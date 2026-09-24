@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HelperEndpoint, callHelperEndpoint, requestLeadSession, type HelperCaller } from '../src/core/helperEndpoint';
-import { createLeadVerifier, evaluateLeadChain, windowsConnectionChain } from '../src/core/leadVerification';
+import { chainProvider, createLeadVerifier, evaluateLeadChain, windowsConnectionChain } from '../src/core/leadVerification';
 import { discoveryDirectory, findWindowFor, removeWindowRecord, writeWindowRecord } from '../src/core/helperDiscovery';
 import { createBridge } from '../src/core/mcpBridge';
 import { helperTools, leadTools } from '../src/core/helperTools';
@@ -151,4 +151,32 @@ test('on Windows the lead check reads the real connection owner and its parents'
     assert.deepEqual(await createLeadVerifier(() => ({ allowedAncestors: new Set([process.pid]), deniedAncestors: new Set() }))(socket), { ok: true });
     assert.equal((await createLeadVerifier(() => ({ allowedAncestors: new Set([process.pid]), deniedAncestors: new Set([process.pid]) }))(socket)).ok, false);
   } finally { client.destroy(); server.close(); }
+});
+
+test('each lead bridge gets its own session, tagged with the agent it serves', async () => {
+  const seen: HelperCaller[] = [];
+  let chainSays: 'claude' | 'codex' | undefined;
+  const endpoint = new HelperEndpoint(async caller => { seen.push(caller); return 'ok'; }, { leadKey: 'window', verifyLead: async () => chainSays ? { ok: true, provider: chainSays } : { ok: true } });
+  const port = await endpoint.start();
+  try {
+    const claude = await requestLeadSession(port, 'claude');
+    const codex = await requestLeadSession(port, 'codex');
+    const [a, b] = [claude, codex].map(session => session.result as { token: string; session: string });
+    assert.match(a!.session, /^[a-f0-9]{12}$/); assert.notEqual(a!.session, b!.session, 'one session per bridge');
+    await callHelperEndpoint(port, a!.token, 'hydra_list_heads', {});
+    await callHelperEndpoint(port, b!.token, 'hydra_list_heads', {});
+    assert.deepEqual(seen.map(caller => [caller.leadSessionId, caller.provider]), [[a!.session, 'claude'], [b!.session, 'codex']]);
+    chainSays = 'codex';
+    const undeclared = (await requestLeadSession(port)).result as { token: string };
+    await callHelperEndpoint(port, undeclared.token, 'hydra_list_heads', {});
+    assert.equal(seen.at(-1)!.provider, 'codex', 'without a declared agent, the process chain decides');
+    chainSays = undefined;
+    const unknown = (await requestLeadSession(port)).result as { token: string };
+    await callHelperEndpoint(port, unknown.token, 'hydra_list_heads', {});
+    assert.equal(seen.at(-1)!.provider, undefined);
+  } finally { await endpoint.close(); }
+  const link = (pid: number, ppid: number, name: string) => ({ pid, ppid, created: 10, name });
+  assert.equal(chainProvider([link(3, 2, 'node.exe'), link(2, 1, 'claude.exe'), link(1, 0, 'Hydra.exe')]), 'claude');
+  assert.equal(chainProvider([link(3, 2, 'codex.exe')]), 'codex');
+  assert.equal(chainProvider([link(3, 2, 'powershell.exe')]), undefined);
 });

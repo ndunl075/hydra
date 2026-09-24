@@ -16,6 +16,9 @@ const edgeStart = (x: number, y: number) => ({ x, y: y + 34 });
 const curve = (x1: number, y1: number, x2: number, y2: number) => { const mid = (x1 + x2) / 2; return `M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`; };
 
 interface Ghost { head: CanvasHead; to: { x: number; y: number }; until: number }
+interface LeadGhost { lead: CanvasLead; until: number }
+/** A chat stays briefly after its last head, so the heads visibly fold back into it. */
+const leadGraceMs = 1200;
 
 export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly HelperJobView[]; onAction: (action: HeadAction, jobId: string) => void; onStopAll?: () => void }) {
   const [now, setNow] = useState(() => Date.now());
@@ -26,14 +29,33 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
   const [menu, setMenu] = useState<{ id: string; x: number; y: number }>();
   const [filter, setFilter] = useState<'running' | 'today'>('running');
   const [ghosts, setGhosts] = useState<Ghost[]>([]);
+  const [leadGhosts, setLeadGhosts] = useState<LeadGhost[]>([]);
+  const previousLeads = useRef(new Map<string, CanvasLead>());
   // When each head was first drawn: for its first moments it grows out of its chat.
   const enteredAt = useRef(new Map<string, number>());
   const previous = useRef(new Map<string, { head: CanvasHead; lead?: CanvasLead }>());
   const viewport = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; panX: number; panY: number } | undefined>(undefined);
+  // Until you zoom or pan, the canvas fits every head into the space it has (a short pane, a terminal open below).
+  const [manual, setManual] = useState(false);
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setBox({ width: element.clientWidth, height: element.clientHeight }));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  // One clock drives elapsed times, the finished-head timeout, and clearing heads that have collapsed away.
+  useEffect(() => { const timer = setInterval(() => { setNow(Date.now()); setGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); setLeadGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); }, 250); return () => clearInterval(timer); }, []);
   const model = useMemo(() => buildCanvas(heads, now), [heads, now]);
+  useEffect(() => {
+    if (manual || !box.width || !box.height || !model.heads.length) return;
+    const fit = Math.min(1, (box.width - 24) / model.width, (box.height - 24) / model.height);
+    setZoom(Math.max(.4, +fit.toFixed(2)));
+    setPan({ x: 0, y: 0 });
+  }, [manual, box, model.width, model.height, model.heads.length]);
   const leadAt = new Map(model.leads.map(lead => [lead.key, lead]));
   const headAt = new Map(model.heads.map(item => [item.id, item]));
 
@@ -46,10 +68,11 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
       leaving.push({ head: was.head, to: lead ? { x: lead.x, y: lead.y } : { x: was.head.x, y: was.head.y }, until: Date.now() + leaveMs });
     }
     previous.current = new Map(model.heads.map(item => [item.id, { head: item, lead: leadAt.get(item.lead) }]));
+    const gone = [...previousLeads.current.values()].filter(lead => !leadAt.has(lead.key));
+    previousLeads.current = new Map(model.leads.map(lead => [lead.key, lead]));
+    if (gone.length) setLeadGhosts(current => [...current.filter(ghost => !gone.some(lead => lead.key === ghost.lead.key) && !leadAt.has(ghost.lead.key)), ...gone.map(lead => ({ lead, until: Date.now() + leadGraceMs }))]);
     if (leaving.length) {
       setGhosts(current => [...current.filter(ghost => !leaving.some(item => item.head.id === ghost.head.id)), ...leaving]);
-      const timer = setTimeout(() => setGhosts(current => current.filter(ghost => ghost.until > Date.now())), leaveMs + 50);
-      return () => clearTimeout(timer);
     }
   }, [model]);
   const clock = Date.now();
@@ -69,6 +92,7 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
     const item = headAt.get(id);
     const box = viewport.current;
     if (!item || !box) return;
+    setManual(true);
     setPan({ x: Math.min(0, box.clientWidth / 2 - (item.x + layout.headWidth / 2) * zoom), y: Math.min(0, box.clientHeight / 2 - (item.y + 40) * zoom) });
   };
   const openMenu = (id: string, x: number, y: number) => { setSelected(id); setMenu({ id, x, y }); };
@@ -88,7 +112,8 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
   const listed = (filter === 'running' ? running : heads.filter(head => Date.parse(head.createdAt) >= dayStart.getTime()))
     .slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const empty = !model.heads.length && !ghosts.length;
+  const lingering = leadGhosts.filter(ghost => !leadAt.has(ghost.lead.key));
+  const empty = !model.heads.length && !ghosts.length && !lingering.length;
 
   return <section className={`agents-canvas${still ? ' still' : ''}`} aria-label="Agents">
     <div className="canvas-stage">
@@ -98,17 +123,17 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
           {running.length > 0 && onStopAll && <button className="canvas-button danger" onClick={onStopAll}>Stop all heads</button>}
           <button className="canvas-button" aria-pressed={still} onClick={() => setStill(value => !value)}>{still ? 'Resume motion' : 'Pause motion'}</button>
           <div className="canvas-zoom" role="group" aria-label="Zoom">
-            <button aria-label="Zoom out" onClick={() => setZoom(value => Math.max(.5, +(value - .1).toFixed(2)))}>−</button>
-            <button aria-label="Reset zoom and position" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>{Math.round(zoom * 100)}%</button>
-            <button aria-label="Zoom in" onClick={() => setZoom(value => Math.min(1.5, +(value + .1).toFixed(2)))}>+</button>
+            <button aria-label="Zoom out" onClick={() => { setManual(true); setZoom(value => Math.max(.4, +(value - .1).toFixed(2))); }}>−</button>
+            <button aria-label={manual ? 'Fit all heads' : 'Fitting all heads'} title="Fit all heads" onClick={() => { setManual(false); setPan({ x: 0, y: 0 }); }}>{manual ? `${Math.round(zoom * 100)}%` : 'Fit'}</button>
+            <button aria-label="Zoom in" onClick={() => { setManual(true); setZoom(value => Math.min(1.5, +(value + .1).toFixed(2))); }}>+</button>
           </div>
         </div>
       </div>
       <div className="canvas-viewport" ref={viewport}
-        onPointerDown={event => { if ((event.target as HTMLElement).closest('.canvas-node, .canvas-lead, button')) return; drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); }}
+        onPointerDown={event => { if ((event.target as HTMLElement).closest('.canvas-node, .canvas-lead, button')) return; drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; setManual(true); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); }}
         onPointerMove={event => { const start = drag.current; if (start) setPan({ x: start.panX + event.clientX - start.x, y: start.panY + event.clientY - start.y }); }}
         onPointerUp={() => { drag.current = undefined; }}
-        onWheel={event => { if (!event.ctrlKey) return; event.preventDefault(); setZoom(value => Math.min(1.5, Math.max(.5, +(value - Math.sign(event.deltaY) * .1).toFixed(2)))); }}>
+        onWheel={event => { if (!event.ctrlKey) return; event.preventDefault(); setManual(true); setZoom(value => Math.min(1.5, Math.max(.4, +(value - Math.sign(event.deltaY) * .1).toFixed(2)))); }}>
         {empty ? <div className="canvas-empty"><div className="canvas-empty-mark" aria-hidden="true"><i /><i /><i /></div><p>Heads your Claude Code and Codex chats start will appear here.</p><span>Start a task in a chat that splits into independent pieces. Each head grows out of the chat that started it.</span></div>
           : <div className="canvas-plane" style={{ width: model.width, height: model.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
             <svg className="canvas-edges" width={model.width} height={model.height} aria-hidden="true">
@@ -129,18 +154,22 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
               <span className="canvas-lead-logo">{lead.provider ? <ProviderLogo provider={lead.provider} /> : <span aria-hidden="true">◆</span>}</span>
               <span className="canvas-lead-copy"><em>Lead</em><b>{lead.label}</b><span>{lead.heads.length} {lead.heads.length === 1 ? 'head' : 'heads'}</span></span>
             </div>)}
+            {lingering.map(ghost => <div key={`lead-ghost-${ghost.lead.key}`} className={`canvas-lead leaving provider-${ghost.lead.provider || 'unknown'}`} aria-hidden="true" style={{ transform: `translate(${ghost.lead.x}px, ${ghost.lead.y}px)` }}>
+              <span className="canvas-lead-logo">{ghost.lead.provider ? <ProviderLogo provider={ghost.lead.provider} /> : <span>◆</span>}</span>
+              <span className="canvas-lead-copy"><em>Lead</em><b>{ghost.lead.label}</b><span>Done</span></span>
+            </div>)}
             {model.heads.map(item => <HeadNode key={item.id} item={item} now={now} fresh={fresh.includes(item.id)} from={leadAt.get(item.lead)} selected={selected === item.id}
               onSelect={() => setSelected(item.id)} onOpen={() => onAction('helperReview', item.id)} onMenu={(x, y) => openMenu(item.id, x, y)} onKey={event => onNodeKey(event, item.id)} />)}
             {ghosts.map(ghost => <div key={`ghost-${ghost.head.id}`} className={`canvas-node leaving provider-${ghost.head.head.provider}`} aria-hidden="true" style={{ transform: `translate(${ghost.head.x}px, ${ghost.head.y}px)`, '--to-x': `${ghost.to.x - ghost.head.x}px`, '--to-y': `${ghost.to.y - ghost.head.y}px` } as React.CSSProperties}>
               <div className="canvas-node-card"><strong>{ghost.head.head.title}</strong></div>
             </div>)}
           </div>}
+      </div>
         {model.tray.length > 0 && <div className="canvas-tray" aria-label="Finished heads">
           <span className="canvas-tray-label">Finished</span>
           {model.tray.slice(0, 8).map(head => <button key={head.id} className={`canvas-chip state-${head.state}`} title={`${head.title} · ${headStatus[head.state] || head.state}${head.reason ? `\n${head.reason}` : ''}`} onClick={() => onAction('helperReview', head.id)} onContextMenu={event => { event.preventDefault(); openMenu(head.id, event.clientX, event.clientY); }}>
             <i aria-hidden="true" />{head.title}</button>)}
         </div>}
-      </div>
     </div>
     <aside className="canvas-list" aria-label="Heads list">
       <div className="canvas-list-head"><strong>Heads</strong>
@@ -182,7 +211,7 @@ function HeadNode({ item, now, fresh, from, selected, onSelect, onOpen, onMenu, 
   const style = { transform: `translate(${item.x}px, ${item.y}px)`, ...(fresh && from ? { '--from-x': `${from.x - item.x}px`, '--from-y': `${from.y - item.y}px` } : {}) } as React.CSSProperties;
   return <div id={`head-${item.id}`} className={`canvas-node provider-${head.provider} state-${head.state}${fresh ? ' entering' : ''}${selected ? ' selected' : ''}`} style={style}
     role="button" tabIndex={0} aria-label={`${head.title}, ${head.provider === 'codex' ? 'Codex' : 'Claude'} head, ${status}. ${detail}. Enter opens the diff; Shift+F10 for more.`}
-    onClick={onSelect} onDoubleClick={onOpen} onKeyDown={onKey} onContextMenu={event => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}>
+    onClick={() => { onSelect(); onOpen(); }} onKeyDown={onKey} onContextMenu={event => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}>
     <div className="canvas-node-card">
       <div className="canvas-node-top">
         <span className="canvas-node-logo"><ProviderLogo provider={head.provider} /></span>

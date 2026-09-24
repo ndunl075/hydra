@@ -1,6 +1,6 @@
 # Agents view: a live canvas of heads
 
-Status: **plan** (2026-09-24). Replaces the current Agents view.
+Status: **built** (2026-09-24). Replaces the task-era Agents view. See "As built" at the end.
 
 ## What's wrong today
 
@@ -86,3 +86,52 @@ Each phase goes through the local gate, a PR, and Nico's OK before merge.
 ## Later: long-running tasks
 
 Not in this plan. A separate lane or tray for work that runs for hours (background builds, long migrations, scheduled heads) may come later. The canvas is for heads that come and go within a session. Long-running work needs its own view with progress, logs and resumability.
+
+## As built
+
+- **Phase 1:**
+  - **Chat identity:** a lead's token names its session. The lead-session handshake issues a 12-hex session id per bridge process, and the bridge declares its provider. Connect sets `HYDRA_LEAD_PROVIDER` in each agent's registration; without it, the process chain decides (`chainProvider`: `claude.exe` / `codex.exe`).
+  - **On the job:** `hydra_start_head` records `lead: { sessionId, provider, label }`. `lead_label` is a new optional tool field.
+  - **Events and merges:** head changes post a `heads` event to the webview at once, and the full snapshot follows, debounced. `HelperService.refreshMerged` runs with the watchdog every 5 s and checks each done head's commit with `git merge-base --is-ancestor <commit> HEAD` in the lead folder.
+  - **Registration fix:** Claude registration retries once when a concurrent Hydra window re-added its entry ("already exists").
+- **Phase 2:**
+  - `src/core/agentsCanvas.ts` is the pure model:
+    - visibility: working, or finished within 2 minutes and not merged;
+    - the tray: unmerged results from the last 12 hours;
+    - grouping by chat, and a deterministic layout where dependents sit to the right;
+    - edges: `waiting` while a dependent is queued behind a working head.
+  - `webview/AgentsCanvas.tsx` draws it:
+    - motion: heads grow out of their chat and collapse back when they leave; layout moves are CSS transitions, and edges animate `d`;
+    - navigation: pan, Ctrl+wheel zoom, and Pause motion;
+    - accessibility: reduced motion and high contrast are respected.
+- **Phase 3:**
+  - Side list: Running / All today. Selecting a head centres it on the canvas.
+  - Actions: Open diff, Open log, **Answer question…** (new `helperAnswer`: an input box; Hydra replies on the lead's behalf), Cancel head, and Stop all heads.
+  - Keyboard: each head is focusable. Enter opens the diff, Shift+F10 or ContextMenu opens the menu, and ↑/↓ move between heads.
+- **Phase 4:**
+  - The Agents page is now the header plus the canvas; the handoff window keeps its view.
+  - The task list, "Resources and setup", "Managed CLI", profile slots and the new-task form are gone from it.
+  - `AgentMap` and `HelperDashboard` were deleted; the managed-task components stay in the tree for the follow-up removal.
+  - Tests moved to `tests/agentsCanvas.test.ts`.
+- **Phase 5:**
+  - Verified live in the probe: a real Claude Code lead, run from a terminal inside Hydra, started three heads, one of them Codex, with a dependency.
+  - The canvas showed:
+    1. them growing out of the chat;
+    2. Working and Queued ("Waiting for what it depends on") states;
+    3. amber dependency edges;
+    4. Done with "1/1 checks passed · 1 file changed".
+  - After the lead merged the branches, all three left the canvas.
+  - Two layout bugs found in that run were fixed: row spacing below the card height, and the viewport scrolling on focus (now `overflow: clip`).
+- **Found in the live runs and fixed:**
+  - Cards overlapped vertically: rows are now 172px apart, and a test pins it.
+  - The viewport scrolled when something inside took focus: it's now `overflow: clip`.
+  - In a short pane (for example with the terminal open), heads were out of view:
+    - The canvas now **fits all heads** into the space it has, until you zoom or pan. The **Fit** button goes back to fitting.
+    - The Finished tray sits below the canvas instead of over it.
+    - When stacked, the side list takes at most about a third of the height.
+  - Heads that left weren't always cleared, which kept the empty message hidden. Clearing now runs on the canvas's own clock, not a timer a re-render could cancel.
+  - A chat now stays about a second after its last head folds back into it, then fades (the plan's "short grace period").
+  - A headless-browser harness drove the real component through empty → two heads → merged → empty and confirmed each step, with no errors.
+- **Not done:**
+  - Removing the managed-task code from the tree is the planned follow-up.
+  - Codex was tested as a head (started by a Claude lead), not as a lead itself: its lead provider tag is covered by unit tests, and in real use comes from the Connect registration.

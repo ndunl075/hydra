@@ -19,7 +19,7 @@ export interface CanvasHead { id: string; lead: string; depth: number; x: number
 export interface CanvasEdge { id: string; kind: 'lead' | 'dependency'; from: string; to: string; waiting: boolean; active: boolean }
 export interface CanvasModel { leads: CanvasLead[]; heads: CanvasHead[]; edges: CanvasEdge[]; tray: HelperJobView[]; width: number; height: number }
 
-export const layout = { leadX: 40, leadWidth: 190, headX: 330, columnGap: 290, headWidth: 250, rowGap: 116, groupGap: 56, top: 40 };
+export const layout = { leadX: 40, leadWidth: 190, headX: 330, columnGap: 290, headWidth: 250, rowGap: 172, groupGap: 56, top: 40 };
 
 const finishedAt = (head: HelperJobView): number => Date.parse(head.finishedAt || head.createdAt);
 export const isActive = (head: HelperJobView): boolean => activeStates.has(head.state);

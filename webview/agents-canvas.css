@@ -17,7 +17,7 @@ body.vscode-light .agents-canvas { --canvas-claude: #b8552f; --canvas-codex: #3d
 .canvas-zoom button { border-radius: 0; margin-left: -1px; min-width: 30px; }
 .canvas-zoom button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
 .canvas-zoom button:last-child { border-radius: 0 5px 5px 0; }
-.canvas-viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; background: radial-gradient(var(--canvas-dot) 1px, transparent 1.2px) 0 0 / 18px 18px; touch-action: none; }
+.canvas-viewport { position: relative; flex: 1; min-height: 0; overflow: clip; cursor: grab; background: radial-gradient(var(--canvas-dot) 1px, transparent 1.2px) 0 0 / 18px 18px; touch-action: none; }
 .canvas-viewport:active { cursor: grabbing; }
 .canvas-plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; transition: transform .25s ease-out; }
 .canvas-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
@@ -26,11 +26,16 @@ body.vscode-light .agents-canvas { --canvas-claude: #b8552f; --canvas-codex: #3d
 .canvas-edge.active .flow { stroke: var(--canvas-flow); stroke-dasharray: 5 9; animation: canvas-flow 1s linear infinite; }
 .canvas-edge.dependency .base { stroke: var(--canvas-wait); stroke-dasharray: 4 5; opacity: .55; }
 .canvas-edge.dependency.waiting .base { opacity: 1; }
+/* Released: the dependent is running or finished, so the link is solid. */
+.canvas-edge.dependency:not(.waiting) .base { stroke-dasharray: none; opacity: .7; }
 .canvas-edge.dependency.active .flow { stroke: var(--canvas-wait); }
 @keyframes canvas-flow { to { stroke-dashoffset: -28; } }
 
 /* Leads: the chat that started the heads. */
 .canvas-lead { position: absolute; left: 0; top: 0; width: 190px; display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); transition: transform .5s cubic-bezier(.2,.8,.2,1); animation: canvas-in .45s cubic-bezier(.2,.8,.2,1); }
+/* A chat fades out just after its last head has folded back into it (opacity only; its position is its transform). */
+.canvas-lead.leaving { pointer-events: none; animation: canvas-lead-out 1.2s ease-in forwards; }
+@keyframes canvas-lead-out { 0%, 55% { opacity: 1; } 100% { opacity: 0; } }
 .canvas-lead.provider-claude { border-left: 3px solid var(--canvas-claude); }
 .canvas-lead.provider-codex { border-left: 3px solid var(--canvas-codex); }
 .canvas-lead-logo { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: var(--rail); }
@@ -83,7 +88,7 @@ body.vscode-light .agents-canvas { --canvas-claude: #b8552f; --canvas-codex: #3d
 .canvas-empty-mark i:nth-child(2) { animation-delay: .4s; } .canvas-empty-mark i:nth-child(3) { animation-delay: .8s; }
 
 /* Finished tray */
-.canvas-tray { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--primary); }
+.canvas-tray { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--primary); max-height: 76px; overflow: hidden; }
 .canvas-tray-label { font-size: 11px; color: var(--muted); margin-right: 4px; }
 .canvas-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 11.5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .canvas-chip i, .canvas-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--state-idle); }
@@ -126,7 +131,7 @@ body.vscode-high-contrast .agents-canvas, body.vscode-high-contrast-light .agent
 body.vscode-high-contrast .canvas-node-card, body.vscode-high-contrast-light .canvas-node-card { border-color: var(--text); box-shadow: none; }
 
 @media (max-width: 760px) {
-  .agents-canvas { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 220px; }
+  .agents-canvas { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 32%); }
   .canvas-stage { border-right: 0; border-bottom: 1px solid var(--border); }
 }
 .canvas-viewport:active .canvas-plane { transition: none; }

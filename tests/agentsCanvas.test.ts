@@ -46,6 +46,8 @@ test('heads group under the chat that started them, and dependents sit to the ri
   assert.equal(pos.api!.x, layout.headX); assert.equal(pos.ui!.x, layout.headX);
   assert.equal(pos.tests!.x, layout.headX + layout.columnGap, 'tests waits for api and ui, so it sits one column right');
   assert.notEqual(pos.api!.y, pos.ui!.y);
+  // A head card is about 150px tall (header, title, two-line note, footer); rows must clear it.
+  assert.ok(Math.abs(pos.api!.y - pos.ui!.y) >= 160, 'cards in a column never overlap');
   assert.ok(pos.docs!.y > Math.max(pos.api!.y, pos.ui!.y, pos.tests!.y), 'the next chat stacks below');
   const edges = Object.fromEntries(model.edges.map(edge => [edge.id, edge]));
   assert.equal(edges['111111111111>api']!.kind, 'lead');

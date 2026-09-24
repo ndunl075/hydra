@@ -1,11 +1,9 @@
-import { realpath } from 'node:fs/promises';
-import path from 'node:path';
 import * as vscode from 'vscode';
 import {
   addMcpServer, configuredSpec, defaultMcpContext, enableMcpServerFor, listMcpServers, mcpAgents, removeMcpServer, testMcpServer, validateServerSpec,
   type McpAgent, type McpContext, type McpServerSpec,
 } from '../../core/mcpServers';
-import { findProvider } from '../../core/providers';
+import { claudeForRegistration } from '../../claudeExecutable';
 import type { SettingsContext, SettingsPage } from '../types';
 import { mcpAgentLabel } from './mcpServersHelpers';
 
@@ -23,18 +21,8 @@ import { mcpAgentLabel } from './mcpServersHelpers';
 const lockIcon = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V4.8a2.5 2.5 0 0 1 5 0V7"/></svg>';
 const caretIcon = '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2l8 6-8 6z"/></svg>';
 
-/** Mirrors extension.ts's private claudeForRegistration(): the configured/PATH claude, else the extension's bundled one. */
-async function claudeExecutablePath(): Promise<string | undefined> {
-  const configured = vscode.workspace.getConfiguration('hydra').get<string>('claudePath');
-  const info = await findProvider('claude', configured).catch(() => undefined);
-  if (info?.executable) return info.executable;
-  const extension = vscode.extensions.getExtension('anthropic.claude-code');
-  if (!extension) return undefined;
-  const bundled = path.join(extension.extensionPath, 'resources', 'native-binary', process.platform === 'win32' ? 'claude.exe' : 'claude');
-  return await realpath(bundled).catch(() => undefined);
-}
 async function buildContext(): Promise<McpContext> {
-  return defaultMcpContext(await claudeExecutablePath());
+  return defaultMcpContext(await claudeForRegistration());
 }
 async function refreshList(ctx: SettingsContext): Promise<void> {
   const list = await listMcpServers(await buildContext());

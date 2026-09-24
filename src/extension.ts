@@ -51,6 +51,7 @@ import { supportedCliDescription, supportedCliVersion } from './core/cliVersions
 import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
+import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
 
@@ -239,7 +240,7 @@ class Manager {
     command('hydra.repairClaudeMem', () => this.repairClaudeMem());
     command('hydra.helperWrittenEntries', () => this.helperWrittenEntries());
     // MCP servers (Settings plan, Phase 4). Lists come back with secrets masked; changes return the fresh list.
-    const mcp = async () => defaultMcpContext(await this.claudeForRegistration());
+    const mcp = async () => defaultMcpContext(await claudeForRegistration());
     command('hydra.mcpServers.list', async () => listMcpServers(await mcp()));
     command('hydra.mcpServers.add', async (name: unknown, spec: unknown, agents: unknown) => { const context = await mcp(); await addMcpServer(context, name, spec, agents); return listMcpServers(context); });
     command('hydra.mcpServers.remove', async (name: unknown, agent: unknown) => { const context = await mcp(); await removeMcpServer(context, name, agent); return listMcpServers(context); });
@@ -435,14 +436,6 @@ class Manager {
   // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
   private helperServerSpec(): HelperServerSpec { const bridge = this.helperBridge(); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
   /** Claude's own CLI does the registration: the configured or PATH claude, else the extension's bundled one. */
-  private async claudeForRegistration(): Promise<string | undefined> {
-    const info = await findProvider('claude', vscode.workspace.getConfiguration('hydra').get<string>('claudePath')).catch(() => undefined);
-    if (info?.executable) return info.executable;
-    const extension = vscode.extensions.getExtension('anthropic.claude-code');
-    if (!extension) return undefined;
-    const bundled = path.join(extension.extensionPath, 'resources', 'native-binary', process.platform === 'win32' ? 'claude.exe' : 'claude');
-    return await realpath(bundled).catch(() => undefined);
-  }
   async helperConnections(): Promise<ProviderConnectionView[]> {
     const paths = providerPaths(), spec = this.helperServerSpec();
     const [claude, codex, memory] = await Promise.all([claudeStatus(paths, spec), codexStatus(paths.codexConfig, spec), claudeMemStatus()]);
@@ -460,7 +453,7 @@ class Manager {
   }
   /** Re-run claude-mem's setup idempotently: the Repair button, and reused by Connect. */
   private async repairClaudeMem(): Promise<{ status: Awaited<ReturnType<typeof claudeMemStatus>>; installed: string[] }> {
-    const claude = await this.claudeForRegistration();
+    const claude = await claudeForRegistration();
     if (!claude) throw new Error('Install the Claude Code extension or CLI first.');
     return setupClaudeMem(claude);
   }
@@ -486,7 +479,7 @@ class Manager {
     const paths = providerPaths(), spec = this.helperServerSpec();
     if (provider === 'codex') await connectCodex(paths.codexConfig, spec);
     else if (provider === 'claude') {
-      const claude = await this.claudeForRegistration();
+      const claude = await claudeForRegistration();
       if (!claude) throw new Error('Install the Claude Code extension or CLI first; Hydra connects through it.');
       await connectClaude(claude, paths, spec);
       this.output.appendLine('[heads] connected claude to Hydra');
@@ -502,7 +495,7 @@ class Manager {
   private async disconnectHelpers(provider: ConnectableProvider): Promise<void> {
     const paths = providerPaths();
     if (provider === 'codex') await disconnectCodex(paths.codexConfig);
-    else if (provider === 'claude') await disconnectClaude(await this.claudeForRegistration(), paths);
+    else if (provider === 'claude') await disconnectClaude(await claudeForRegistration(), paths);
     else throw new Error('Unknown provider.');
     this.output.appendLine(`[heads] disconnected ${provider} from Hydra`);
   }

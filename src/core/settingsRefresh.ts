@@ -1,9 +1,9 @@
 /**
- * Hydra settings that only change a delegation preference. Those preferences are
- * read fresh wherever they are used and touch no provider, model catalog or
- * repository state, so changing one only needs the panel republished.
+ * Hydra settings that are read fresh wherever they are used and touch no provider,
+ * model catalog or repository state, so changing one only needs the panel
+ * republished. The helper cap is read by the helper service on every dispatch.
  */
-export const preferenceOnlySettings: ReadonlySet<string> = new Set(['hydra.delegationMode', 'hydra.maxDelegatedChildren']);
+export const preferenceOnlySettings: ReadonlySet<string> = new Set(['hydra.maxConcurrentHelpers']);
 
 /**
  * The contributed settings whose change must reset provider state and refresh.

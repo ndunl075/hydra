@@ -113,14 +113,6 @@
       {
         "command": "hydra.stopAllHelpers",
         "title": "Hydra: Stop All Helpers"
-      },
-      {
-        "command": "hydra.exportDelegationRunArchive",
-        "title": "Hydra: Export Delegated Run Archive"
-      },
-      {
-        "command": "hydra.importDelegationEvaluationObservation",
-        "title": "Hydra: Import Sealed Evaluation Observation"
       }
     ],
     "keybindings": [
@@ -247,28 +239,12 @@
           "scope": "application",
           "description": "Maximum reserved task slots across participating Hydra windows in this local editor profile. Uncertain writers retain reservations until explicitly reconciled. This does not limit official clients, other profiles or escaped/nested workers."
         },
-        "hydra.delegationMode": {
-          "type": "string",
-          "enum": ["solo", "auto"],
-          "default": "solo",
-          "scope": "application",
-          "description": "Paused: Hydra runs Solo while delegation is rebuilt as Hydra helpers (docs/Official_Extensions_Plan.md). A saved \"auto\" behaves as Solo.",
-          "deprecationMessage": "Auto delegation is paused; Hydra runs Solo."
-        },
         "hydra.maxConcurrentHelpers": {
           "type": "integer",
           "minimum": 1,
           "maximum": 8,
           "default": 3,
           "description": "Maximum Hydra helpers running at once in this window. More wait in a queue."
-        },
-        "hydra.maxDelegatedChildren": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 8,
-          "default": 2,
-          "scope": "application",
-          "description": "Maximum child tasks Hydra may plan for one parent when managed delegation becomes available."
         }
       }
     }

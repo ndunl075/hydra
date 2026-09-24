@@ -10,7 +10,6 @@ import { git } from './git';
 import { repositoryRoot, isInside } from './worktrees';
 import { parseNameStatus } from './review';
 import { runProbe } from './process';
-import { delegationIntegrationGate } from './delegationIntegrationGate';
 export type IntegrationGuard = (paths: string[]) => void | Promise<void>;
 export type DelegationAcceptanceGuard = (task: Task, tasks: readonly Task[]) => void | Promise<void>;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0,8000);
@@ -60,7 +59,7 @@ async function recordCandidate(op: IntegrationOperation): Promise<void> {
 }
 export class Integrations {
   readonly store: IntegrationStore;
-  constructor(private readonly directory: string, private readonly changed: (op: IntegrationOperation)=>void = ()=>{}, private readonly tasks: () => readonly Task[] = () => [], private readonly delegationGuard: DelegationAcceptanceGuard = delegationIntegrationGate) { this.store=new IntegrationStore(path.join(directory,'operations')); }
+  constructor(private readonly directory: string, private readonly changed: (op: IntegrationOperation)=>void = ()=>{}, private readonly tasks: () => readonly Task[] = () => [], private readonly delegationGuard: DelegationAcceptanceGuard = () => {}) { this.store=new IntegrationStore(path.join(directory,'operations')); }
   private async save(op: IntegrationOperation): Promise<void>{op.updatedAt=new Date().toISOString();await this.store.save(op);this.changed(op);}
   private async locked<T>(task:Task,action:()=>Promise<T>):Promise<T>{const shared=await common(task.repository);const lock=new OwnershipLock();await lock.acquire(path.join(shared,'hydra-integration-locks'),shared);try{return await action();}finally{await lock.release();}}
   async prepare(task:Task,commands:IntegrationCommand[],guard:IntegrationGuard,signal?:AbortSignal):Promise<IntegrationOperation>{

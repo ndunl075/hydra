@@ -1,6 +1,6 @@
 # Plan: chat in the official extensions, let Hydra run the helpers
 
-Status: decisions made 2026-09-23. Phases 0–5 merged (#178–#183). Phase 6 dashboard built and the plan's end-to-end test passed for both providers (see "As built" under Phase 6).
+Status: decisions made 2026-09-23. Phases 0–6 merged (#178–#184). Phase 7 removed the old pipeline (see "As built" under Phase 7).
 Replaces: the marker-line delegation pipeline (`HYDRA_DELEGATION_V1`) and, over time, Hydra's own chat panel as the main place you talk to an agent.
 
 ## The idea in plain words
@@ -232,6 +232,18 @@ Acceptance:
 - `npm test` passes with the old tests removed.
 - No reference to `HYDRA_DELEGATION_V1` is left.
 
+**As built (Phase 7), 2026-09-24:** 8,548 lines deleted and 156 added across 153 files.
+- **Deleted:**
+  - all 45 `delegation*` / `autoDelegation*` modules (the planner suffix and marker ingestion, orchestration journal, receipt and wake chain, context ingress, handoffs, parent review, dispatch and enrollment, run accounting, run export and the evaluation ledger, plus the six test-only modules);
+  - five delegation webview panels and their styles, and their 49 test files;
+  - 24 delegation docs, the `hydra.delegationMode` and `hydra.maxDelegatedChildren` settings, and the two delegation commands.
+- **Tasks lost their delegation fields.** `LocalStore` drops them from tasks saved by older Hydra builds. A parent that was waiting for children loads as interrupted, with a reason.
+- **The scheduler lost** its delegated-child and parent-wakeup paths (`waiting-for-children`, `wakeupKey`). **Integration lost** its delegated-acceptance gate. The **Agents map lost** its delegation edges and recorded plans.
+- **Helper checks** now use `src/core/checkCommand.ts`, the command runner extracted unchanged from the retired verification module.
+- **Chat panel:** kept (decision 6).
+- **Acceptance:**
+  - The full gate passes: `npm test` 307 pass and `test:smoke` 23 sections.
+  - `tests/retiredDelegation.test.ts` asserts that no source file carries the old modules or the `HYDRA_DELEGATION_V1` marker, with one deliberate exception: `src/core/plannerSuffix.ts` keeps a display filter so transcripts recorded before Phase 0 still read cleanly.
 ### Phase 8: docs
 **Sonnet.**
 - Replace `docs/Adaptive_Delegation.md` and the `Auto_Delegation_*` docs with one `docs/Helpers.md` covering the actions, states, limits and security notes.

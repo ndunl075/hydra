@@ -1,9 +1,8 @@
 import type { Task, ReviewedCommit } from './model';
 import { BudgetHoldError } from './budgets';
-import { reserveDelegatedExecution, startDelegatedExecution, validateDelegatedExecution } from './delegationRunner';
 
 /** `enrolled` retains an approved dependency graph but has no launch request. */
-export type ScheduleState = 'enrolled' | 'queued' | 'starting' | 'running' | 'waiting-for-approval' | 'waiting-for-children' | 'blocked' | 'interrupted' | 'finished' | 'cancelled';
+export type ScheduleState = 'enrolled' | 'queued' | 'starting' | 'running' | 'waiting-for-approval' | 'blocked' | 'interrupted' | 'finished' | 'cancelled';
 export type LaunchRequest = { type: 'launch' | 'terminal' | 'startManaged' } | { type: 'followUp'; prompt: string };
 export interface DependencyArtifact extends ReviewedCommit { taskId: string }
 export interface TaskSchedule {
@@ -19,8 +18,6 @@ export interface TaskSchedule {
   uncertain?: boolean;
   budgetHold?: boolean;
   budgetWarnings?: string[];
-  /** A durable child-result handoff identity. It makes restart reconciliation idempotent. */
-  wakeupKey?: string;
 }
 const activeStates = ['starting', 'running', 'waiting-for-approval'];
 export const pendingSchedule = (task: Task): boolean => !!task.schedule && (['queued', 'blocked', ...activeStates].includes(task.schedule.state) || !!task.schedule.uncertain);
@@ -41,7 +38,7 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
   const s = value as TaskSchedule;
   const oid = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{40,64}$/.test(v);
   const id = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{12}$/.test(v);
-  if (!s || typeof s !== 'object' || !['enrolled', 'queued', 'starting', 'running', 'waiting-for-approval', 'waiting-for-children', 'blocked', 'interrupted', 'finished', 'cancelled'].includes(s.state) ||
+  if (!s || typeof s !== 'object' || !['enrolled', 'queued', 'starting', 'running', 'waiting-for-approval', 'blocked', 'interrupted', 'finished', 'cancelled'].includes(s.state) ||
     !Array.isArray(s.dependencies) || s.dependencies.length > 100 || !s.dependencies.every(id) || new Set(s.dependencies).size !== s.dependencies.length ||
     (s.startFromDependency !== undefined && !s.dependencies.includes(s.startFromDependency)) || !Array.isArray(s.artifacts) ||
     !s.artifacts.every(a => a && id(a.taskId) && s.dependencies.includes(a.taskId) && oid(a.commit) && oid(a.tree) && oid(a.baseCommit) && typeof a.reviewedAt === 'string' && Number.isFinite(Date.parse(a.reviewedAt))) ||
@@ -50,11 +47,8 @@ export function validateSchedule(value: unknown): asserts value is TaskSchedule 
     (s.budgetHold !== undefined && (typeof s.budgetHold !== 'boolean' || s.budgetHold && (s.state !== 'blocked' || !s.request || s.uncertain))) ||
     (s.budgetWarnings !== undefined && (!Array.isArray(s.budgetWarnings) || s.budgetWarnings.length > 4 || !s.budgetWarnings.every(item => typeof item === 'string' && item.length <= 2000))) ||
     (s.queuedAt !== undefined && (typeof s.queuedAt !== 'string' || !Number.isFinite(Date.parse(s.queuedAt)))) ||
-    (s.wakeupKey !== undefined && (typeof s.wakeupKey !== 'string' || !/^[a-f0-9]{64}$/.test(s.wakeupKey))) ||
     (s.request !== undefined && (!s.request || !['launch', 'terminal', 'startManaged', 'followUp'].includes(s.request.type) || (s.request.type === 'followUp' && (typeof s.request.prompt !== 'string' || !s.request.prompt.trim() || s.request.prompt.length > 32000 || s.request.prompt.includes('\0'))))) ||
-    (s.state === 'waiting-for-children' && (s.request !== undefined || s.queuedAt !== undefined || s.uncertain || s.budgetHold || s.wakeupKey !== undefined)) ||
-    (s.wakeupKey !== undefined && (!s.request || s.request.type !== 'followUp' || !['queued', 'starting', 'running', 'waiting-for-approval'].includes(s.state))) ||
-    (s.state === 'enrolled' && (s.request !== undefined || s.startFromDependency !== undefined || s.artifacts.length !== 0 || s.actualStartingCommit !== undefined || s.queuedAt !== undefined || s.uncertain || s.budgetHold || s.budgetWarnings !== undefined || s.wakeupKey !== undefined))) throw new Error('Invalid task schedule. Original data has been retained.');
+    (s.state === 'enrolled' && (s.request !== undefined || s.startFromDependency !== undefined || s.artifacts.length !== 0 || s.actualStartingCommit !== undefined || s.queuedAt !== undefined || s.uncertain || s.budgetHold || s.budgetWarnings !== undefined))) throw new Error('Invalid task schedule. Original data has been retained.');
 }
 
 export function configureSchedule(task: Task, tasks: Task[], dependencies: string[], startFromDependency?: string): void {
@@ -91,38 +85,19 @@ export class TaskScheduler {
   }) {}
   async enqueue(task: Task, request: LaunchRequest): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before queueing a writer.');
-    if (task.delegationJournalPending) throw new Error('Delegation assignment journal recovery is pending.');
-    if (task.delegation && (!task.schedule || task.schedule.dependencies.length !== task.delegation.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== task.delegation!.dependencies[index]) || (!task.sessionId && (task.schedule.state !== 'enrolled' || task.schedule.request || task.schedule.uncertain)))) throw new Error('Delegated child must be explicitly enrolled with its immutable dependency graph before its first writer launch.');
     if (pendingSchedule(task)) throw new Error('This task already has queued work or an unreconciled writer.');
-    const previousSchedule = task.schedule, previousExecution = task.delegationExecution, previousBudgetReservation = task.delegationBudgetReservation;
-    if (task.delegation) {
-      if (request.type !== 'startManaged' && request.type !== 'followUp') throw new Error('Delegated children must use the managed scheduler launch path.');
-      if (!task.sessionId) task.delegationExecution = reserveDelegatedExecution(task);
-      else { validateDelegatedExecution(task); if (task.delegationExecution!.status === 'uncertain') throw new Error('Reconcile the delegated writer before resuming.'); }
-    }
-    task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false, budgetHold: undefined, budgetWarnings: undefined, wakeupKey: undefined };
+    const previousSchedule = task.schedule;
+    task.schedule = { ...task.schedule, state: 'queued', dependencies: task.schedule?.dependencies || [], artifacts: task.schedule?.artifacts || [], request, queuedAt: new Date().toISOString(), reason: undefined, uncertain: false, budgetHold: undefined, budgetWarnings: undefined };
     try { this.hooks.guardBudget?.(task, request); task.schedule.budgetWarnings = this.hooks.budget?.(task); }
     catch (error) { if (!(error instanceof BudgetHoldError)) throw error; this.hooks.releaseBudgetGuard?.(task); this.hold(task, error); }
     try { await this.hooks.persist(); }
-    catch (error) { task.schedule = previousSchedule; task.delegationExecution = previousExecution; task.delegationBudgetReservation = previousBudgetReservation; throw error; }
-    await this.drain();
-  }
-  /** Resume a suspended parent exactly once for a durable coalesced child-result set. */
-  async resumeWaitingParent(task: Task, prompt: string, wakeupKey: string): Promise<void> {
-    if (!/^[a-f0-9]{64}$/.test(wakeupKey) || !prompt.trim() || prompt.length > 32000 || prompt.includes('\0')) throw new Error('Invalid delegated parent wakeup.');
-    const s = task.schedule;
-    if (s?.wakeupKey === wakeupKey) return;
-    if (!s || s.state !== 'waiting-for-children' || task.state === 'discarded') throw new Error('Parent is not waiting for delegated child results.');
-    s.state = 'queued'; s.request = { type: 'followUp', prompt }; s.queuedAt = new Date().toISOString(); s.reason = undefined; s.wakeupKey = wakeupKey;
-    try { await this.hooks.persist(); }
-    catch (error) { s.state = 'waiting-for-children'; s.request = undefined; s.queuedAt = undefined; s.wakeupKey = undefined; throw error; }
+    catch (error) { task.schedule = previousSchedule; throw error; }
     await this.drain();
   }
   reconcile(): void {
     for (const task of this.hooks.tasks()) {
       if (!task.schedule && (task.state === 'running' || task.state === 'external' && task.interface === 'interactive-cli')) task.schedule = { state: 'running', dependencies: [], artifacts: [] };
       if (task.schedule && activeStates.includes(task.schedule.state)) {
-        if (task.delegationExecution && ['starting', 'sessioned'].includes(task.delegationExecution.status)) task.delegationExecution = { ...task.delegationExecution, status: 'uncertain', updatedAt: new Date().toISOString() };
         task.schedule.state = 'interrupted'; task.schedule.uncertain = true;
         task.schedule.reason = 'Hydra restarted during a launch or writer session. Stop any surviving process, then acknowledge reconciliation.';
       }
@@ -130,10 +105,9 @@ export class TaskScheduler {
   }
   async cancel(task: Task): Promise<void> {
     const s = task.schedule;
-    if (!s || !['queued', 'starting', 'waiting-for-children', 'blocked', 'interrupted'].includes(s.state) || s.uncertain) throw new Error('Stop and reconcile this writer before cancelling queued work.');
+    if (!s || !['queued', 'starting', 'blocked', 'interrupted'].includes(s.state) || s.uncertain) throw new Error('Stop and reconcile this writer before cancelling queued work.');
     s.state = 'cancelled'; s.request = undefined; s.reason = 'Queued launch cancelled.'; s.budgetHold = undefined;
     this.hooks.releaseBudgetGuard?.(task);
-    if (task.delegationExecution) task.delegationExecution = { ...task.delegationExecution, status: 'stopped', updatedAt: new Date().toISOString() };
     await this.hooks.persist();
   }
   private hold(task: Task, error: BudgetHoldError): void {
@@ -148,22 +122,18 @@ export class TaskScheduler {
   /**
    * Queue a launch that failed and left its schedule blocked (a provider error at
    * startup, say) again with the same request. Without this, a blocked launch
-   * could only be cancelled. Delegated children keep their own recovery path.
+   * could only be cancelled.
    */
   async retryBlocked(task: Task): Promise<void> {
     const s = task.schedule;
-    if (!s || s.state !== 'blocked' || !s.request || s.uncertain || task.delegation || task.state === 'running' || task.state === 'external') throw new Error('This task has no stopped launch to retry.');
+    if (!s || s.state !== 'blocked' || !s.request || s.uncertain || task.state === 'running' || task.state === 'external') throw new Error('This task has no stopped launch to retry.');
     await this.requeueBlocked(task);
   }
   private async requeueBlocked(task: Task): Promise<void> {
     const s = task.schedule!;
     if (!s.request) throw new Error('This task has no stopped launch to retry.');
-    const previous = structuredClone(s), previousBudgetReservation = task.delegationBudgetReservation && structuredClone(task.delegationBudgetReservation);
-    const restore = () => {
-      Object.assign(s, previous);
-      if (previousBudgetReservation) task.delegationBudgetReservation = previousBudgetReservation;
-      else delete task.delegationBudgetReservation;
-    };
+    const previous = structuredClone(s);
+    const restore = () => { Object.assign(s, previous); };
     if (s.request.type === 'startManaged' && task.sessionId) s.request = { type: 'followUp', prompt: task.prompt };
     let warnings: string[];
     try { this.hooks.guardBudget?.(task, s.request); warnings = this.hooks.budget?.(task) || []; }
@@ -177,7 +147,6 @@ export class TaskScheduler {
     if (!task.schedule?.uncertain) throw new Error('This task has no uncertain writer.');
     task.schedule.uncertain = false; task.schedule.state = 'interrupted'; task.schedule.reason = 'Writer absence acknowledged. Queue a new launch or follow-up explicitly.';
     task.schedule.request = undefined;
-    if (task.delegationExecution?.status === 'uncertain') task.delegationExecution = { ...task.delegationExecution, status: 'stopped', updatedAt: new Date().toISOString() };
     await this.hooks.persist(); await this.drain();
   }
   drain(): Promise<void> {
@@ -229,13 +198,6 @@ export class TaskScheduler {
         this.hooks.guardBudget?.(task, s.request);
         try { s.budgetWarnings = this.hooks.budget?.(task); }
         catch (error) { this.hooks.releaseBudgetGuard?.(task); throw error; }
-        if (task.delegation && !task.sessionId) {
-          startDelegatedExecution(task);
-          // The dispatch attempt is durable before the host can create any provider process.
-          try { await this.hooks.persist(); }
-          catch (error) { startingSaveFailed = true; task.delegationExecution = { ...task.delegationExecution!, status: 'uncertain' }; s.uncertain = true; throw error; }
-          if (cancelled() || !this.hooks.enabled()) continue;
-        }
         await this.hooks.launch(task, s.request!);
         this.hooks.releaseBudgetGuard?.(task);
         if (cancelled()) continue;

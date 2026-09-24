@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { plannerMarkerPrefix, withoutPlannerMarker } from '../src/core/plannerSuffix';
-import { plannerMarker } from '../src/core/delegationPlannerIngestion';
+import { plannerMarkerPrefix, withoutPlannerMarker, withoutPlannerSuffix } from '../src/core/plannerSuffix';
 import { executableFingerprint } from '../src/core/providers';
 
-test('the conversation hides the planner receipt line but keeps the reply', () => {
-  assert.equal(plannerMarkerPrefix, plannerMarker);
+test('transcripts recorded before Auto was retired hide the planner receipt and suffix', () => {
+  assert.equal(plannerMarkerPrefix, 'HYDRA_DELEGATION_V1:');
+  assert.equal(withoutPlannerSuffix('Fix the parser' + '\n\nHydra planning receipt: 123456789abc. Complete the task.'), 'Fix the parser');
   const reply = 'Hello, Nico!\n\nHYDRA_DELEGATION_V1:{"version":1,"decision":"solo","children":[]}';
   assert.equal(withoutPlannerMarker(reply), 'Hello, Nico!');
   // While streaming, a partial marker line never flashes on screen.

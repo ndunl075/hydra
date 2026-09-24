@@ -6,10 +6,6 @@ import {git,createWorktree} from '../src/core/worktrees';
 import {Integrations} from '../src/core/integration';
 import {parseMessage,type Task} from '../src/core/model';
 import {validateIntegration} from '../src/core/integrationStore';
-import {delegationIntegrationGate} from '../src/core/delegationIntegrationGate';
-import {DelegationOrchestrationJournal} from '../src/core/delegationOrchestrationJournal';
-import {DelegationParentReviewJournal} from '../src/core/delegationParentReview';
-import {prepareDelegationResult} from '../src/core/delegationResults';
 const guard=()=>{},check=[{executable:process.execPath,args:['-e','process.exit(0)']}];
 async function fixture(){
   const directory=path.resolve('.test-build/integration-fixtures');await mkdir(directory,{recursive:true});const root=await mkdtemp(path.join(directory,'integration-')),repository=path.join(root,'main');await mkdir(repository);
@@ -75,47 +71,5 @@ test('integration lock is shared across profile journals and malformed structure
     const task=await f.task('777777777777');let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(resolve=>release=resolve),ready=new Promise<void>(resolve=>entered=resolve);let calls=0;
     const first=f.integrations.prepare(task,check,async()=>{if(++calls===1){entered();await gate;}});await ready;await assert.rejects(new Integrations(path.join(f.root,'another-profile')).prepare(task,check,guard),/own|lock|already/i);release();assert.equal((await first).phase,'validated');
     assert.throws(()=>parseMessage({type:'prepareIntegration',id:task.id,checks:[]}),/command/i);assert.throws(()=>parseMessage({type:'prepareIntegration',id:task.id,checks:[{executable:'npm.cmd',args:['test & echo unsafe']}]}),/shell|character|shim/i);
-  }finally{await rm(f.root,{recursive:true,force:true});}
-});
-test('delegated children block candidate preparation until evidence is current and passing; combined checks still decide promotion',async()=>{
-  const f=await fixture();try{
-    const parent=await f.task('888888888888'),child=await f.task('999999999999');
-    child.delegation={parentId:parent.id,runId:'aaaaaaaaaaaa',childKey:'parser',dispatchKey:'a'.repeat(24),dependencies:[]};
-    const evidence=JSON.parse(await readFile(path.resolve('tests/fixtures/delegation-combined-acceptance/verification-evidence.json'),'utf8'));
-    const attach=(status:'passed'|'failed'|'interrupted'='passed',stale=false)=>{
-      const value=structuredClone(evidence);value.attempts[0].checkedCommit=stale?'b'.repeat(40):child.reviewedCommit!.commit;value.attempts[0].checkedTree=child.reviewedCommit!.tree;value.attempts[0].checks[0].status=status;value.attempts[0].checks[0].exitCode=status==='passed'?0:null;child.verificationEvidence=value;
-    };
-    const integrations=new Integrations(path.join(f.root,'delegated-journal'),()=>{},()=>[parent,child]);
-    await assert.rejects(integrations.prepare(parent,check,guard),/requires retained verification evidence/);
-    attach('passed',true);await assert.rejects(integrations.prepare(parent,check,guard),/stale/);
-    attach('failed');await assert.rejects(integrations.prepare(parent,check,guard),/did not pass/);
-    attach('interrupted');await assert.rejects(integrations.prepare(parent,check,guard),/interrupted/);
-    attach();child.state='interrupted';await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*interrupted/);child.state='idle';
-    child.state='running';await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*active/);child.state='idle';
-    child.schedule={state:'queued',dependencies:[],artifacts:[],request:{type:'startManaged'}};await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*queued/);child.schedule={state:'finished',dependencies:[],artifacts:[],uncertain:true};await assert.rejects(integrations.prepare(parent,check,guard),/prerequisite.*uncertain/);child.schedule=undefined;
-    await assert.rejects(integrations.prepare(parent,check,guard),/parent review projection/);
-    const delegationDirectory=path.join(f.root,'delegation'),orchestration=new DelegationOrchestrationJournal(delegationDirectory),reviews=new DelegationParentReviewJournal(delegationDirectory);
-    const binding={parentId:parent.id,runId:child.delegation.runId,childKey:child.delegation.childKey,dispatchKey:child.delegation.dispatchKey,baseCommit:child.baseCommit,writeScope:['task.txt'],dependencies:[]};
-    const receipt=prepareDelegationResult({version:1,parentId:parent.id,runId:binding.runId,childKey:binding.childKey,dispatchKey:binding.dispatchKey,baseCommit:binding.baseCommit,commit:child.reviewedCommit!.commit,tree:child.reviewedCommit!.tree,changedPaths:['task.txt'],decisions:'Kept the child change.',summary:'Child review is complete.',unresolved:[],validations:[],evidence:[],dependencies:[]},binding);
-    await orchestration.appendResult(receipt,binding);
-    const reviewSource={child,binding,result:receipt};
-    const decision=(value:'approved'|'rejected')=>({version:1,parentId:parent.id,runId:binding.runId,childKey:binding.childKey,resultSha256:receipt.sha256,evidenceSha256:require('node:crypto').createHash('sha256').update(JSON.stringify(child.verificationEvidence)).digest('hex'),commit:child.reviewedCommit!.commit,tree:child.reviewedCommit!.tree,reviewer:'parent-human',decision:value,reviewedAt:new Date().toISOString(),reason:value==='approved'?'Reviewed the child diff and evidence.':'The child result cannot be accepted.'});
-    await reviews.append(decision('rejected'),reviewSource);
-    const durableGuard=async(task:Task,tasks:readonly Task[])=>{
-      const records=await orchestration.loadResultRecords(parent.id,binding.runId),saved=records.filter(item=>item.binding.childKey===binding.childKey);
-      const savedReviews=await new DelegationParentReviewJournal(delegationDirectory).load(parent.id,binding.runId);
-      delegationIntegrationGate(task,tasks,{parentReviews:saved.map(item=>({source:{child,binding:item.binding,result:item.receipt},receipts:savedReviews}))});
-    };
-    const durable=new Integrations(path.join(f.root,'durable-delegated-journal'),()=>{},()=>[parent,child],durableGuard);
-    await assert.rejects(durable.prepare(parent,check,guard),/does not explicitly approve/);
-    child.verificationEvidence!.attempts[0]!.checks[0]!.artifacts[0]!.label='Fresh evidence after rejection';
-    await reviews.append(decision('approved'),reviewSource);
-    const approvedEvidence=structuredClone(child.verificationEvidence);
-    const restarted=new Integrations(path.join(f.root,'restart-delegated-journal'),()=>{},()=>[parent,child],durableGuard);
-    const failedCombined=await restarted.prepare(parent,[{executable:process.execPath,args:['-e','process.exit(3)']}],guard);assert.equal(failedCombined.phase,'failed');assert.equal(failedCombined.checks[0]!.status,'failed');assert.equal(await readFile(path.join(failedCombined.candidate,'task.txt'),'utf8'),'task\n');
-    const validated=await restarted.prepare(parent,check,guard);assert.equal(validated.phase,'validated');
-    child.state='discarded';await assert.rejects(restarted.promote(parent,validated,guard),/prerequisite.*discarded/);assert.equal(validated.phase,'validated');assert.equal(await readFile(path.join(validated.candidate,'task.txt'),'utf8'),'task\n');child.state='idle';
-    child.verificationEvidence=undefined;await assert.rejects(restarted.promote(parent,validated,guard),/requires retained verification evidence/);assert.equal(validated.phase,'validated');assert.throws(()=>delegationIntegrationGate(parent,[parent,child]),/requires retained verification evidence/);
-    child.verificationEvidence=structuredClone(approvedEvidence);await git(f.repository,['commit','--allow-empty','-m','target moved']);await assert.rejects(restarted.promote(parent,validated,guard),/inputs changed/);assert.equal(validated.phase,'validated');
   }finally{await rm(f.root,{recursive:true,force:true});}
 });

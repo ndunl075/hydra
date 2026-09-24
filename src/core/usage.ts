@@ -58,8 +58,3 @@ export function usageSnapshot(tasks: Task[], view: (id: string) => SessionView |
   for (const repository of new Set(tasks.map(task => task.repository))) projects[repository] = summarizeUsage(entries.filter(entry => entry.repository === repository));
   return { tasks: perTask, projects };
 }
-/** Direct durable children only; unavailable histories remain visible in the summary. */
-export function delegationRunUsage(parentId: string, tasks: Task[], view: (id: string) => SessionView | undefined): UsageSummary {
-  if (!tasks.some(task => task.id === parentId)) throw new Error('Unknown delegation parent task.');
-  return summarizeUsage(tasks.filter(task => task.id === parentId || task.delegation?.parentId === parentId).map(task => ({ taskId: task.id, session: view(task.id) })));
-}

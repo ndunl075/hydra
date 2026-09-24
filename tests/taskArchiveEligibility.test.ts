@@ -49,10 +49,9 @@ test('refuses promoted operations from a different checkout, branch, repository 
   assert.equal(previewTaskArchiveEligibility(task(), [task()], [operation()], { savedState: 'clean', ownership: 'stopped' } as TaskArchiveObservation).eligible, false, 'omitted evidence cannot count as complete');
 });
 
-test('blocks active dependency consumers and active delegated children, without moving or deleting any checkout', () => {
+test('blocks active dependency consumers, without moving or deleting any checkout', () => {
   const parent = task(); const consumer: Task = { ...task(), id: 'aaaaaaaaaaaa', schedule: { state: 'finished', dependencies: [id], artifacts: [] } };
-  const child: Task = { ...task(), id: 'bbbbbbbbbbbb', state: 'running', delegation: { parentId: id, runId: '111111111111', childKey: 'child', dispatchKey: 'e'.repeat(24), dependencies: [] } };
-  const result = previewTaskArchiveEligibility(parent, [parent, consumer, child], [operation()], observed());
-  assert.equal(result.eligible, false); assert.deepEqual(result.blockers.filter(item => item.kind === 'dependent-task').map(item => item.taskId), [consumer.id, child.id]);
+  const result = previewTaskArchiveEligibility(parent, [parent, consumer], [operation()], observed());
+  assert.equal(result.eligible, false); assert.deepEqual(result.blockers.filter(item => item.kind === 'dependent-task').map(item => item.taskId), [consumer.id]);
   assert.equal(parent.worktree, '/worktree');
 });

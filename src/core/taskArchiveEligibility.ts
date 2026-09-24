@@ -46,7 +46,7 @@ const accepted = (task: Task, op: IntegrationOperation): boolean => {
 
 const activeWriter = (task: Task) => task.state === 'running' || task.state === 'external' || task.interface === 'official-extension' || pendingSchedule(task);
 const dependent = (task: Task, candidate: Task) => candidate.id !== task.id && candidate.state !== 'discarded' &&
-  (candidate.schedule?.dependencies.includes(task.id) || candidate.delegation?.parentId === task.id && activeWriter(candidate));
+  !!candidate.schedule?.dependencies.includes(task.id);
 
 /**
  * Builds a conservative, read-only archive recommendation from already-observed facts.

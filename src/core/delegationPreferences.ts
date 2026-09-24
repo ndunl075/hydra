@@ -1,5 +1,12 @@
 export type DelegationMode = 'solo' | 'auto';
 
+/**
+ * Auto delegation is paused until Hydra helpers replace the marker-line pipeline
+ * (docs/Official_Extensions_Plan.md, Phase 0). A saved "auto" behaves as Solo.
+ */
+export const autoDelegationAvailable = false;
+export const autoDelegationPausedReason = 'Auto delegation is paused while Hydra helpers are rebuilt. Hydra runs Solo.';
+
 export interface DelegationPreferences {
   mode: DelegationMode;
   maxChildren: number;

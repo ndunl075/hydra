@@ -248,7 +248,8 @@
           "enum": ["solo", "auto"],
           "default": "solo",
           "scope": "application",
-          "description": "How Hydra prepares future delegation. Auto is a planning preference only; worktree materialization does not launch child agents."
+          "description": "Paused: Hydra runs Solo while delegation is rebuilt as Hydra helpers (docs/Official_Extensions_Plan.md). A saved \"auto\" behaves as Solo.",
+          "deprecationMessage": "Auto delegation is paused; Hydra runs Solo."
         },
         "hydra.maxDelegatedChildren": {
           "type": "integer",

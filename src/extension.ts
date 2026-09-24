@@ -17,7 +17,7 @@ import { prepareDiscard, confirmDiscard, restoreDiscarded, type DiscardReview } 
 import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
-import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences } from './core/delegationPreferences';
+import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences, autoDelegationAvailable, autoDelegationPausedReason } from './core/delegationPreferences';
 import { DelegationStore } from './core/delegationStore';
 import { DelegationDispatchStore } from './core/delegationDispatch';
 import { dispatchAcceptedAutoDelegation } from './core/autoDelegationDispatch';
@@ -642,7 +642,8 @@ class Manager {
   private profileLimit(): number { return Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentProfileTasks', 2))); }
   private delegationPreferences(): DelegationPreferences {
     const config = vscode.workspace.getConfiguration('hydra');
-    return parseDelegationPreferences({ mode: config.get('delegationMode', 'solo'), maxChildren: config.get('maxDelegatedChildren', 2) });
+    const preferences = parseDelegationPreferences({ mode: config.get('delegationMode', 'solo'), maxChildren: config.get('maxDelegatedChildren', 2) });
+    return autoDelegationAvailable ? preferences : { ...preferences, mode: 'solo' };
   }
   /** Conservative host facts for a normal-turn proposal; no field is supplied by the provider. */
   private plannerPolicy(task: Task, runId: string): DelegationPolicy {
@@ -732,6 +733,7 @@ class Manager {
     try { await operation; } finally { if (this.autoWakeups.get(key) === operation) this.autoWakeups.delete(key); }
   }
   private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
+    if (mode === 'auto' && !autoDelegationAvailable) throw new Error(autoDelegationPausedReason);
     await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
     await this.publish();
     return this.delegationPreferences();
@@ -1532,7 +1534,10 @@ class Manager {
         if (task.delegationPlanner && ['prepared', 'submitted'].includes(task.delegationPlanner.state)) throw new Error('The prior normal-turn planner receipt is still recoverable. Reload and reconcile it before another managed turn.');
         const runId = randomBytes(6).toString('hex');
         // Delegated children receive their bounded manifest, never another parent planner.
-        const planner = task.delegation ? undefined : createDelegationPlannerRun(this.plannerPolicy(task, runId), this.delegationPreferences(), runId);
+        // Solo turns carry no planner suffix: the provider is never asked to emit a
+        // delegation receipt it has no use for.
+        const preferences = this.delegationPreferences();
+        const planner = task.delegation || preferences.mode === 'solo' ? undefined : createDelegationPlannerRun(this.plannerPolicy(task, runId), preferences, runId);
         if (task.delegation) {
           validateDelegatedExecution(task);
           if (!scheduledLaunch || !task.sessionId && task.delegationExecution!.status !== 'starting') throw new Error('Delegated dispatch requires a durable scheduler reservation.');

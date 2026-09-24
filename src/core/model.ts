@@ -71,6 +71,12 @@ export interface HelperJobView {
   repository?: string;
   worktree?: string;
   dependsOn: string[];
+  /** The chat that started it (one Claude Code or Codex conversation), when known. */
+  lead?: { sessionId: string; provider?: Provider; label?: string };
+  /** Done, and its commit is already in the lead folder's HEAD. */
+  merged?: boolean;
+  startedAt?: string;
+  writeScope?: string[];
 }
 export interface Snapshot {
   capacity?: CapacityView;

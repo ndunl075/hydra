@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import type { Socket } from 'node:net';
 import type { LeadVerifier } from './helperEndpoint';
+import type { Provider } from './model';
 
 /**
  * Who may act as a window's lead (docs/Heads.md, Security). There is no lead
@@ -20,7 +21,16 @@ import type { LeadVerifier } from './helperEndpoint';
 export interface ProcessLink { pid: number; ppid: number; created: number; name?: string }
 export interface LeadRules { allowedAncestors: ReadonlySet<number>; deniedAncestors: ReadonlySet<number> }
 
-export function evaluateLeadChain(chain: readonly ProcessLink[], rules: LeadRules): { ok: true } | { ok: false; reason: string } {
+/** Which agent a verified chain belongs to, from its process names (claude.exe, codex.exe). */
+export function chainProvider(chain: readonly ProcessLink[]): Provider | undefined {
+  for (const link of chain) {
+    const name = (link.name || '').toLowerCase().replace(/\.exe$/, '');
+    if (name === 'claude') return 'claude';
+    if (name === 'codex') return 'codex';
+  }
+  return undefined;
+}
+export function evaluateLeadChain(chain: readonly ProcessLink[], rules: LeadRules): { ok: true; provider?: Provider } | { ok: false; reason: string } {
   if (!chain.length) return { ok: false, reason: 'the connecting process could not be identified.' };
   const trusted: ProcessLink[] = [chain[0]!];
   for (let index = 1; index < chain.length; index++) {
@@ -29,7 +39,7 @@ export function evaluateLeadChain(chain: readonly ProcessLink[], rules: LeadRule
     trusted.push(parent);
   }
   if (trusted.some(link => rules.deniedAncestors.has(link.pid))) return { ok: false, reason: 'it runs inside a Hydra head, and heads cannot act as the lead.' };
-  if (trusted.some(link => rules.allowedAncestors.has(link.pid))) return { ok: true };
+  if (trusted.some(link => rules.allowedAncestors.has(link.pid))) { const provider = chainProvider(trusted); return provider ? { ok: true, provider } : { ok: true }; }
   return { ok: false, reason: 'it was not started from this Hydra window (use the Claude Code or Codex extension, or a terminal inside Hydra).' };
 }
 

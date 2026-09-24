@@ -274,3 +274,24 @@ test('the orchestration map draws heads under their repository, with dependencie
   assert.match(html, /aria-label="Review Head 22, Claude head, Needs an answer, branch agent\/two-222222222222"/);
   assert.match(html, /agent-map-flow/, 'a working head animates');
 });
+
+test('a head records the chat that started it, and is seen as merged once its branch is in the lead folder', async () => {
+  const f = await fixture({ checks: passCheck, script: async helper => {
+    await helper.commit('src/fixed.ts', 'export const fixed = true;\n');
+    await helper.call('hydra_done', { summary: 'Added fixed.ts' });
+    helper.endTurn();
+  } });
+  try {
+    const chat = f.endpoint.issue({ role: 'lead', leadKey: 'window', leadSessionId: 'abcdef012345', provider: 'codex' });
+    const started = (await callHelperEndpoint(f.endpoint.port, chat, 'hydra_start_head', { title: 'Merged later', brief: 'Do it.', write_scope: ['src/'], idempotency_key: 'merge', lead_label: 'Checkout refactor' })).result as { job_id: string };
+    assert.deepEqual(f.store.get(started.job_id)!.lead, { sessionId: 'abcdef012345', provider: 'codex', label: 'Checkout refactor' });
+    const plain = await f.start('no-session');
+    assert.equal(f.store.get(plain.job_id)!.lead, undefined, 'a caller without a session records no lead');
+    await until(() => f.store.get(started.job_id)?.state === 'done', 'head done');
+    await f.service.refreshMerged();
+    assert.equal(f.service.isMerged(started.job_id), false, 'done but not merged yet');
+    await git(f.repo, ['merge', '-q', '--no-edit', f.store.get(started.job_id)!.branch!]);
+    await f.service.refreshMerged();
+    assert.equal(f.service.isMerged(started.job_id), true, 'the lead merged it');
+  } finally { await f.close(); }
+});

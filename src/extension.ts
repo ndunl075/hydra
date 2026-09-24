@@ -47,7 +47,7 @@ import { discoverClaudeModels } from './core/claudeModels';
 import { requireClaudeSelection } from './core/claudeControls';
 import { requireAdvertisedSelection, type ModelCatalog } from './core/modelSelection';
 import { supportedCliDescription, supportedCliVersion } from './core/cliVersions';
-import type { Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
+import type { HelperJobView, Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
@@ -359,8 +359,8 @@ class Manager {
     await this.scheduler.drain();
   }
   /** How a CLI starts Hydra's stdio bridge: this editor's executable as Node, running dist/hydra-mcp.cjs. */
-  helperBridge(): { command: string; args: string[]; env: Record<string, string> } {
-    return { command: process.execPath, args: [path.join(this.context.extensionPath, 'dist', 'hydra-mcp.cjs')], env: { ELECTRON_RUN_AS_NODE: '1', HYDRA_HELPERS_DIR: path.join(this.context.globalStorageUri.fsPath, 'helpers') } };
+  helperBridge(provider?: ConnectableProvider): { command: string; args: string[]; env: Record<string, string> } {
+    return { command: process.execPath, args: [path.join(this.context.extensionPath, 'dist', 'hydra-mcp.cjs')], env: { ELECTRON_RUN_AS_NODE: '1', HYDRA_HELPERS_DIR: path.join(this.context.globalStorageUri.fsPath, 'helpers'), ...(provider ? { HYDRA_LEAD_PROVIDER: provider } : {}) } };
   }
   private async helperExecutable(provider: Provider): Promise<string> {
     const info = await findProvider(provider, vscode.workspace.getConfiguration('hydra').get<string>(`${provider}Path`));
@@ -404,7 +404,7 @@ class Manager {
       startRun: startHelperRun, executable: provider => this.helperExecutable(provider),
       bridge: this.helperBridge(), logDirectory: path.join(directory, 'logs'),
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
-      onChange: () => this.publishSoon(), log: line => this.output.appendLine(line),
+      onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
     });
     await service.recover();
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
@@ -413,7 +413,7 @@ class Manager {
     void this.refreshHelperConnections();
   }
   // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
-  private helperServerSpec(): HelperServerSpec { const bridge = this.helperBridge(); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
+  private helperServerSpec(provider: ConnectableProvider): HelperServerSpec { const bridge = this.helperBridge(provider); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
   /** Claude's own CLI does the registration: the configured or PATH claude, else the extension's bundled one. */
   private async claudeForRegistration(): Promise<string | undefined> {
     const info = await findProvider('claude', vscode.workspace.getConfiguration('hydra').get<string>('claudePath')).catch(() => undefined);
@@ -424,8 +424,8 @@ class Manager {
     return await realpath(bundled).catch(() => undefined);
   }
   async helperConnections(): Promise<ProviderConnectionView[]> {
-    const paths = providerPaths(), spec = this.helperServerSpec();
-    const [claude, codex, memory] = await Promise.all([claudeStatus(paths, spec), codexStatus(paths.codexConfig, spec), claudeMemStatus()]);
+    const paths = providerPaths();
+    const [claude, codex, memory] = await Promise.all([claudeStatus(paths, this.helperServerSpec('claude')), codexStatus(paths.codexConfig, this.helperServerSpec('codex')), claudeMemStatus()]);
     return [
       { ...claude, name: 'Claude Code', extensionInstalled: !!vscode.extensions.getExtension('anthropic.claude-code'), memory: memory.plugin && memory.bun && memory.dependencies ? 'ready' : 'missing' },
       { ...codex, name: 'Codex', extensionInstalled: !!vscode.extensions.getExtension('openai.chatgpt') },
@@ -450,7 +450,7 @@ class Manager {
    */
   private async connectHelpers(provider: ConnectableProvider): Promise<string | undefined> {
     await this.installProviderExtension(provider);
-    const paths = providerPaths(), spec = this.helperServerSpec();
+    const paths = providerPaths(), spec = this.helperServerSpec(provider);
     if (provider === 'codex') await connectCodex(paths.codexConfig, spec);
     else if (provider === 'claude') {
       const claude = await this.claudeForRegistration();
@@ -659,6 +659,23 @@ class Manager {
   }
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
   /** One trailing publish for high-frequency updates; an immediate publish() supersedes it. */
+  /** The heads the webview shows (Agents canvas and dashboard), newest first. */
+  private headViews(): HelperJobView[] | undefined {
+    const service = this.helpers?.service;
+    return service?.list().map(job => ({
+      id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
+      progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
+      branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
+      checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
+      repository: service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
+      lead: job.lead, merged: service.isMerged(job.id), startedAt: job.startedAt, writeScope: job.writeScope,
+    })).reverse();
+  }
+  /** Head changes go to the webview at once (the Agents canvas animates them); the full snapshot follows, debounced. */
+  private headsChanged(): void {
+    void this.broadcast({ type: 'heads', heads: this.headViews() ?? [] }).catch(() => undefined);
+    this.publishSoon();
+  }
   private publishSoon(): void {
     if (this.publishTimer) clearTimeout(this.publishTimer);
     this.publishTimer = setTimeout(() => { this.publishTimer = undefined; void this.publish().catch(error => this.report(error)); }, 200);
@@ -695,13 +712,7 @@ class Manager {
       discardReview: task ? this.discardReviews.get(task.id) : undefined,
       usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       budgets: this.budgetSnapshot(),
-      helpers: this.helpers?.service.list().map(job => ({
-        id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
-        progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
-        branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
-        checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
-        repository: this.helpers!.service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
-      })).reverse(),
+      helpers: this.headViews(),
       resources: resourceViews,
       setupPreview,
       capacity: this.capacity.view(this.profileLimit()),

@@ -44,6 +44,7 @@ export class HelperService {
   /** Every process Hydra started for a helper or its checks. None of them, or their children, may act as a lead. */
   private readonly helperPids = new Set<number>();
   private readonly waiters = new Set<() => void>();
+  private readonly merged = new Set<string>();
   private dispatching = false;
   private dispatchAgain = false;
   private dispatchRun: Promise<void> = Promise.resolve();
@@ -52,7 +53,7 @@ export class HelperService {
   private readonly now: () => number;
   constructor(private readonly options: HelperServiceOptions) {
     this.now = options.now || Date.now;
-    this.watchdog = setInterval(() => { void this.enforceLimits(); }, options.watchdogMs ?? 5000);
+    this.watchdog = setInterval(() => { void this.enforceLimits(); void this.refreshMerged(); }, options.watchdogMs ?? 5000);
     this.watchdog.unref?.();
   }
 
@@ -70,7 +71,7 @@ export class HelperService {
     if (caller.leadKey !== this.options.leadKey) throw new Error('This Hydra window does not own that caller.');
     if (caller.role === 'lead') {
       switch (tool) {
-        case 'hydra_start_head': return this.startHelper(args);
+        case 'hydra_start_head': return this.startHelper(args, caller);
         case 'hydra_wait_for_heads': return this.waitForHelpers(args, signal);
         case 'hydra_get_head': return this.describe(this.ownJob(args.job_id), true);
         case 'hydra_list_heads': return { heads: this.options.store.list(this.options.leadKey).map(job => this.describe(job, false)) };
@@ -89,6 +90,21 @@ export class HelperService {
   }
 
   list(): Job[] { return this.options.store.list(this.options.leadKey); }
+  /** A finished head whose commit is already in the lead folder's HEAD: the lead merged it. */
+  isMerged(id: string): boolean { return this.merged.has(id); }
+  /**
+   * Check finished heads against the lead folder's HEAD. Cheap (one git call per
+   * unmerged done head) and run with the watchdog, so a merge shows up within seconds.
+   */
+  async refreshMerged(): Promise<void> {
+    let changed = false;
+    for (const job of this.list()) {
+      if (job.state !== 'done' || !job.result?.commit || this.merged.has(job.id)) continue;
+      try { await git(this.options.leadFolder, ['merge-base', '--is-ancestor', job.result.commit, 'HEAD']); this.merged.add(job.id); changed = true; }
+      catch { /* not merged yet, or the commit is gone */ }
+    }
+    if (changed) this.changed();
+  }
   helperProcessIds(): ReadonlySet<number> { return this.helperPids; }
   get leadFolder(): string { return this.options.leadFolder; }
 
@@ -109,13 +125,14 @@ export class HelperService {
 
   // ---- lead actions ----
 
-  private async startHelper(args: Record<string, unknown>) {
+  private async startHelper(args: Record<string, unknown>, caller?: HelperCaller) {
     const input = parseJobInput(args);
     const open = this.list().filter(job => !finalJobStates.has(job.state)).length;
     if (open >= 16) throw new Error('This window already has 16 unfinished heads. Wait for some to finish or cancel them.');
     const head = (await git(this.options.leadFolder, ['rev-parse', 'HEAD'])).trim();
     const dirty = (await git(this.options.leadFolder, ['status', '--porcelain=v1', '--untracked-files=no'])).trim();
-    const { job, created } = await this.options.store.create(this.options.leadKey, input);
+    const lead = caller?.leadSessionId ? { sessionId: caller.leadSessionId, ...(caller.provider ? { provider: caller.provider } : {}) } : undefined;
+    const { job, created } = await this.options.store.create(this.options.leadKey, input, lead);
     if (created) await this.options.store.update(job.id, { baseCommit: head });
     this.changed();
     void this.dispatch();

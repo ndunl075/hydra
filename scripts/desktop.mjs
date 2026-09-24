@@ -400,6 +400,19 @@ const hydraSidebarCss = `
 const hydraSidebarIconCss = `
 /* Hydra: slightly smaller file icons in sidebar trees. */
 .monaco-workbench .part.sidebar .monaco-list .monaco-icon-label::before { background-size: 14px !important; background-position: center center !important; }
+/* Hydra: sidebar chrome as in Cursor. Section header buttons (New File, Refresh...)
+   take the section title's dimmed colour, brightening on hover; the section and
+   folder chevrons are compact and bold, and folder chevrons use the text colour. */
+.monaco-workbench .part.sidebar .pane-header .actions .action-label.codicon { color: inherit !important; }
+.monaco-workbench .part.sidebar .pane-header .actions .action-label.codicon:hover { color: var(--vscode-icon-foreground) !important; }
+.monaco-workbench .part.sidebar .pane-header > .twisty-container.codicon::before { font-size: 11px !important; -webkit-text-stroke: 0.4px currentColor; }
+.monaco-workbench .part.sidebar .monaco-tl-twistie.codicon { color: var(--vscode-foreground); }
+.monaco-workbench .part.sidebar .monaco-tl-twistie.codicon::before { font-size: 11px; -webkit-text-stroke: 0.4px currentColor; }
+/* Hydra: the view icons at the top of the sidebar (Explorer, Search...) sit centred
+   on Cursor's 32px pitch, and the overflow button is a chevron rather than "...". */
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container { flex: 1 1 auto; display: flex; justify-content: center; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item { padding: 0 6px !important; }
+.monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-label.codicon-more::before { content: '\\eab4'; }
 `;
 export function brandedSidebarCss(text) {
   if (text.includes('Hydra: rounded pill')) throw new Error('Pinned sidebar stylesheet already has Hydra styles.');

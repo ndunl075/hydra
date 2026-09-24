@@ -3,6 +3,7 @@
   "name": "Hydra Light",
   "type": "light",
   "colors": {
+    "titleBar.inactiveBackground": "#FAFBF9",
     "editorGutter.addedBackground": "#007041", "editorGutter.deletedBackground": "#BE1744", "editorGutter.modifiedBackground": "#A46700",
     "gitDecoration.addedResourceForeground": "#007041", "gitDecoration.deletedResourceForeground": "#BE1744", "gitDecoration.ignoredResourceForeground": "#14141499",
     "gitDecoration.modifiedResourceForeground": "#A46700", "gitDecoration.untrackedResourceForeground": "#176C74", "list.deemphasizedForeground": "#141414BD",
@@ -24,7 +25,7 @@
     "terminal.background": "#FAFBF9", "terminal.foreground": "#18221C",
     "button.background": "#173C2C", "button.foreground": "#FFFFFF", "button.hoverBackground": "#24553F",
     "button.secondaryBackground": "#E9EEE7", "button.secondaryForeground": "#18221C", "button.secondaryHoverBackground": "#DCE6D9",
-    "focusBorder": "#276342", "list.activeSelectionBackground": "#173C2C", "list.activeSelectionForeground": "#FFFFFF", "list.hoverBackground": "#E9EEE7",
+    "focusBorder": "#14141433", "list.activeSelectionBackground": "#173C2C", "list.activeSelectionForeground": "#FFFFFF", "list.hoverBackground": "#E9EEE7",
     "input.background": "#FFFFFF", "input.foreground": "#18221C", "input.border": "#C5CFC4",
     "editor.selectionBackground": "#C9DDCB", "editor.lineHighlightBackground": "#F0F4EE",
     "editorLineNumber.foreground": "#758272", "editorLineNumber.activeForeground": "#334238",

@@ -19,12 +19,7 @@ import './styles.css';
 import { SessionThread } from './SessionThread';
 import { FocusedWorkspace } from './FocusedWorkspace';
 import { focusedWorkspace } from '../src/core/focusedWorkspace';
-import { DelegationContextInbox } from './DelegationContextInbox';
-import { DelegationResultInspection } from './DelegationResultInspection';
 import { TaskSetupPreview } from './TaskSetupPreview';
-import { DelegationRunBudgetView } from './DelegationRunBudgetView';
-import { selectedRunPanelData } from './delegationRunPanelData';
-import { DelegationOrchestrationPanel } from './DelegationOrchestrationPanel';
 import { EditorConversation } from './EditorConversation';
 import './editor-conversation.css';
 
@@ -164,7 +159,7 @@ function App() {
       <div className="mode-switch" aria-label="Workspace mode"><button onClick={() => send({ type: 'editor' })}>Editor</button><button className="current" aria-current="page">Agents</button></div>
       <button className="icon-button" title="Hydra settings" aria-label="Hydra settings" onClick={() => send({ type: 'settings' })}>···</button>
     </header>
-    {!snapshot.handoff && snapshot.tasks.some(task => task.state !== 'discarded') && <AgentMap snapshot={{ ...snapshot, tasks: snapshot.tasks.filter(task => task.state !== 'discarded') }} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} eventRuns={Object.values(snapshot.delegationOrchestration || {}).map(journal => journal.events)} />}
+    {!snapshot.handoff && snapshot.tasks.some(task => task.state !== 'discarded') && <AgentMap snapshot={{ ...snapshot, tasks: snapshot.tasks.filter(task => task.state !== 'discarded') }} selectedId={creating ? undefined : selected?.id} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />}
     {!snapshot.handoff && <HelperDashboard helpers={snapshot.helpers || []} busy={snapshot.busy} send={send} />}
     <div className="workspace">
       <aside className="task-rail" aria-label="Tasks">
@@ -211,13 +206,11 @@ function App() {
             <CapacityStatus capacity={snapshot.capacity} task={selected} busy={snapshot.busy} writerUncertain={snapshot.session?.writerUncertain} send={send} />
             <ResourceControls key={`resources-${selected.id}-${JSON.stringify(snapshot.resources?.[selected.id]?.config || {})}`} task={selected} saved={snapshot.resources?.[selected.id]} busy={snapshot.busy} send={send} />
             {selected.state === 'discarded' ? <DiscardControls task={selected} busy={taskBusy} /> : <>
-            <FocusedWorkspace task={selected} files={snapshot.files} session={snapshot.session} reconciliation={selected.delegation ? snapshot.delegationReconciliation?.[`${selected.delegation.parentId}:${selected.delegation.runId}`] : undefined} />
+            <FocusedWorkspace task={selected} files={snapshot.files} session={snapshot.session} />
             <TaskSetupPreview recipe={snapshot.setupPreview?.recipe} resources={snapshot.setupPreview?.resources} />
-            {!selected.delegation && <DelegationOrchestrationPanel snapshot={snapshot} parent={selected} onSelect={id => { setCreating(false); send({ type: 'select', id }); }} />}
-            {selected.delegation && (() => { const key = `${selected.delegation.parentId}:${selected.delegation.runId}`, journal = snapshot.delegationOrchestration?.[key], identity = { parentId: selected.delegation.parentId, runId: selected.delegation.runId, childKey: selected.delegation.childKey }; const requests = (journal?.contextRequests || []).map(request => { const outcome = journal?.contextOutcomes?.[request.requestKey]; return { requestKey: request.requestKey, binding: { parentId: request.parentId, runId: request.runId, childKey: request.childKey }, requested: request.requested.map(source => ({ ...source, scope: 'recorded read scope' })), state: outcome?.status === 'selected' ? 'fulfilled' as const : outcome?.status === 'refused' ? 'refused' as const : 'pending' as const, fulfillment: outcome?.status === 'selected' ? { selected: outcome.selected.map(source => ({ ...source, scope: 'recorded read scope' })) } : undefined, refusal: outcome?.status === 'refused' ? outcome.refusal : undefined }; }); return <><DelegationContextInbox binding={identity} requests={requests} onSupply={action => send({ type: 'supplyDelegationContext', id: selected.id, requestKey: action.requestKey })} /><DelegationResultInspection identity={identity} result={journal?.results.find(item => item.childKey === selected.delegation!.childKey)} verification={focusedWorkspace(selected, snapshot.files, snapshot.session).verification} parentReview={snapshot.parentReview} onReview={(decision, reason) => send({ type: 'reviewDelegationResult', id: selected.id, decision, reason })} />{snapshot.delegationRunAccounting?.[key] && <DelegationRunBudgetView run={snapshot.delegationRunAccounting[key]!} children={selectedRunPanelData(snapshot, selected).children} reservations={snapshot.tasks.flatMap(task => task.delegationBudgetReservation ? [task.delegationBudgetReservation] : [])} holds={selectedRunPanelData(snapshot, selected).holds} />}</>; })()}
             <TaskContext key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} send={send} />
             <ModelControls key={`models-${selected.id}`} task={selected} session={snapshot.session} catalog={snapshot.modelCatalogs?.[selected.id]} busy={taskBusy} send={send} />
-            <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} delegationRun={snapshot.usage?.delegationRuns?.[selected.delegation?.parentId || selected.id]} send={send} />
+            <UsagePanel task={snapshot.usage?.tasks[selected.id]} project={snapshot.usage?.projects[selected.repository]} send={send} />
             <BudgetControls key={`budgets-${selected.id}`} task={selected} settings={snapshot.budgets?.settings} observations={snapshot.budgets?.observations[selected.id]} busy={taskBusy} send={send} />
             {snapshot.session?.turns.length && selected.interface !== 'official-extension' ? <SessionThread key={selected.id} task={selected} session={snapshot.session} busy={taskBusy} draft={snapshot.conversationDraft} send={send} /> : <>
             <article className="message"><div className="message-author"><span className="avatar">N</span><strong>You</strong><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p className="prompt-text">{selected.prompt}</p></article>

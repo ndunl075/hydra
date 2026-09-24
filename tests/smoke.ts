@@ -351,10 +351,9 @@ export async function run(): Promise<void> {
     const completed = await vscode.commands.executeCommand<SessionView>('hydra.getSession', tasks[0]!.id);
     assert.equal(completed?.turns[0]?.text, 'Hello ü');
     assert.equal(completed.turns[0]?.usage?.input, 12);
-    const plannerRun = (await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id)?.delegationPlanner;
-    // Auto is paused (Official_Extensions_Plan Phase 0): a Solo turn saves no planner run and
-    // the provider receives exactly the brief, with no planning suffix.
-    assert.equal(plannerRun, undefined, 'Solo turn saves no planner receipt');
+    // Auto delegation is retired (Official_Extensions_Plan Phases 0 and 7): the provider
+    // receives exactly the brief, with no planning suffix, and no planner run is saved.
+    assert.equal('delegationPlanner' in ((await vscode.commands.executeCommand<Task[]>('hydra.listTasks'))?.find(task => task.id === tasks[0]!.id) || {}), false, 'no planner receipt');
     const normalTurnPrompt = submittedPrompt;
     assert.equal(completed.turns[0]?.prompt, normalTurnPrompt);
     const reported = await vscode.commands.executeCommand<{ tasks: Record<string, UsageSummary> }>('hydra.getUsage');

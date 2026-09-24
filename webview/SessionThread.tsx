@@ -10,10 +10,10 @@ import type { ModelCatalog } from '../src/core/modelSelection';
 import type { Provider, ProviderInfo } from '../src/core/model';
 import { canEditBrief, emptyBrief } from '../src/core/taskContext';
 import { latestContextUsage } from '../src/core/contextUsage';
-import { ContextRing, ModelPicker, PermissionModePicker, asTaskPermissionMode, type DelegationMode } from './ComposerPickers';
+import { ContextRing, ModelPicker, PermissionModePicker, asTaskPermissionMode } from './ComposerPickers';
 
 /** What the sidebar composer needs beyond the task: catalogs to pick from and the delegation preference. */
-export interface ComposerContext { catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; delegationMode: DelegationMode }
+export interface ComposerContext { catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[] }
 const providerName = (provider: string) => provider === 'claude' ? 'Claude Code' : 'Codex';
 export function SessionThread({ task, session, busy, draft, send, available = true, compact = false, composer }: { task: Task; session: SessionView; busy: boolean; draft?: ConversationDraft; send: (message: ClientMessage) => void; available?: boolean; compact?: boolean; composer?: ComposerContext }) {
   // Provider, model and permission mode can change until the first launch; after
@@ -99,7 +99,7 @@ export function SessionThread({ task, session, busy, draft, send, available = tr
   const cannotReply = task.state === 'external' || task.interface === 'official-extension' || !!task.sessionProvider && task.sessionProvider !== task.provider;
   // A launch that failed at startup leaves its schedule blocked. Send then
   // retries that same launch instead of sitting disabled with only Cancel.
-  const retryable = task.schedule?.state === 'blocked' && !!task.schedule.request && !task.schedule.uncertain && !task.delegation && !running && !cannotReply;
+  const retryable = task.schedule?.state === 'blocked' && !!task.schedule.request && !task.schedule.uncertain && !running && !cannotReply;
   const blocked = busy || !!sending || (pendingSchedule(task) && !retryable) || !available || running || cannotReply;
   return <div className="session-conversation">
     <div className="session-messages" ref={messages} onScroll={event => { const element = event.currentTarget; followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64; }}>

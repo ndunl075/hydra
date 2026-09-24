@@ -1,7 +1,6 @@
 import { ProfileCapacity } from './core/profileCapacity';
 import { TaskResources } from './core/resources';
 import { TaskScheduler, configureSchedule, pendingSchedule } from './core/scheduler';
-import { recordDelegatedSession, validateDelegatedExecution } from './core/delegationRunner';
 import { prepareScheduledTask } from './core/schedulerGit';
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
@@ -17,29 +16,6 @@ import { prepareDiscard, confirmDiscard, restoreDiscarded, type DiscardReview } 
 import type { IntegrationOperation } from './core/integrationModel';
 import { ReviewDocuments } from './extensionReview';
 import { AppearanceSettings } from './extensionSettings';
-import { requireDelegationMode, parseDelegationPreferences, type DelegationMode, type DelegationPreferences, autoDelegationAvailable, autoDelegationPausedReason } from './core/delegationPreferences';
-import { DelegationStore } from './core/delegationStore';
-import { DelegationDispatchStore } from './core/delegationDispatch';
-import { dispatchAcceptedAutoDelegation } from './core/autoDelegationDispatch';
-import { prepareAutoDelegationParentWakeup, saveAutoDelegationParentWaiting } from './core/autoDelegationParentWakeup';
-import { admitAutoDelegation } from './core/autoDelegationAdmission';
-import { assessAutoDelegationResultReadiness } from './core/autoDelegationResultReadiness';
-import { projectDelegationReconciliation } from './core/delegationReconciliation';
-import { DelegationOrchestrationJournal } from './core/delegationOrchestrationJournal';
-import { DelegationIngressHost } from './core/delegationIngressHost';
-import { assertCurrentParentReviewInput, DelegationParentReviewJournal } from './core/delegationParentReview';
-import { DelegationHandoffProducer } from './core/delegationHandoffProducer';
-import { DelegationHandoffHost } from './core/delegationHandoffHost';
-import { captureDelegationApprovalPauses } from './core/delegationApprovalPause';
-import { delegationIntegrationGate, type SavedParentReviewProjection } from './core/delegationIntegrationGate';
-import { cancelDelegatedEnrollment, createDelegatedChildren, enrollDelegatedChildren } from './core/delegationChildren';
-import { saveDelegatedEnrollmentTransaction } from './core/delegationEnrollmentTransaction';
-import { parseDelegatedVerificationChecks, recordDelegatedVerification } from './core/delegationVerification';
-import { DelegatedVerificationActionGate, interruptLatestDelegatedVerification, persistDelegatedVerification } from './core/delegationVerificationTransaction';
-import { hostDelegationPolicy } from './core/delegationHost';
-import { bindDelegationPlannerTurn, createDelegationPlannerRun, ingestDelegationPlannerCompletion, plannerPromptSuffix } from './core/delegationPlannerIngestion';
-import type { DelegationPolicy } from './core/delegationPlan';
-import type { DelegationPlanView } from './core/model';
 import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
@@ -59,12 +35,8 @@ import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { ConversationDrafts } from './core/conversationDrafts';
 import { buildTaskPrompt, canEditBrief, lockTaskContext, renderTaskHandoff } from './core/taskContext';
-import { delegationRunUsage, usageSnapshot } from './core/usage';
-import { projectDelegationRunUsage, releaseDelegationBudget, reserveDelegationBudget } from './core/delegationRunAccounting';
-import { createDelegationRunArchive } from './core/delegationRunExport';
+import { usageSnapshot } from './core/usage';
 import { projectSelectedTaskSetupPreview } from './core/setupPreviewProjection';
-import { DelegationEvaluationImport, maxDelegationEvaluationImportBundleBytes } from './core/delegationEvaluationImport';
-import { parseDelegationEvaluationCorpus } from './core/delegationEvaluationCorpus';
 import { assessBudgets, BudgetHoldError, checkBudgetLaunch, emptyBudgets, type BudgetSettings } from './core/budgets';
 import { BudgetStore } from './core/budgetStore';
 import { discoverCodexModels } from './core/codexModels';
@@ -158,9 +130,6 @@ class Manager {
   private readonly commitReviews = new Map<string, PreparedReview>();
   private readonly discardReviews = new Map<string, DiscardReview>();
   private pendingDiscard?: Promise<void>;
-  private pendingDelegationSave?: Promise<void>;
-  private pendingDelegationVerification?: { controller: AbortController; done: Promise<unknown> };
-  private readonly delegationVerificationActions = new DelegatedVerificationActionGate();
   private pendingCommit?: Promise<ReviewedCommit>;
   private readonly integrations: Integrations;
   private readonly integrationOperations = new Map<string, IntegrationOperation>();
@@ -171,16 +140,7 @@ class Manager {
   private readonly onboarding: Onboarding;
   private readonly accounts: ProviderAccounts;
   private readonly quota: ProviderQuota;
-  private readonly delegations: DelegationStore;
-  private readonly delegationDispatches: DelegationDispatchStore;
-  private readonly delegationJournal: DelegationOrchestrationJournal;
-  private readonly delegationIngress: DelegationIngressHost;
-  private readonly parentReviews: DelegationParentReviewJournal;
-  private readonly delegationHandoffs: DelegationHandoffHost;
-  private readonly autoDispatching = new Map<string, Promise<void>>();
-  private readonly autoWakeups = new Map<string, Promise<void>>();
   private approvalPauseReplay: Promise<void> = Promise.resolve();
-  private delegationPlans = new Map<string, DelegationPlanView[]>();
   private fileCache?: { id: string; expires: number; files: Snapshot['files']; error?: string };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
@@ -196,32 +156,11 @@ class Manager {
     this.resources = new TaskResources(path.join(this.storageDirectory, 'resources'), path.join(context.globalStorageUri.fsPath, 'resource-reservations'), key, () => { void this.publish(); if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error)); }, error => this.report(error));
     this.store = new LocalStore(this.storageDirectory);
     this.budgetStore = new BudgetStore(this.storageDirectory);
-    this.delegations = new DelegationStore(path.join(this.storageDirectory, 'delegation'), async () => {
-      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation decisions while this workspace is unavailable.');
-    });
-    this.delegationDispatches = new DelegationDispatchStore(path.join(this.storageDirectory, 'delegation'), async () => {
-      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot materialize delegation worktrees while this workspace is unavailable.');
-    });
-    this.delegationJournal = new DelegationOrchestrationJournal(path.join(this.storageDirectory, 'delegation'), async () => {
-      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot record delegation orchestration while this workspace is unavailable.');
-    });
-    this.parentReviews = new DelegationParentReviewJournal(path.join(this.storageDirectory, 'delegation'), async () => this.assertDelegationIngressWritable());
-    this.delegationHandoffs = new DelegationHandoffHost(new DelegationHandoffProducer(this.delegationJournal));
-    this.delegationIngress = new DelegationIngressHost(() => this.tasks, this.delegations, this.delegationDispatches, this.delegationJournal, async child => {
-      this.assertDelegationIngressWritable();
-      await this.verifyWorktree(child);
-      const root = await realpath(child.worktree);
-      for (const document of vscode.workspace.textDocuments) {
-        if (!document.isDirty || document.uri.scheme !== 'file') continue;
-        const file = await realpath(document.uri.fsPath).catch(() => document.uri.fsPath);
-        if (isInside(root, file) || isInside(root, document.uri.fsPath)) throw new Error('Save or revert unsaved child editor buffers before supplying context.');
-      }
-    });
     this.integrations = new Integrations(path.join(this.storageDirectory,'integrations'),op=>{
       this.integrationOperations.set(op.taskId,op);
       if(this.integrationAbort?.taskId===op.taskId)this.integrationAbort.operationId=op.id;
       void this.publish();
-    }, () => this.tasks, (task, tasks) => this.guardDelegatedIntegrationAcceptance(task, tasks));
+    }, () => this.tasks);
     this.review = new ReviewDocuments(context);
     this.scheduler = new TaskScheduler({
       tasks: () => this.tasks,
@@ -230,10 +169,6 @@ class Manager {
       enabled: () => this.schedulerReady && !this.busy && !this.closing && !this.disabled && !this.handoff && vscode.workspace.isTrusted,
       persist: () => this.persist(),
       budget: task => this.checkBudget(task),
-      guardBudget: (task, request) => {
-        if (request.type === 'startManaged' || request.type === 'followUp') reserveDelegationBudget(task, this.tasks, request.type);
-      },
-      releaseBudgetGuard: task => { releaseDelegationBudget(task); },
       reserve: async (task, request) => {
         this.capacityStarting.add(task.id);
         return this.capacity.tryAcquire(task.id, request.type === 'launch' || request.type === 'terminal' ? 'terminal' : 'managed', this.profileLimit());
@@ -247,13 +182,7 @@ class Manager {
       }),
       launch: (task, request) => this.handle({ ...request, id: task.id }, true)
     });
-    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().then(async () => {
-      for (const parent of this.tasks.filter(task => !task.delegation && task.delegationPlanner?.state === 'accepted' && task.delegationPlanner.preferences.mode === 'auto')) await this.reconcileAutoParentWakeup(parent.id);
-    }).catch(error => this.report(error)); }, error => this.report(error), {
-      sessionIdentified: (task, sessionId) => recordDelegatedSession(task, sessionId, () => this.persist()),
-      prepared: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'prepared') return; task.delegationPlanner = bindDelegationPlannerTurn(task.delegationPlanner, turn); task.updatedAt = new Date().toISOString(); await this.persist(); },
-      completed: async (task, turn) => { if (!task.delegationPlanner || task.delegationPlanner.state !== 'submitted' || task.delegationPlanner.turnId !== turn.id || turn.status !== 'completed') return; await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations }); task.updatedAt = new Date().toISOString(); await this.persist(); await this.refreshDelegationPlans(task.id); await this.publish(); await this.reconcileAutoParentWakeup(task.id); void this.dispatchAcceptedAutoRun(task).then(() => this.reconcileAutoParentWakeup(task.id)).catch(error => this.report(error)); }
-    });
+    this.managed = new ManagedSessions(new SessionStore(path.join(this.storageDirectory, 'sessions')), () => this.persist(), () => { void this.persist().catch(error => this.report(error)); }, error => this.report(error), {});
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -276,159 +205,6 @@ class Manager {
     command('hydra.openOnboarding', () => this.onboarding.show());
     command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
-    command('hydra.getDelegationPreferences', () => structuredClone(this.delegationPreferences()));
-    command('hydra.setDelegationMode', (mode: unknown) => this.setDelegationMode(requireDelegationMode(mode)));
-    command('hydra.getDelegationRun', async (parentId: string, runId: string) => {
-      this.getTask(parentId);
-      return structuredClone(await this.delegations.load(parentId, runId));
-    });
-    // A child may record a request, but recording cannot read or supply source content.
-    // The selected parent's inbox remains the only context-supply action.
-    command('hydra.recordDelegationContextRequest', async (childId: string, request: unknown) => {
-      this.assertDelegationIngressWritable();
-      const receipt = await this.delegationIngress.recordContextRequest(childId, request);
-      await this.publish();
-      return structuredClone(receipt);
-    });
-    // Context supply waits for the explicit inbox action; a public command could be
-    // called programmatically without showing the request to the user.
-    command('hydra.receiveDelegationResult', async (childId: string, result: unknown) => {
-      this.assertDelegationIngressWritable();
-      const child = this.getTask(childId);
-      const delivered = await this.delegationIngress.receiveResultWithBinding(childId, result);
-      if (!delivered.occurredAt) throw new Error('This legacy result receipt has no durable delivery timestamp and cannot create a graph event.');
-      // The journal receipt commits first. A graph append failure is surfaced so
-      // the exact receipt can be replayed without treating provider text as fact.
-      try { await this.delegationHandoffs.delivered(delivered.receipt, delivered.binding, child, delivered.occurredAt); }
-      finally { await this.publish(); }
-      await this.reconcileAutoParentWakeup(delivered.receipt.parentId);
-      return structuredClone(delivered.receipt);
-    });
-    command('hydra.importDelegationEvaluationObservation', async () => {
-      if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot import evaluation evidence while this workspace is unavailable.');
-      const corpusSelection = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFiles: true, canSelectFolders: false, filters: { JSON: ['json'] }, openLabel: 'Select immutable evaluation corpus' });
-      if (!corpusSelection?.length) return;
-      if (corpusSelection[0]!.scheme !== 'file') throw new Error('Select a local evaluation corpus JSON file.');
-      const corpusFile = corpusSelection[0]!.fsPath, corpusInfo = await lstat(corpusFile);
-      if (!corpusInfo.isFile() || corpusInfo.isSymbolicLink() || corpusInfo.size > maxDelegationEvaluationImportBundleBytes) throw new Error('Selected evaluation corpus must be a bounded regular JSON file.');
-      const corpusBytes = await readFile(corpusFile);
-      if (corpusBytes.length > maxDelegationEvaluationImportBundleBytes) throw new Error('Selected evaluation corpus is oversized.');
-      const corpus = parseDelegationEvaluationCorpus(JSON.parse(corpusBytes.toString('utf8')));
-      const bundleSelection = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFiles: true, canSelectFolders: false, filters: { JSON: ['json'] }, openLabel: 'Select sealed local observation bundle' });
-      if (!bundleSelection?.length) return;
-      if (bundleSelection[0]!.scheme !== 'file') throw new Error('Select a local evaluation observation JSON file.');
-      const bundleFile = bundleSelection[0]!.fsPath;
-      const importer = new DelegationEvaluationImport(path.join(this.storageDirectory, 'delegation-evaluation'), path.dirname(bundleFile));
-      const binding = await importer.import(path.basename(bundleFile), corpus);
-      await vscode.window.showInformationMessage(`Sealed evaluation observation ${binding.observationId.slice(0, 12)} linked to delegated run ${binding.delegatedRunId}.`);
-      return structuredClone(binding);
-    });
-    // Read-only: this only projects already-durable local facts. It starts no process,
-    // provider turn, scheduler action, upload, or archive import.
-    command('hydra.exportDelegationRunArchive', async (requestedParentId?: string, requestedRunId?: string) => {
-      const selected = requestedParentId ? this.getTask(requestedParentId) : this.selectedId ? this.getTask(this.selectedId) : undefined;
-      const parent = selected?.delegation ? this.getTask(selected.delegation.parentId) : selected;
-      const runId = requestedRunId || selected?.delegation?.runId || (() => {
-        const runs = [...new Set(this.tasks.filter(task => task.delegation?.parentId === parent?.id).map(task => task.delegation!.runId))];
-        if (runs.length !== 1) throw new Error('Select a delegated child or specify the parent and run to export.');
-        return runs[0]!;
-      })();
-      if (!parent) throw new Error('Select a delegated child or specify the parent and run to export.');
-      const recovery = projectDelegationReconciliation(parent, runId, this.tasks, await this.delegationDispatches.load(parent.id, runId), await this.delegationJournal.load(parent.id, runId));
-      const evaluationEvidence = await new DelegationEvaluationImport(path.join(this.storageDirectory, 'delegation-evaluation'), '').exportStoredEvidence(runId);
-      const archive = createDelegationRunArchive({ parent, runId, tasks: this.tasks, recovery, ...(evaluationEvidence.availability === 'available' ? { evaluationEvidence: evaluationEvidence.references } : {}) });
-      await vscode.env.clipboard.writeText(JSON.stringify(archive, null, 2));
-      await vscode.window.showInformationMessage(`Delegated run archive copied (${archive.sha256.slice(0, 12)}; evaluation evidence ${archive.evaluationEvidence.availability}).`);
-      return archive;
-    });
-    command('hydra.materializeDelegationRun', async (parentId: string, runId: string) => {
-      if (this.busy) throw new Error('Another task operation is in progress.');
-      this.busy = true;
-      try {
-        const parent = this.getTask(parentId);
-        if (parent.state === 'discarded') throw new Error('Restore the parent task before materializing child worktrees.');
-        const decisions = (await this.delegations.load(parent.id, runId)).decisions;
-        const dispatches = await this.delegationDispatches.materialize({ parentId: parent.id, runId, repository: parent.repository, parentTitle: parent.title, configuredRoot: vscode.workspace.getConfiguration('hydra').get<string>('worktreeRoot'), decisions });
-        const children = createDelegatedChildren(parent, decisions, dispatches), existing = new Map(this.tasks.filter(task => task.delegation?.parentId === parent.id && task.delegation?.runId === runId).map(task => [task.delegation!.dispatchKey, task]));
-        for (const child of children) {
-          const prior = existing.get(child.delegation!.dispatchKey);
-          if (prior && (prior.id !== child.id || prior.worktree !== child.worktree || prior.branch !== child.branch)) throw new Error('A stored child task conflicts with its immutable delegation dispatch. Reconcile it before retrying.');
-          if (!prior && this.tasks.some(task => task.id === child.id || task.worktree === child.worktree || task.branch === child.branch)) throw new Error('A task already owns this delegated worktree. Reconcile it before retrying.');
-        }
-        const added = children.filter(child => !existing.has(child.delegation!.dispatchKey));
-        if (added.length) {
-          const pending = added.map(child => ({ ...child, delegationJournalPending: { version: 1 as const, event: { version: 1 as const, id: child.delegation!.dispatchKey, occurredAt: new Date().toISOString(), kind: 'assignment' as const, parentId: parent.id, runId, from: { kind: 'task' as const, taskId: parent.id }, to: { kind: 'task' as const, taskId: child.id }, provenance: { producer: 'host' as const, recordId: child.delegation!.dispatchKey } } } }));
-          const candidate = [...this.tasks, ...pending];
-          try {
-            await this.store.save(candidate);
-            this.tasks = candidate;
-            // This is the only Feature 07 producer: it records the already durable child creation.
-            for (const child of pending) { try { await this.delegationJournal.appendEvent(child.delegationJournalPending!.event); const dispatch = dispatches.find(item => item.dispatchKey === child.delegation!.dispatchKey); if (!dispatch) throw new Error('Saved delegated child has no durable dispatch receipt.'); await this.delegationHandoffs.dispatched(dispatch, child); const cleared = structuredClone(this.tasks); const target = cleared.find(item => item.id === child.id)!; target.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; } catch (error) { this.error = `Delegation assignment or dispatch graph recovery is pending: ${this.describe(error)}`; } }
-          } catch (error) {
-            throw error;
-          }
-          await this.broadcast({ type: 'taskCreated' }); await this.publish();
-        }
-        return structuredClone(children);
-      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
-    });
-    command('hydra.enrollDelegationRun', async (parentId: string, runId: string) => {
-      this.assertDelegationEnrollmentWritable();
-      if (this.busy) throw new Error('Another task operation is in progress.');
-      this.busy = true;
-      try {
-        const parent = this.getTask(parentId);
-        if (parent.state === 'discarded') throw new Error('Restore the parent task before enrolling delegated children.');
-        const decisions = (await this.delegations.load(parent.id, runId)).decisions;
-        const dispatches = await this.delegationDispatches.load(parent.id, runId);
-        const expected = createDelegatedChildren(parent, decisions, dispatches);
-        return await this.saveDelegatedEnrollment(parent, expected, runId, enrollDelegatedChildren);
-      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
-    });
-    command('hydra.cancelDelegationEnrollment', async (parentId: string, runId: string) => {
-      this.assertDelegationEnrollmentWritable();
-      if (this.busy) throw new Error('Another task operation is in progress.');
-      this.busy = true;
-      try {
-        const parent = this.getTask(parentId);
-        if (parent.state === 'discarded') throw new Error('Restore the parent task before cancelling delegated enrollment.');
-        const decisions = (await this.delegations.load(parent.id, runId)).decisions;
-        const dispatches = await this.delegationDispatches.load(parent.id, runId);
-        const expected = createDelegatedChildren(parent, decisions, dispatches);
-        return await this.saveDelegatedEnrollment(parent, expected, runId, cancelDelegatedEnrollment);
-      } finally { this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
-    });
-    command('hydra.runDelegatedVerification', async (id: string, checks: unknown) => {
-      if (this.busy || this.closing) throw new Error('Another task operation is in progress.');
-      this.busy = true;
-      const active = this.delegationVerificationActions.start(async signal => {
-        const task = this.getTask(id);
-        const parsed = parseDelegatedVerificationChecks(checks);
-        await this.guardDelegatedVerification(task);
-        let evidence = await recordDelegatedVerification(this.storageDirectory, { task, checks: parsed, signal });
-        // Shutdown owns this signal. It can retain completed logs but never a
-        // passing latest attempt that raced the shutdown boundary.
-        if (signal.aborted || this.closing) evidence = interruptLatestDelegatedVerification(evidence);
-        if (!this.closing) await this.guardDelegatedVerification(task);
-        const persisted = await persistDelegatedVerification(task, evidence, () => this.persistVerificationEvidence(), new Date().toISOString(), signal);
-        return structuredClone(persisted);
-      });
-      this.pendingDelegationVerification = active;
-      try { return await active.done; }
-      finally {
-        if (this.pendingDelegationVerification?.done === active.done) this.pendingDelegationVerification = undefined;
-        this.busy = false; await this.publish();
-        if (this.schedulerReady && !this.closing) void this.scheduler.drain().catch(error => this.report(error));
-      }
-    });
-    command('hydra.recordDelegationDecision', async (proposal: unknown, policy: unknown) => {
-      const parentId = proposal && typeof proposal === 'object' ? (proposal as Record<string, unknown>).parentId : undefined;
-      if (typeof parentId !== 'string') throw new Error('Delegation proposal requires a Hydra parent task.');
-      const bound = hostDelegationPolicy(proposal, policy, this.getTask(parentId), this.delegationPreferences());
-      const result = await this.delegations.recordDecision(bound.proposal, bound.policy);
-      await this.refreshDelegationPlans(parentId); await this.publish();
-      return structuredClone(result);
-    });
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
     command('hydra.applyImport', (token: string, categories: any) => this.settingsImport.apply(token, categories));
     command('hydra.undoImport', () => this.settingsImport.undo());
@@ -541,7 +317,6 @@ class Manager {
     }));
     try {
       this.tasks = await this.store.load();
-      await this.refreshDelegationPlans();
       this.budgets = await this.budgetStore.load();
       await this.resources.load();
       this.scheduler.reconcile();
@@ -553,13 +328,6 @@ class Manager {
           await lock.acquire(path.join(this.context.globalStorageUri.fsPath, 'ownership'), repository);
           this.locks.push(lock);
         }
-        // Recover only explicit durable assignment drafts; ordinary child state never creates history.
-        for (const task of this.tasks) if (task.delegation?.parentId && task.delegationJournalPending) {
-          try { await this.delegationJournal.appendEvent(task.delegationJournalPending.event); const cleared = structuredClone(this.tasks); cleared.find(item => item.id === task.id)!.delegationJournalPending = undefined; await this.store.save(cleared); this.tasks = cleared; }
-          catch (error) { this.error = `Delegation assignment recovery is required before this child can launch: ${this.describe(error)}`; this.output.appendLine(this.describe(error)); }
-        }
-        await this.recoverDelegationDispatchHandoffs();
-        await this.replayDelegationApprovalPauses(this.tasks);
         await this.capacity.refresh();
         this.capacity.startWatching(error => { this.output.appendLine(this.describe(error)); void this.publish(); });
         for (const task of this.tasks) {
@@ -573,7 +341,6 @@ class Manager {
             try { await this.managed.load(task); }
             catch (error) { if (task.state !== 'discarded') task.state = 'error'; task.error = this.describe(error); }
           }
-          if (task.delegationPlanner?.state === 'submitted') await this.reconcileDelegationPlanner(task).catch(error => { task.error = this.describe(error); });
         }
         await this.store.save(this.tasks);
         for(const op of await this.integrations.recover(this.tasks))this.integrationOperations.set(op.taskId,op);
@@ -591,10 +358,6 @@ class Manager {
     await this.startHelpers().catch(error => { this.output.appendLine(`[helpers] not started: ${this.describe(error)}`); });
     await this.publish();
     await this.scheduler.drain();
-    for (const parent of this.tasks.filter(task => !task.delegation && task.delegationPlanner?.state === 'accepted' && task.delegationPlanner.preferences.mode === 'auto')) {
-      await this.dispatchAcceptedAutoRun(parent).catch(error => this.report(error));
-      await this.reconcileAutoParentWakeup(parent.id).catch(error => this.report(error));
-    }
   }
   /** How a CLI starts Hydra's stdio bridge: this editor's executable as Node, running dist/hydra-mcp.cjs. */
   helperBridge(): { command: string; args: string[]; env: Record<string, string> } {
@@ -776,104 +539,6 @@ class Manager {
     if (branch.trim() !== task.branch) throw new Error('Task worktree branch changed. Restore its recorded branch before launching.');
   }
   private profileLimit(): number { return Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentProfileTasks', 2))); }
-  private delegationPreferences(): DelegationPreferences {
-    const config = vscode.workspace.getConfiguration('hydra');
-    const preferences = parseDelegationPreferences({ mode: config.get('delegationMode', 'solo'), maxChildren: config.get('maxDelegatedChildren', 2) });
-    return autoDelegationAvailable ? preferences : { ...preferences, mode: 'solo' };
-  }
-  /** Conservative host facts for a normal-turn proposal; no field is supplied by the provider. */
-  private plannerPolicy(task: Task, runId: string): DelegationPolicy {
-    const selection = task.modelSelection, preferences = this.delegationPreferences(), brief = task.brief;
-    const models = selection ? [{ model: selection.model, displayName: selection.model, efforts: [selection.effort], defaultEffort: selection.effort }] : [];
-    return { parentId: task.id, runId, mode: preferences.mode, level: 0, maxChildren: preferences.maxChildren, provider: task.provider, ...(selection ? { modelSelection: structuredClone(selection) } : {}), models,
-      approvedBases: [task.baseCommit], writeScope: ['src/', 'webview/', 'tests/', 'docs/', 'scripts/'], otherOwners: [],
-      context: { userIntent: brief?.goal || task.title, qualityTarget: brief?.acceptance || 'Complete the parent task with its stated acceptance criteria.', constraints: [brief?.constraints || 'Do not broaden the parent task scope.'], instructions: [], interfaces: [], evidence: [], maxTurns: 1, timeoutMs: 300000 } };
-  }
-  private async refreshDelegationPlans(parentId?: string): Promise<void> {
-    const parents = parentId ? [this.getTask(parentId)] : this.tasks.filter(task => task.state !== 'discarded');
-    for (const parent of parents) {
-      const runs = await this.delegations.list(parent.id);
-      const views = runs.flatMap(run => run.decisions.map(decision => ({ runId: run.runId, id: decision.proposal.id, rationale: decision.proposal.rationale, mode: decision.mode, decision: decision.proposal.decision, children: decision.proposal.children.map(child => ({ key: child.key, goal: child.goal, provider: child.provider, writeScope: child.writeScope, dependencies: child.dependencies, brief: decision.manifests.find(manifest => manifest.child.key === child.key)?.prompt || '' })) })));
-      if (views.length) this.delegationPlans.set(parent.id, views); else this.delegationPlans.delete(parent.id);
-    }
-  }
-  private async reconcileDelegationPlanner(task: Task): Promise<void> {
-    const planner = task.delegationPlanner;
-    if (!planner || planner.state !== 'submitted') return;
-    const turn = this.managed.view(task.id)?.turns.find(item => item.id === planner.turnId);
-    if (!turn || turn.status !== 'completed') return;
-    await ingestDelegationPlannerCompletion({ task, turn, decisions: this.delegations });
-    task.updatedAt = new Date().toISOString(); await this.refreshDelegationPlans(task.id);
-  }
-  private async dispatchAcceptedAutoRun(parent: Task): Promise<void> {
-    const receipt = parent.delegationPlanner;
-    if (!receipt || receipt.state !== 'accepted' || receipt.preferences.mode !== 'auto' || this.disabled || this.closing || !vscode.workspace.isTrusted) return;
-    const key = `${parent.id}:${receipt.runId}`;
-    const pending = this.autoDispatching.get(key);
-    if (pending) return pending;
-    const operation = (async () => {
-      const decisions = (await this.delegations.load(parent.id, receipt.runId)).decisions;
-      await dispatchAcceptedAutoDelegation(parent, decisions, {
-        tasks: () => this.tasks,
-        materialize: (parentId, runId) => vscode.commands.executeCommand<Task[]>('hydra.materializeDelegationRun', parentId, runId),
-        enroll: (parentId, runId) => vscode.commands.executeCommand<Task[]>('hydra.enrollDelegationRun', parentId, runId),
-        enqueue: async child => {
-          if (this.closing || this.disabled || !vscode.workspace.isTrusted || this.getTask(child.id) !== child) throw new Error('Auto child dispatch lost its host owner.');
-          await this.scheduler.enqueue(child, { type: 'startManaged' });
-        }
-      });
-    })();
-    this.autoDispatching.set(key, operation);
-    try { await operation; } finally { if (this.autoDispatching.get(key) === operation) this.autoDispatching.delete(key); }
-  }
-  private async reconcileAutoParentWakeup(parentId: string): Promise<void> {
-    const parent = this.tasks.find(task => task.id === parentId), receipt = parent?.delegationPlanner;
-    if (!parent || !receipt || receipt.state !== 'accepted' || receipt.preferences.mode !== 'auto' || this.disabled || this.closing || !vscode.workspace.isTrusted) return;
-    const key = `${parentId}:${receipt.runId}`, previous = this.autoWakeups.get(key);
-    if (previous) return previous;
-    const operation = (async () => {
-      const decisions = (await this.delegations.load(parentId, receipt.runId)).decisions;
-      const decision = decisions[0];
-      if (decisions.length !== 1 || !decision || decision.proposal.id !== receipt.proposalId || decision.proposal.runId !== receipt.runId || receipt.sha256 !== createHash('sha256').update(JSON.stringify(decision.proposal)).digest('hex')) throw new Error('Accepted Auto decision does not match its durable delegation run.');
-      const admission = admitAutoDelegation({ proposal: decision.proposal, policy: decision.mode === 'auto' ? receipt.policy : { ...receipt.policy, mode: decision.mode }, parent, preferences: receipt.preferences });
-      if (admission.status === 'solo') return;
-      if (admission.status !== 'eligible') throw new Error(`Accepted Auto decision is blocked: ${admission.rationale}`);
-      const expectedChildKeys = admission.proposal.children.map(child => child.key);
-      await saveAutoDelegationParentWaiting(parent, this.tasks, tasks => this.store.save(tasks), () => this.capacity.hold(parentId));
-      const children = this.tasks.filter(child => child.delegation?.parentId === parentId && child.delegation.runId === receipt.runId);
-      if (parent.schedule?.state !== 'waiting-for-children') return;
-      if (children.length !== expectedChildKeys.length || new Set(children.map(child => child.delegation!.childKey)).size !== expectedChildKeys.length || children.some(child => !expectedChildKeys.includes(child.delegation!.childKey))) return;
-      const records = await this.delegationJournal.loadResultRecords(parentId, receipt.runId);
-      const reviews = await this.parentReviews.load(parentId, receipt.runId);
-      const failed = children.some(child => child.state === 'error' || child.state === 'interrupted' || child.state === 'discarded' || ['blocked', 'cancelled', 'interrupted'].includes(child.schedule?.state || ''));
-      const rejected = records.some(record => {
-        const child = children.find(item => item.delegation?.childKey === record.receipt.childKey);
-        if (!child?.reviewedCommit || !child.verificationEvidence) return false;
-        const evidenceSha256 = createHash('sha256').update(JSON.stringify(child.verificationEvidence)).digest('hex');
-        return reviews.some(review => review.resultSha256 === record.receipt.sha256 && review.evidenceSha256 === evidenceSha256 && review.commit === child.reviewedCommit!.commit && review.tree === child.reviewedCommit!.tree && review.decision === 'rejected');
-      });
-      if (failed || rejected) {
-        const candidate = structuredClone(parent);
-        candidate.schedule!.state = 'blocked';
-        candidate.schedule!.reason = failed ? 'A delegated prerequisite failed or stopped. Review the saved child work.' : 'A current child result was rejected by parent review.';
-        await this.store.save(this.tasks.map(task => task.id === parent.id ? candidate : task));
-        Object.assign(parent, candidate);
-        await this.publish();
-        return;
-      }
-      const resume = prepareAutoDelegationParentWakeup(parent, receipt.runId, expectedChildKeys, children, records, reviews);
-      if (resume.status !== 'ready') return;
-      await this.scheduler.resumeWaitingParent(parent, resume.payload.content, resume.payload.wakeupKey);
-    })();
-    this.autoWakeups.set(key, operation);
-    try { await operation; } finally { if (this.autoWakeups.get(key) === operation) this.autoWakeups.delete(key); }
-  }
-  private async setDelegationMode(mode: DelegationMode): Promise<DelegationPreferences> {
-    if (mode === 'auto' && !autoDelegationAvailable) throw new Error(autoDelegationPausedReason);
-    await vscode.workspace.getConfiguration('hydra').update('delegationMode', mode, vscode.ConfigurationTarget.Global);
-    await this.publish();
-    return this.delegationPreferences();
-  }
   private async settleCapacity(shutdown = false): Promise<void> {
     if (this.disabled || !vscode.workspace.isTrusted || this.closing && !shutdown) return;
     const owned = this.capacity.view(this.profileLimit()).owned;
@@ -903,10 +568,6 @@ class Manager {
     // Session completions can save unrelated tasks while discard/restore commits
     // an immutable record. Wait so an older snapshot cannot overwrite that record.
     await this.pendingDiscard?.catch(() => {});
-    // Enrollment writes a snapshot with detached child schedules. Wait until it
-    // has copied the durable result onto the live task objects, then serialize
-    // this ordinary save from the current live state.
-    while (this.pendingDelegationSave) await this.pendingDelegationSave.catch(() => {});
     for (const task of this.tasks) {
       const s = task.schedule;
       if (this.managed.view(task.id)?.writerUncertain && s) { s.uncertain = true; s.reason = 'Owned process cleanup could not prove writer absence. Stop surviving children and reconcile explicitly.'; this.capacity.hold(task.id); }
@@ -918,114 +579,11 @@ class Manager {
         if (s.state === 'finished' || s.state === 'interrupted') s.request = undefined;
       }
     }
-    for (const task of this.tasks) {
-      const view = task.delegation ? this.managed.view(task.id) : undefined;
-      if (view?.approvals?.length) captureDelegationApprovalPauses(task, view.approvals, view.turns.at(-1)?.id);
-    }
-    const pauseSources = structuredClone(this.tasks.filter(task => task.delegationApprovalPauses?.length));
     await this.store.save(this.tasks);
-    await this.replayDelegationApprovalPauses(pauseSources);
     await this.settleCapacity(); await this.publish();
     if (this.schedulerReady) queueMicrotask(() => { void this.scheduler.drain().catch(error => this.report(error)); });
   }
   /** Durable evidence commit deliberately excludes capacity and publish work. */
-  private async persistVerificationEvidence(): Promise<void> {
-    await this.pendingDiscard?.catch(() => {});
-    while (this.pendingDelegationSave) await this.pendingDelegationSave.catch(() => {});
-    if (this.closing && (this.disabled || !vscode.workspace.isTrusted)) throw new Error('Hydra cannot retain verification evidence while this workspace is unavailable.');
-    await this.store.save(this.tasks);
-  }
-  /**
-   * The integration core is intentionally synchronous at its decision point.
-   * Load the immutable result binding and parent-review journal first, then
-   * pass that durable projection into every prepare/check/promote gate.
-   */
-  private async guardDelegatedIntegrationAcceptance(parent: Task, tasks: readonly Task[]): Promise<void> {
-    const children = tasks.filter(child => child.delegation?.parentId === parent.id);
-    if (!children.length) { delegationIntegrationGate(parent, tasks); return; }
-    const parentReviews: SavedParentReviewProjection[] = await Promise.all(children.map(async child => {
-      const link = child.delegation!;
-      const records = await this.delegationJournal.loadResultRecords(parent.id, link.runId);
-      const matches = records.filter(record => record.binding.parentId === parent.id && record.binding.runId === link.runId && record.binding.childKey === link.childKey && record.binding.dispatchKey === link.dispatchKey);
-      if (matches.length !== 1) throw new Error(`Delegated prerequisite ${link.childKey} blocks combined acceptance: one durable current child result receipt is required.`);
-      const source = { child, binding: matches[0]!.binding, result: matches[0]!.receipt };
-      const receipts = await this.parentReviews.load(parent.id, link.runId);
-      const readiness = assessAutoDelegationResultReadiness({ parent, child, source, parentReviews: receipts });
-      if (!readiness.readyForIntegrationChecks) throw new Error(`Delegated prerequisite ${link.childKey} blocks combined acceptance: ${readiness.reason}`);
-      return { source, receipts };
-    }));
-    delegationIntegrationGate(parent, tasks, { parentReviews });
-  }
-  private async guardDelegatedVerification(task: Task): Promise<void> {
-    if (!task.delegation) throw new Error('Only delegated child tasks can run delegated verification.');
-    if (!task.reviewedCommit) throw new Error('Commit and record a reviewed child tree before verification.');
-    if (this.integrationAbort?.taskId === task.id) throw new Error('Wait for the active integration operation before delegated verification.');
-    await this.guardCommitReview(task);
-  }
-  /**
-   * Keep a delegation schedule detached until its disk record is durable. The
-   * task array and every live task object stay in place: managed-session and
-   * scheduler references therefore cannot be replaced by a stale full clone.
-   */
-  private async saveDelegatedEnrollment(
-    parent: Task,
-    expected: Task[],
-    runId: string,
-    change: (parent: Task, expected: Task[], persisted: Task[]) => Task[]
-  ): Promise<Task[]> {
-    // A discard/restore can be persisting a full task snapshot. This command
-    // has already set `busy`, so no newer discard can begin while we wait.
-    // Waiting before installing the enrollment barrier matters: discard calls
-    // persist(), and persist() waits for that barrier. Installing it first
-    // would create a circular wait between the two operations.
-    await this.pendingDiscard?.catch(() => {});
-    // Loading delegation records above is asynchronous. Shutdown may have
-    // begun while it was in flight, so fence the command immediately before
-    // installing the pending-write barrier that shutdown waits for.
-    this.assertDelegationEnrollmentWritable();
-    let changed: Task[] = [];
-    const transaction = (async () => {
-      changed = await saveDelegatedEnrollmentTransaction({ tasks: () => this.tasks, parent, expected, runId, change, assertWritable: () => this.assertDelegationEnrollmentWritable(), save: snapshot => this.store.save(snapshot), settleCapacity: () => this.settleCapacity() });
-    })();
-    this.pendingDelegationSave = transaction;
-    try { await transaction; return structuredClone(changed); }
-    finally {
-      if (this.pendingDelegationSave === transaction) this.pendingDelegationSave = undefined;
-    }
-  }
-  private assertDelegationEnrollmentWritable(): void {
-    if (this.disabled || this.closing || !vscode.workspace.isTrusted) {
-      throw new Error('Hydra cannot update delegation enrollment while this workspace is unavailable.');
-    }
-  }
-  private assertDelegationIngressWritable(): void {
-    if (this.disabled || this.closing || !vscode.workspace.isTrusted) throw new Error('Hydra cannot receive delegation ingress while this workspace is unavailable.');
-  }
-  /** Replays only materialized durable dispatches; navigation and task state are never sources. */
-  private async recoverDelegationDispatchHandoffs(): Promise<void> {
-    for (const child of this.tasks.filter(task => task.delegation)) {
-      const link = child.delegation!;
-      try {
-        const dispatch = (await this.delegationDispatches.load(link.parentId, link.runId)).find(item => item.dispatchKey === link.dispatchKey);
-        if (!dispatch || dispatch.status !== 'materialized') continue;
-        await this.delegationHandoffs.dispatched(dispatch, child);
-      } catch (error) {
-        this.error = `Delegation dispatch graph recovery is pending: ${this.describe(error)}`;
-        this.output.appendLine(this.describe(error));
-      }
-    }
-  }
-  /** The task save precedes every graph append; failed appends retry from the saved opaque source. */
-  private replayDelegationApprovalPauses(savedTasks: readonly Task[]): Promise<void> {
-    const replay = this.approvalPauseReplay.then(async () => {
-      for (const child of savedTasks) for (const pause of child.delegationApprovalPauses || []) {
-        try { await this.delegationHandoffs.paused(child, pause); }
-        catch (error) { this.error = `Delegation approval-pause graph recovery is pending: ${this.describe(error)}`; this.output.appendLine(this.describe(error)); }
-      }
-    });
-    this.approvalPauseReplay = replay.catch(() => {});
-    return replay;
-  }
   private reviewBlocked(task: Task): boolean { return pendingSchedule(task) || this.busy || this.closing || this.disabled || !vscode.workspace.isTrusted || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'running' || task.state === 'external'; }
   private async guardCommitReview(task: Task): Promise<void> {
     if (task.state === 'discarded') throw new Error('Restore this discarded task before review.');
@@ -1090,25 +648,6 @@ class Manager {
       }
     }
     if (generation !== this.snapshotGeneration) return;
-    const delegationOrchestration: NonNullable<Snapshot['delegationOrchestration']> = {};
-    const delegationRunAccounting: NonNullable<Snapshot['delegationRunAccounting']> = {};
-    const delegationReconciliation: NonNullable<Snapshot['delegationReconciliation']> = {};
-    for (const parent of this.tasks.filter(item => !item.delegation)) {
-      const runs = new Set(this.tasks.filter(item => item.delegation?.parentId === parent.id).map(item => item.delegation!.runId));
-      for (const runId of runs) { const key = `${parent.id}:${runId}`; try { delegationOrchestration[key] = await this.delegationJournal.load(parent.id, runId); delegationRunAccounting[key] = projectDelegationRunUsage(parent, runId, this.tasks, id => this.managed.view(id)); delegationReconciliation[key] = projectDelegationReconciliation(parent, runId, this.tasks, await this.delegationDispatches.load(parent.id, runId), delegationOrchestration[key]); } catch (failure) { error ||= this.describe(failure); delegationReconciliation[key] = projectDelegationReconciliation(parent, runId, this.tasks); } }
-    }
-    if (generation !== this.snapshotGeneration) return;
-    let parentReview: Snapshot['parentReview'];
-    if (task?.delegation) {
-      try {
-        const source = await this.delegationIngress.parentReviewSource(task.id);
-        const current = assertCurrentParentReviewInput(source);
-        const receipts = await this.parentReviews.load(current.parentId, current.runId);
-        const matching = receipts.filter(item => item.childKey === current.childKey && item.resultSha256 === current.resultSha256 && item.evidenceSha256 === current.evidenceSha256 && item.commit === current.commit && item.tree === current.tree);
-        if (matching.length === 1) parentReview = { decision: matching[0]!.decision, reviewedAt: matching[0]!.reviewedAt, reason: matching[0]!.reason };
-      } catch (failure) { if (task.verificationEvidence && task.reviewedCommit) error ||= this.describe(failure); }
-    }
-    if (generation !== this.snapshotGeneration) return;
     const resourceViews = this.resources.snapshot();
     let setupPreview: Snapshot['setupPreview'];
     if (task) { try { setupPreview = projectSelectedTaskSetupPreview(task, resourceViews); } catch (failure) { error ||= this.describe(failure); } }
@@ -1120,21 +659,15 @@ class Manager {
       diagnostics: [...this.diagnostics.values()], session: task ? this.managed.displayView(task.id) : undefined,
       commitReview: task ? this.commitReviews.get(task.id) : undefined,
       discardReview: task ? this.discardReviews.get(task.id) : undefined,
-      usage: { ...usageSnapshot(this.tasks, id => this.managed.view(id)), delegationRuns: Object.fromEntries(this.tasks.filter(task => !task.delegation).map(task => [task.id, delegationRunUsage(task.id, this.tasks, id => this.managed.view(id))])) },
+      usage: usageSnapshot(this.tasks, id => this.managed.view(id)),
       budgets: this.budgetSnapshot(),
-      delegation: this.delegationPreferences(),
       helpers: this.helpers?.service.list().map(job => ({
         id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
         progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
         branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
         checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
       })).reverse(),
-      delegationPlans: Object.fromEntries(this.delegationPlans),
-      delegationOrchestration,
-      delegationRunAccounting,
-      delegationReconciliation,
       resources: resourceViews,
-      parentReview,
       setupPreview,
       capacity: this.capacity.view(this.profileLimit()),
       modelCatalogs: Object.fromEntries(this.modelCatalogs),
@@ -1231,7 +764,6 @@ class Manager {
     // is coalesced to one trailing publish once typing pauses.
     if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); this.publishSoon(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
-    if (message.type === 'setDelegationMode') { await this.setDelegationMode(message.mode); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
     if (message.type === 'draft') { this.draft = { title: message.title, prompt: message.prompt, provider: message.provider, brief: message.brief }; return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use task worktrees and terminals.');
@@ -1323,21 +855,6 @@ class Manager {
     }
     if (!('id' in message)) throw new Error('Expected a task command.');
     const task = this.getTask(message.id);
-    if (message.type === 'supplyDelegationContext') {
-      this.assertDelegationIngressWritable();
-      const history = task.delegation ? await this.delegationJournal.load(task.delegation.parentId, task.delegation.runId) : undefined;
-      const request = history?.contextRequests.find(item => item.requestKey === message.requestKey);
-      if (!request) throw new Error('Selected context request is unavailable. Refresh the focused workspace.');
-      await this.delegationIngress.supplyContext(task.id, request); await this.publish(); return;
-    }
-    if (message.type === 'reviewDelegationResult') {
-      this.assertDelegationIngressWritable();
-      const source = await this.delegationIngress.parentReviewSource(task.id);
-      await this.parentReviews.append({ version: 1, parentId: source.child.delegation!.parentId, runId: source.child.delegation!.runId, childKey: source.child.delegation!.childKey, resultSha256: source.result.sha256, evidenceSha256: createHash('sha256').update(JSON.stringify(source.child.verificationEvidence)).digest('hex'), commit: source.child.reviewedCommit!.commit, tree: source.child.reviewedCommit!.tree, reviewer: 'parent-human', decision: message.decision, reviewedAt: new Date().toISOString(), reason: message.reason }, source);
-      await this.reconcileAutoParentWakeup(source.child.delegation!.parentId);
-      await this.publish(); return;
-    }
-    if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
     if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }
     if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold', 'retryBlocked'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
@@ -1506,7 +1023,6 @@ class Manager {
     if (message.type === 'copyPrompt') { await vscode.env.clipboard.writeText(task.prompt); void vscode.window.showInformationMessage('Task prompt copied. Paste it into the provider terminal when ready.'); return; }
     if (!scheduledLaunch && ['configureSchedule', 'handoff', 'openWorktree', 'prepareCommitReview', 'commitReviewed', 'releaseExternal', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution'].includes(message.type) && this.tasks.some(item => item.schedule?.state === 'starting' && (item.id === task.id || item.schedule.dependencies.includes(task.id)))) throw new Error('A queued launch is preparing this task or its dependency receipt. Wait for startup to finish.');
     if (message.type === 'configureSchedule') {
-      if (task.delegation) throw new Error('Delegated child dependencies are immutable. Enroll the recorded delegation run before launching it.');
       if (this.busy || this.terminals.has(task.id) || this.managed.has(task.id) || this.resources.has(task.id) || this.capacity.isUncertain(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this writer before editing dependencies.');
       const candidate = structuredClone(task);
       configureSchedule(candidate, this.tasks, message.dependencies, message.startFromDependency);
@@ -1554,7 +1070,7 @@ class Manager {
       if (this.busy && task.state === 'running') throw new Error('This process is still being prepared. Stop it once startup finishes.');
       return;
     }
-    if (message.type === 'approve') { if (task.delegation) await this.persist(); this.managed.approve(task.id, message.approvalId, message.decision); return; }
+    if (message.type === 'approve') { this.managed.approve(task.id, message.approvalId, message.decision); return; }
     if(message.type==='cancelIntegration'){
       if(this.integrationAbort?.taskId!==task.id||this.integrationAbort.operationId!==message.operationId)throw new Error('This integration has no active checks to cancel.');
       this.integrationAbort.controller.abort();return;
@@ -1672,23 +1188,12 @@ class Manager {
         this.checkBudget(task, true);
         await this.resources.check(task.id);
         task.providerVersion = diagnostic.version;
-        if (task.delegationPlanner && ['prepared', 'submitted'].includes(task.delegationPlanner.state)) throw new Error('The prior normal-turn planner receipt is still recoverable. Reload and reconcile it before another managed turn.');
-        const runId = randomBytes(6).toString('hex');
-        // Delegated children receive their bounded manifest, never another parent planner.
-        // Solo turns carry no planner suffix: the provider is never asked to emit a
-        // delegation receipt it has no use for.
-        const preferences = this.delegationPreferences();
-        const planner = task.delegation || preferences.mode === 'solo' ? undefined : createDelegationPlannerRun(this.plannerPolicy(task, runId), preferences, runId);
-        if (task.delegation) {
-          validateDelegatedExecution(task);
-          if (!scheduledLaunch || !task.sessionId && task.delegationExecution!.status !== 'starting') throw new Error('Delegated dispatch requires a durable scheduler reservation.');
-        }
-        task.delegationPlanner = planner; task.updatedAt = new Date().toISOString();
+        task.updatedAt = new Date().toISOString();
         this.mark(task.id, 'resources and budget checked');
         // This task-store write is intentionally before Managed* can spawn or submit a provider turn.
         await this.persist();
         this.mark(task.id, 'saved; starting provider');
-        const normalPrompt = `${message.type === 'followUp' ? message.prompt : task.prompt}${planner ? plannerPromptSuffix(planner) : ''}`;
+        const normalPrompt = message.type === 'followUp' ? message.prompt : task.prompt;
         await this.managed.start(task, info.executable, normalPrompt, async () => {
           await this.capacity.check(task.id, this.profileLimit()); await this.resources.check(task.id);
           if (controller.signal.aborted || this.closing || this.disabled || !vscode.workspace.isTrusted || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because workspace or provider configuration changed.');
@@ -1696,7 +1201,7 @@ class Manager {
           this.checkBudget(task, true); this.resources.assertReady(task.id);
         }, this.resources.environment(task.id));
       } catch (error) {
-        if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); if (task.delegationPlanner?.state === 'submitted') task.delegationPlanner = { ...task.delegationPlanner, state: 'rejected', error: 'Normal turn did not reach a completed planner result.' }; await this.persist(); }
+        if (!this.managed.has(task.id)) { task.state = expectedSchedule?.state === 'cancelled' ? 'interrupted' : 'error'; task.error = expectedSchedule?.state === 'cancelled' ? undefined : this.describe(error); await this.persist(); }
         throw error;
       } finally { this.diagnosticChecks.delete(controller); this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
@@ -1764,15 +1269,12 @@ class Manager {
   async shutdown(): Promise<void> {
     this.closing = true;
     await this.stopHelpers().catch(error => this.report(error));
-    await Promise.allSettled(this.autoDispatching.values());
     this.pendingResource?.controller.abort(); await this.pendingResource?.done;
     await this.accounts.shutdown();
     await this.quota.shutdown();
     this.integrationAbort?.controller.abort();await this.pendingIntegration?.catch(()=>{});
     await this.pendingCommit?.catch(() => {});
     await this.pendingDiscard?.catch(() => {});
-    await this.pendingDelegationSave?.catch(() => {});
-    await this.delegationVerificationActions.abortAndWait();
     await this.pendingBudgetSave?.catch(() => {});
     for (const controller of this.diagnosticChecks) controller.abort();
     await this.scheduler.idle();

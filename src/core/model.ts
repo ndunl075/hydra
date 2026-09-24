@@ -10,17 +10,7 @@ import type { CapacityView } from './profileCapacity';
 import type { TaskSchedule } from './scheduler';
 import { parseIntegrationCommands, type IntegrationCommand, type IntegrationOperation } from './integrationModel';
 import type { ConversationDraft } from './conversationDrafts';
-import { requireDelegationMode, type DelegationPreferences, type DelegationMode } from './delegationPreferences';
-import type { DelegatedVerificationEvidence } from './delegationEvidence';
-import type { DelegationResultBoundary } from './delegationResultBoundary';
-import type { DelegationPlannerRun } from './delegationPlannerIngestion';
-import type { DelegationOrchestrationProjection } from './delegationOrchestrationJournal';
-import type { DelegatedExecutionReceipt } from './delegationRunner';
-import type { DelegationApprovalPauseRecord } from './delegationApprovalPause';
-import type { ParentReviewDecision } from './delegationParentReview';
 import type { SelectedTaskSetupPreview } from './setupPreviewProjection';
-import type { DelegationBudgetReservation, DelegationRunUsageProjection } from './delegationRunAccounting';
-import type { DelegationReconciliationProjection } from './delegationReconciliation';
 export type Provider = 'claude' | 'codex';
 export interface TaskBrief { goal: string; constraints: string; relevantPaths: string; acceptance: string; testCommands: string }
 export interface TaskHandoffSummary { summary: string; decisions: string; validation: string; unresolved: string; evidenceRefs: string }
@@ -40,22 +30,6 @@ export interface Task {
   /** Chosen before the first launch and locked afterwards, like modelSelection. */
   permissionMode?: TaskPermissionMode;
   schedule?: TaskSchedule;
-  delegationExecution?: DelegatedExecutionReceipt;
-  /** Opaque, durable approval-pause sources for provenance-backed graph replay. */
-  delegationApprovalPauses?: DelegationApprovalPauseRecord[];
-  /** One automatic retry is charged to the original delegated child/run and never resets. */
-  delegationRetry?: { version: 1; parentId: string; runId: string; dispatchKey: string; attemptedAt: string };
-  /** A sibling-local launch/turn budget-check fence; it carries no spend estimate. */
-  delegationBudgetReservation?: DelegationBudgetReservation;
-    delegation?: { parentId: string; runId: string; childKey: string; dispatchKey: string; dependencies: string[] };
-    /** Durable retry marker for an assignment fact whose source transition committed first. */
-    delegationJournalPending?: { version: 1; event: { version: 1; id: string; occurredAt: string; kind: 'assignment'; parentId: string; runId: string; from: { kind: 'task'; taskId: string }; to: { kind: 'task'; taskId: string }; provenance: { producer: 'host'; recordId: string } } };
-  /** Host-bound normal-turn planner lifecycle. It never represents child execution. */
-  delegationPlanner?: DelegationPlannerRun;
-  /** Durable verification attempts for a managed delegated child. */
-  verificationEvidence?: DelegatedVerificationEvidence;
-  /** Immutable inspection receipts for verification superseded by a later reviewed result. */
-  delegationResultBoundaries?: DelegationResultBoundary[];
 }
 export interface ReviewedCommit { commit: string; tree: string; baseCommit: string; reviewedAt: string }
 export interface PreparedReview { token: string; head: string; tree: string; baseCommit: string; branch: string; indexHash: string; createdAt: string; files: FileChange[] }
@@ -88,7 +62,6 @@ export interface SessionView { version: 1; turns: Turn[]; writerUncertain?: bool
 export type HandoffTask = Pick<Task, 'id' | 'title' | 'prompt' | 'repository' | 'worktree' | 'branch' | 'baseCommit' | 'provider'>;
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
-export interface DelegationPlanView { runId: string; id: string; rationale: string; mode: 'solo' | 'auto'; decision: 'solo' | 'delegate'; children: { key: string; goal: string; provider: Provider; writeScope: string[]; dependencies: string[]; brief: string }[] }
 /** One Hydra helper as the dashboard shows it (docs/Official_Extensions_Plan.md, Phase 6). */
 export interface HelperJobView {
   id: string; title: string; state: string; provider: Provider; createdAt: string; finishedAt?: string;
@@ -98,8 +71,6 @@ export interface HelperJobView {
 export interface Snapshot {
   capacity?: CapacityView;
   helpers?: HelperJobView[];
-  /** Current selected child only; stale historical decisions are never presented as current. */
-  parentReview?: { decision: ParentReviewDecision; reviewedAt: string; reason: string };
   resources?: Record<string, ResourceView>;
   setupPreview?: SelectedTaskSetupPreview;
   tasks: Task[]; selectedId?: string; mode: 'editor' | 'agents'; repositories: string[];
@@ -111,23 +82,15 @@ export interface Snapshot {
   /** Local activity only; no other task's transcript or approval details. */
   taskActivity?: Record<string, { active: boolean; awaitingApproval: boolean }>;
   commitReview?: PreparedReview;
-  usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary>; delegationRuns?: Record<string, UsageSummary> };
-  delegationRunAccounting?: Record<string, DelegationRunUsageProjection>;
-  delegationReconciliation?: Record<string, DelegationReconciliationProjection>;
+  usage?: { tasks: Record<string, UsageSummary>; projects: Record<string, UsageSummary> };
   modelCatalogs?: Record<string, ModelCatalog>;
   /** Task-independent model discovery for the task-creation picker, keyed by provider. */
   draftModelCatalogs?: Partial<Record<Provider, ModelCatalog>>;
   integration?: IntegrationOperation;
   discardReview?: DiscardReview;
   budgets?: { settings: BudgetSettings; observations: Record<string, BudgetObservation[]> };
-  delegation?: DelegationPreferences;
-    delegationPlans?: Record<string, DelegationPlanView[]>;
-    /** Read-only durable delegation facts. No event is inferred from task state. */
-    delegationOrchestration?: Record<string, DelegationOrchestrationProjection>;
 }
 export type ClientMessage =
-  | { type: 'supplyDelegationContext'; id: string; requestKey: string }
-  | { type: 'reviewDelegationResult'; id: string; decision: 'approved' | 'rejected'; reason: string }
   | { type: 'saveResources'; id: string; config: ResourceConfig }
   | { type: 'runSetup' | 'stopSetup' | 'reconcileSetup' | 'releaseResources' | 'reacquireResources' | 'showSetupLog'; id: string }
   | { type: 'ready' | 'editor' | 'agents' | 'newTask' | 'refresh' | 'settings' | 'openQuota' | 'attachContext' }
@@ -165,7 +128,6 @@ export type ClientMessage =
   | { type: 'openIntegrationDiff'; id: string; operationId: string; path: string }
   | { type: 'create'; title: string; prompt: string; provider: Provider; repository: string; startingCommit?: string; brief?: TaskBrief; autoStart?: boolean }
   | { type: 'draft'; title: string; prompt: string; provider: Provider; brief?: TaskBrief }
-  | { type: 'setDelegationMode'; mode: DelegationMode };
 
 export function parseMessage(value: unknown): ClientMessage {
   if (!value || typeof value !== 'object') throw new Error('Invalid message.');
@@ -181,16 +143,6 @@ export function parseMessage(value: unknown): ClientMessage {
     return { type, jobId };
   }
   if (type === 'helperStopAll') return { type };
-  if (type === 'supplyDelegationContext' || type === 'reviewDelegationResult') {
-    const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
-    if (type === 'supplyDelegationContext') { const requestKey = string('requestKey'); if (!/^[a-f0-9]{24}$/.test(requestKey)) throw new Error('Invalid context request.'); return { type, id, requestKey }; }
-    const decision = string('decision'); if (decision !== 'approved' && decision !== 'rejected') throw new Error('Invalid parent review decision.');
-    const reason = string('reason', 1200); if (!reason.trim()) throw new Error('Enter a concise parent review reason.');
-    return { type, id, decision, reason };
-  }
-  if (type === 'setDelegationMode') {
-    return { type, mode: requireDelegationMode(string('mode')) };
-  }
   if (['saveResources', 'runSetup', 'stopSetup', 'reconcileSetup', 'releaseResources', 'reacquireResources', 'showSetupLog'].includes(type)) {
     const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return type === 'saveResources' ? { type, id, config: parseResources(message.config) } : { type, id } as ClientMessage;

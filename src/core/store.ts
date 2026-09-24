@@ -7,11 +7,7 @@ import type { Task } from './model';
 import { buildTaskPrompt, parseBrief, parseHandoffSummary } from './taskContext';
 import { parseModelSelection } from './modelSelection';
 import { validateDiscardReceipt } from './discard';
-import { validateDelegatedVerificationEvidence } from './delegationEvidence';
-import { validateDelegationResultBoundaries } from './delegationResultBoundary';
-import { parseDelegationPlannerRun } from './delegationPlannerIngestion';
-import { validateDelegatedExecution } from './delegationRunner';
-import { validateDelegationApprovalPauses } from './delegationApprovalPause';
+const retiredDelegationFields = ['delegation', 'delegationExecution', 'delegationApprovalPauses', 'delegationRetry', 'delegationBudgetReservation', 'delegationJournalPending', 'delegationPlanner', 'verificationEvidence', 'delegationResultBoundaries'];
 export class LocalStore {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -44,30 +40,17 @@ export class LocalStore {
       if (task.brief !== undefined && buildTaskPrompt(parseBrief(task.brief)) !== task.prompt) throw new Error('Task brief and saved prompt disagree. Original data has been retained.');
       if (task.handoffSummary !== undefined) parseHandoffSummary(task.handoffSummary);
       if (task.contextLockedAt !== undefined && (typeof task.contextLockedAt !== 'string' || !Number.isFinite(Date.parse(task.contextLockedAt)))) throw new Error('Invalid task context lock.');
+      // The retired delegation pipeline (docs/Official_Extensions_Plan.md, Phase 7): its fields
+      // are dropped on load, and a parent that was waiting for children is interrupted.
+      for (const key of retiredDelegationFields) delete (task as unknown as Record<string, unknown>)[key];
+      if ((task.schedule?.state as string) === 'waiting-for-children') task.schedule = { ...task.schedule!, state: 'interrupted', request: undefined, reason: 'Auto delegation was retired. Send a follow-up to continue.' };
+      if (task.schedule) delete (task.schedule as unknown as Record<string, unknown>).wakeupKey;
       if (task.schedule !== undefined) validateSchedule(task.schedule);
-      if (task.schedule?.state === 'waiting-for-children' && (task.interface !== 'managed-cli' || task.state !== 'idle' || !task.sessionId || task.sessionProvider !== task.provider)) throw new Error('Waiting parent requires its recorded managed provider session. Original data has been retained.');
-      if (task.delegationExecution !== undefined) validateDelegatedExecution(task);
-      if (task.delegation !== undefined) {
-        const link = task.delegation;
-        if (!link || typeof link !== 'object' || !/^[a-f0-9]{12}$/.test(link.parentId) || !/^[a-f0-9]{12}$/.test(link.runId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(link.childKey) || !/^[a-f0-9]{24}$/.test(link.dispatchKey) || !Array.isArray(link.dependencies) || link.dependencies.length > 8 || !link.dependencies.every(value => typeof value === 'string' && /^[a-f0-9]{12}$/.test(value)) || new Set(link.dependencies).size !== link.dependencies.length || link.parentId === task.id || link.dependencies.includes(task.id)) throw new Error('Invalid delegated child task link. Original data has been retained.');
-        if (task.schedule && (task.schedule.dependencies.length !== link.dependencies.length || task.schedule.dependencies.some((dependency, index) => dependency !== link.dependencies[index]))) throw new Error('Delegated child schedule does not match its immutable dependencies. Original data has been retained.');
-        if (task.delegationJournalPending !== undefined) { const pending = task.delegationJournalPending.event; if (!task.delegationJournalPending || task.delegationJournalPending.version !== 1 || !pending || pending.version !== 1 || pending.kind !== 'assignment' || pending.id !== link.dispatchKey || !/^[a-f0-9]{24}$/.test(pending.id) || pending.parentId !== link.parentId || pending.runId !== link.runId || pending.from.kind !== 'task' || pending.from.taskId !== link.parentId || pending.to.kind !== 'task' || pending.to.taskId !== task.id || pending.provenance.producer !== 'host' || pending.provenance.recordId !== link.dispatchKey || typeof pending.occurredAt !== 'string' || !Number.isFinite(Date.parse(pending.occurredAt))) throw new Error('Invalid delegated journal recovery marker. Original data has been retained.'); }
-        if (task.delegationRetry !== undefined) { const retry = task.delegationRetry; if (!retry || retry.version !== 1 || retry.parentId !== link.parentId || retry.runId !== link.runId || retry.dispatchKey !== link.dispatchKey || typeof retry.attemptedAt !== 'string' || !Number.isFinite(Date.parse(retry.attemptedAt)) || Object.keys(retry).some(key => !['version', 'parentId', 'runId', 'dispatchKey', 'attemptedAt'].includes(key))) throw new Error('Invalid delegated retry receipt. Original data has been retained.'); }
-        if (task.delegationBudgetReservation !== undefined) { const reservation = task.delegationBudgetReservation; if (!reservation || reservation.version !== 1 || reservation.parentId !== link.parentId || reservation.runId !== link.runId || reservation.dispatchKey !== link.dispatchKey || !['startManaged', 'followUp'].includes(reservation.request) || typeof reservation.acquiredAt !== 'string' || !Number.isFinite(Date.parse(reservation.acquiredAt)) || Object.keys(reservation).some(key => !['version', 'parentId', 'runId', 'dispatchKey', 'request', 'acquiredAt'].includes(key))) throw new Error('Invalid delegated budget reservation. Original data was retained.'); }
-        if (task.verificationEvidence !== undefined) validateDelegatedVerificationEvidence(task.verificationEvidence);
-        validateDelegationApprovalPauses(task);
-        validateDelegationResultBoundaries(task);
-      } else if (task.verificationEvidence !== undefined || task.delegationResultBoundaries !== undefined || task.delegationJournalPending !== undefined || task.delegationRetry !== undefined || task.delegationBudgetReservation !== undefined || task.delegationApprovalPauses !== undefined) throw new Error('Only delegated child tasks can retain delegation evidence. Original data has been retained.');
-      if (task.delegationPlanner !== undefined) {
-        const planner = parseDelegationPlannerRun(task.delegationPlanner);
-        if (planner.policy.parentId !== task.id || planner.policy.provider !== task.provider || planner.policy.level !== 0 || !planner.policy.approvedBases.includes(task.baseCommit) || JSON.stringify(planner.policy.modelSelection || null) !== JSON.stringify(task.modelSelection || null)) throw new Error('Invalid parent planner receipt. Original data has been retained.');
-      }
       if (task.reviewedCommit !== undefined) {
         const record = task.reviewedCommit;
         if (!record || typeof record !== 'object' || ![record.commit, record.tree, record.baseCommit].every(value => typeof value === 'string' && /^[a-f0-9]{40,64}$/.test(value)) || record.baseCommit !== task.baseCommit || typeof record.reviewedAt !== 'string' || !Number.isFinite(Date.parse(record.reviewedAt))) throw new Error('Invalid reviewed commit. Original data has been retained.');
       }
     }
-    const pending = (data.tasks as Task[]).flatMap(task => task.delegationJournalPending ? [task.delegationJournalPending.event.id] : []); if (new Set(pending).size !== pending.length) throw new Error('Duplicate delegated journal recovery event. Original data has been retained.');
     return data.tasks as Task[];
   }
   save(tasks: Task[]): Promise<void> {

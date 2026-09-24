@@ -54,7 +54,6 @@ export class ManagedCodex {
         await this.store.save(task.id, view); await this.persistTask(); this.changed(); return;
       }
       await this.observer.prepared?.(task, structuredClone(turn));
-      if (task.delegation) await beforeTurn();
     } catch (error) { turn.status = 'error'; turn.error = `Session setup failed: ${String(error)}`; task.state = 'error'; task.error = turn.error; throw error; }
     const launch = processLaunch(executable, ['app-server', '--listen', 'stdio://']);
     const child = spawn(launch.executable, launch.args, { cwd: task.worktree, env: { ...process.env, ...environment }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });

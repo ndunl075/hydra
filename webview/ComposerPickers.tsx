@@ -131,7 +131,6 @@ export function ModelPicker({ selection, effective, provider, catalogs, provider
   </details>;
 }
 
-export type DelegationMode = 'solo' | 'auto';
 
 // The options carry each provider's own names, so what is shown here is what the
 // provider is actually told. Claude takes one --permission-mode; Codex splits the

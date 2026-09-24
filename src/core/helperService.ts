@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { git } from './git';
 import { createWorktree } from './worktrees';
-import { runDelegatedVerificationCommand } from './delegationVerification';
+import { runCheckCommand } from './checkCommand';
 import { finalJobStates, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
@@ -369,7 +369,7 @@ export class HelperService {
     for (const check of checks) {
       const logFile = path.join(this.options.logDirectory, `${job.id}-check-${attempt}-${check.id}.log`);
       const started = this.now();
-      const outcome = await runDelegatedVerificationCommand({ executable: check.command[0]!, args: check.command.slice(1) }, job.worktree!, logFile, undefined, undefined, 3000, check.timeoutSeconds * 1000);
+      const outcome = await runCheckCommand({ executable: check.command[0]!, args: check.command.slice(1) }, job.worktree!, logFile, undefined, undefined, 3000, check.timeoutSeconds * 1000);
       const output = await readFile(logFile, 'utf8').catch(() => '');
       results.push({ id: check.id, required: check.required, passed: outcome.exitCode === 0 && !outcome.timedOut, exitCode: outcome.exitCode, durationMs: this.now() - started, outputTail: output.slice(-maxChecksOutput) });
     }

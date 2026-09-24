@@ -102,11 +102,60 @@ test('Claude connection status reads the user-level server entry', async () => {
 
 test('onboarding and Settings connect Claude Code and Codex to Hydra; Settings no longer offers Auto', async () => {
   const [onboarding, settings, view] = await Promise.all(['src/extensionOnboarding.ts', 'src/settings/pages/connectors.ts', 'src/helperConnectionsView.ts'].map(file => readFile(file, 'utf8'))) as [string, string, string];
-  for (const page of [onboarding, settings]) { assert.match(page, /connectionsSection\(/); assert.match(page, /handleConnectionsMessage\(/); }
+  assert.match(onboarding, /connectionsSection\(/);
+  assert.match(onboarding, /handleConnectionsMessage\(/);
+  assert.match(settings, /handleConnectionsMessage\(/);
+  assert.match(settings, /data-connect="\$\{provider\}"/);
   assert.match(onboarding, /Connect Claude Code and Codex\./);
   assert.doesNotMatch(settings, /data-delegation|Agent delegation/);
   assert.match(view, /keep their own sign-in and billing/);
   assert.match(view, /never inside a project/);
+});
+
+test('Connectors page shows the claude-mem Repair action and a "What Hydra wrote" disclosure', async () => {
+  const settings = await readFile('src/settings/pages/connectors.ts', 'utf8');
+  assert.match(settings, /repair-memory/);
+  assert.match(settings, /repairClaudeMem/);
+  assert.match(settings, /What Hydra wrote/);
+  assert.match(settings, /writtenEntries/);
+  const extension = await readFile('src/extension.ts', 'utf8');
+  assert.match(extension, /hydra\.repairClaudeMem/);
+  assert.match(extension, /hydra\.helperWrittenEntries/);
+});
+
+test('"what Hydra wrote" reads the exact entries back off disk, masked, and falls back to undefined when absent', async () => {
+  const { claudeWrittenServer, claudeWrittenAllowRule, codexWrittenBlock, codexWrittenGuidance, helperWrittenEntries } = await import('../src/core/helperRegistration');
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-written-'));
+  try {
+    const paths = providerPaths({ CLAUDE_CONFIG_DIR: directory, CODEX_HOME: directory });
+    const mask = (key: string | undefined, value: string) => key === 'HYDRA_SECRET' ? '••••masked' : value;
+    assert.equal(await claudeWrittenServer(paths, mask), undefined, 'nothing written yet');
+    assert.equal(await claudeWrittenAllowRule(paths), undefined);
+    assert.equal(await codexWrittenBlock(paths.codexConfig, mask), undefined);
+    assert.equal(await codexWrittenGuidance(paths.codexConfig), undefined);
+
+    await writeFile(paths.claudeJson, JSON.stringify({ mcpServers: { hydra: { type: 'stdio', command: spec.command, args: spec.args, env: { ...spec.env, HYDRA_SECRET: 'top-secret-value' } } } }));
+    const server = await claudeWrittenServer(paths, mask);
+    assert.match(server!, /"HYDRA_SECRET": "••••masked"/);
+    assert.doesNotMatch(server!, /top-secret-value/);
+
+    await writeFile(paths.claudeSettings, addClaudeAllowRule(undefined));
+    assert.equal(await claudeWrittenAllowRule(paths), `"${claudeAllowRule}"`);
+
+    await connectCodex(paths.codexConfig, { ...spec, env: { ...spec.env, HYDRA_SECRET: 'top-secret-value' } });
+    const block = await codexWrittenBlock(paths.codexConfig, mask);
+    assert.match(block!, /\[mcp_servers\.hydra\]/);
+    assert.match(block!, /HYDRA_SECRET = '••••masked'/);
+    assert.doesNotMatch(block!, /top-secret-value/);
+    const guidance = await codexWrittenGuidance(paths.codexConfig);
+    assert.match(guidance!, /Hydra heads/);
+
+    const entries = await helperWrittenEntries(paths, mask);
+    assert.ok(entries.claude.server && entries.claude.allowRule && entries.codex.config && entries.codex.agents);
+
+    await disconnectCodex(paths.codexConfig);
+    assert.equal(await codexWrittenBlock(paths.codexConfig, mask), undefined);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('extensions install straight from Open VSX when the editor has no gallery', async () => {

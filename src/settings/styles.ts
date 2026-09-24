@@ -96,4 +96,9 @@ details.mcp-add summary .row-desc { display: block; font-size: 12px; color: var(
 .mcp-use-with legend { font-size: 12px; color: var(--vscode-descriptionForeground); padding: 0; margin-bottom: 4px; }
 .mcp-show { font-size: 11px; color: var(--vscode-descriptionForeground); display: flex; align-items: center; gap: 4px; }
 .mcp-footer { font-size: 11px; color: var(--vscode-descriptionForeground); margin: 4px 4px 0; }
+/* ---- Connectors page (Phase 2): the .cards wrapper around one .group per
+   agent, and the note under them. .group/.row/.chip/details.disclosure above
+   already cover the card, row and "What Hydra wrote" styling. ---- */
+.cards { display: flex; flex-direction: column; }
+.connection-note { font-size: 12px; color: var(--vscode-descriptionForeground); line-height: 1.6; margin: 0 0 24px; }
 `;

@@ -67,6 +67,10 @@ export interface HelperJobView {
   id: string; title: string; state: string; provider: Provider; createdAt: string; finishedAt?: string;
   progress?: string; question?: string; reason?: string; branch?: string; commit?: string; summary?: string;
   changedFiles: number; checks: { id: string; passed: boolean }[];
+  /** The repository the lead works in, where the helper's worktree was branched. */
+  repository?: string;
+  worktree?: string;
+  dependsOn: string[];
 }
 export interface Snapshot {
   capacity?: CapacityView;

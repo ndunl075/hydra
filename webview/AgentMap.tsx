@@ -1,10 +1,17 @@
 ﻿import React, { useId, useState } from 'react';
-import type { Snapshot, Task } from '../src/core/model';
+import type { HelperJobView, Snapshot, Task } from '../src/core/model';
 import { ProviderLogo } from './ProviderLogo';
 import './agent-map.css';
 
 const basename = (value: string) => value.split(/[\\/]/).filter(Boolean).at(-1) || value;
 const providerName = (task: Task) => task.provider === 'claude' ? 'Claude Code' : 'Codex';
+
+// Hydra helpers started by a Claude Code or Codex chat through Hydra's MCP tools
+// (docs/Helpers.md) are drawn beside tasks: same repository, their own worktree.
+type Row = { kind: 'task'; task: Task } | { kind: 'helper'; helper: HelperJobView };
+const helperLabel: Record<string, string> = { queued: 'Queued', starting: 'Starting', running: 'Working', blocked: 'Needs an answer', checking: 'Checking', done: 'Done · merge it', failed: 'Failed', cancelled: 'Cancelled' };
+const helperActive = (helper: HelperJobView) => ['starting', 'running', 'checking'].includes(helper.state);
+const sameFolder = (a: string, b: string) => a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
 
 function taskStatus(task: Task, awaitingApproval: boolean) {
   if (task.interface === 'official-extension') return 'External · unobserved';
@@ -34,20 +41,27 @@ function observedActivity(snapshot: Snapshot, task: Task) {
 }
 
 /** A view of recorded checkout relationships, never an editable dependency graph. */
-export function AgentMap({ snapshot, selectedId, onSelect }: {
-  snapshot: Snapshot; selectedId?: string; onSelect: (id: string) => void;
+export function AgentMap({ snapshot, selectedId, onSelect, onHelper }: {
+  snapshot: Snapshot; selectedId?: string; onSelect: (id: string) => void; onHelper?: (jobId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [paused, setPaused] = useState(false);
   const [zoom, setZoom] = useState(1);
   const contentId = useId();
   const legendId = useId();
-  const repositories = [...new Set([...snapshot.repositories, ...snapshot.tasks.map(task => task.repository)])];
-  const running = snapshot.tasks.filter(task => task.state === 'running').length;
-  const groups = repositories.map(repository => ({ repository, tasks: snapshot.tasks.filter(task => task.repository === repository) }));
+  const helpers = snapshot.helpers || [];
+  const repositories = [...new Set([...snapshot.repositories, ...snapshot.tasks.map(task => task.repository), ...helpers.flatMap(helper => helper.repository ? [helper.repository] : [])])]
+    .filter((repository, index, all) => all.findIndex(other => sameFolder(other, repository)) === index);
+  const running = snapshot.tasks.filter(task => task.state === 'running').length + helpers.filter(helperActive).length;
+  // Oldest helper first, so dependency arrows point down the map.
+  const orderedHelpers = [...helpers].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const groups = repositories.map(repository => ({ repository, rows: [
+    ...snapshot.tasks.filter(task => sameFolder(task.repository, repository)).map(task => ({ kind: 'task', task }) as Row),
+    ...orderedHelpers.filter(helper => helper.repository && sameFolder(helper.repository, repository)).map(helper => ({ kind: 'helper', helper }) as Row),
+  ] }));
   // Each durable journal is one parent/run. Keep those boundaries intact while
   // composing a read-only map; the parser deliberately rejects mixed runs.
-  const graphHeight = groups.reduce((height, group) => height + Math.max(group.tasks.length, 1) * 148 + 20, 0);
+  const graphHeight = groups.reduce((height, group) => height + Math.max(group.rows.length, 1) * 148 + 20, 0);
   let groupOffset = 0;
 
   return <section className={`agent-map${paused ? ' agent-map-paused' : ''}`} aria-label="Agent map">
@@ -55,7 +69,7 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
       <button className="agent-map-toggle" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded(value => !value)}>
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" aria-hidden="true"><path d={expanded ? 'm4 6 4 4 4-4' : 'm6 4 4 4-4 4'} /></svg>
         <span>Agent orchestration</span>
-        <span className="agent-map-count">All {snapshot.tasks.length} {snapshot.tasks.length === 1 ? 'task' : 'tasks'}{running > 0 && ` · ${running} running`}</span>
+        <span className="agent-map-count">{snapshot.tasks.length} {snapshot.tasks.length === 1 ? 'task' : 'tasks'}{helpers.length > 0 && ` · ${helpers.length} ${helpers.length === 1 ? 'helper' : 'helpers'}`}{running > 0 && ` · ${running} working`}</span>
       </button>
       {expanded && <button className="agent-map-motion" aria-pressed={paused} onClick={() => setPaused(value => !value)}>{paused ? 'Resume motion' : 'Pause motion'}</button>}
     </div>
@@ -64,18 +78,20 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
         <div className="agent-map-canvas" role="region" aria-label="Repository and agent connections" aria-describedby={legendId} tabIndex={0}>
           <div className="agent-map-scaled" style={{ width: 850 * zoom, height: graphHeight * zoom }}>
             <div className="agent-map-scene" style={{ width: 850, height: graphHeight, transform: `scale(${zoom})` }}>
-              {groups.map(({ repository, tasks }) => {
+              {groups.map(({ repository, rows }) => {
                 const top = groupOffset;
-                const height = Math.max(tasks.length, 1) * 148 + 20;
+                const height = Math.max(rows.length, 1) * 148 + 20;
                 groupOffset += height;
-                const rootY = Math.min(130, 60 + Math.max(tasks.length - 1, 0) * 74);
+                const rootY = Math.min(130, 60 + Math.max(rows.length - 1, 0) * 74);
+                const helperRow = (id: string) => rows.findIndex(row => row.kind === 'helper' && row.helper.id === id);
                 return <div className="agent-map-repository" key={repository} style={{ top, height }}>
                   <svg className="agent-map-connections" width="850" height={height} fill="none" aria-hidden="true">
-                    {tasks.map((task, index) => {
+                    {rows.map((row, index) => {
                       const y = 60 + index * 148;
-                      const { moving } = observedActivity(snapshot, task);
+                      const provider = row.kind === 'task' ? row.task.provider : row.helper.provider;
+                      const moving = row.kind === 'task' ? observedActivity(snapshot, row.task).moving : helperActive(row.helper);
                       const route = `M374 ${y} C440 ${y} 460 ${y + 16} 520 ${y + 16}`;
-                      return <g key={task.id} className={`agent-map-provider-${task.provider}`}>
+                      return <g key={row.kind === 'task' ? row.task.id : row.helper.id} className={`agent-map-provider-${provider}${row.kind === 'helper' ? ' agent-map-helper-links' : ''}`}>
                         <path className="agent-map-context-link" d={`M142 ${rootY} C220 ${rootY} 230 ${y} 304 ${y}`} />
                         <path className="agent-map-context-arrow" d={`m298 ${y - 4} 6 4-6 4`} />
                         <path className="agent-map-connection" d={route} />
@@ -83,15 +99,44 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
                         <path className="agent-map-arrow" d={`m514 ${y + 12} 6 4-6 4`} />
                       </g>;
                     })}
+                    {rows.flatMap((row, index) => row.kind !== 'helper' ? [] : row.helper.dependsOn.map(dependency => {
+                      const from = helperRow(dependency);
+                      if (from < 0) return null;
+                      const fromY = 60 + from * 148 + 20, toY = 60 + index * 148 - 20;
+                      return <g key={`${dependency}-${row.helper.id}`} className="agent-map-dependency">
+                        <path d={`M806 ${fromY} C846 ${fromY} 846 ${toY} 806 ${toY}`} />
+                        <path d={`m812 ${toY - 4} -6 4 6 4`} />
+                      </g>;
+                    }))}
                   </svg>
                   <div className="agent-map-root" style={{ top: rootY - 41 }} title={repository}>
                     <div className="agent-map-root-icon"><BranchIcon repository /><span className="agent-map-port agent-map-port-out" /></div>
                     <strong>{basename(repository)}</strong>
-                    <span className="agent-map-caption">Repository · {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}</span>
+                    <span className="agent-map-caption">Repository · {rows.length} {rows.length === 1 ? 'agent' : 'agents'}</span>
                   </div>
-                  <ul className="agent-map-routes" aria-label={`${repository} tasks`}>
-                    {tasks.map((task, index) => {
+                  <ul className="agent-map-routes" aria-label={`${repository} agents`}>
+                    {rows.map((row, index) => {
                       const y = 60 + index * 148;
+                      if (row.kind === 'helper') {
+                        const helper = row.helper, status = helperLabel[helper.state] || helper.state, moving = helperActive(helper);
+                        const attention = helper.state === 'blocked' || helper.state === 'failed';
+                        const name = helper.provider === 'claude' ? 'Claude helper' : 'Codex helper';
+                        return <li className={`agent-map-route agent-map-helper agent-map-provider-${helper.provider}${moving ? ' agent-map-route-running' : ''}`} key={helper.id} style={{ top: y - 32 }}>
+                          <div className="agent-map-checkout" title={`${helper.branch || 'Worktree not created yet'}\n${helper.worktree || ''}`}>
+                            <div className="agent-map-checkout-icon"><span className="agent-map-port agent-map-port-in" /><BranchIcon /><span className="agent-map-port agent-map-port-out" /></div>
+                            <code>{helper.branch || 'waiting to start'}</code><span className="agent-map-caption">Helper worktree</span>
+                          </div>
+                          <button className="agent-map-task agent-map-helper-card" disabled={!helper.branch}
+                            aria-label={`Review ${helper.title}, ${name}, ${status}${helper.branch ? `, branch ${helper.branch}` : ''}`}
+                            title={`${helper.title}\n${name} · ${status}${helper.question ? `\nAsks: ${helper.question}` : helper.progress ? `\n${helper.progress}` : ''}`} onClick={() => onHelper?.(helper.id)}>
+                            <span className="agent-map-port agent-map-port-in" aria-hidden="true" />
+                            <span className="agent-map-provider-logo"><ProviderLogo provider={helper.provider} /></span>
+                            <span className="agent-map-task-copy"><span className="agent-map-provider-name">{name}</span><strong>{helper.title}</strong></span>
+                            <span className={`agent-map-task-status${attention ? ' agent-map-status-attention' : ''}`}><span className="agent-map-indicator" aria-hidden="true" />{status}</span>
+                          </button>
+                        </li>;
+                      }
+                      const task = row.task;
                       const observed = observedActivity(snapshot, task), awaitingApproval = observed.awaitingApproval, moving = observed.moving && !awaitingApproval;
                       const status = taskStatus(task, awaitingApproval);
                       return <li className={`agent-map-route agent-map-provider-${task.provider}${moving ? ' agent-map-route-running' : ''}`} key={task.id} style={{ top: y - 32 }}>
@@ -110,7 +155,7 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
                         </button>
                       </li>;
                     })}
-                    {tasks.length === 0 && <li className="agent-map-empty">No task worktrees yet</li>}
+                    {rows.length === 0 && <li className="agent-map-empty">No agents yet</li>}
                   </ul>
                 </div>;
               })}
@@ -124,8 +169,8 @@ export function AgentMap({ snapshot, selectedId, onSelect }: {
         </div>
       </div>
       <p className="agent-map-legend" id={legendId}>
-        <span><span className="agent-map-line-key" aria-hidden="true" />Repository → worktree → assigned agent</span>
-        <span>Dashed lines are durable links.</span>
+        <span><span className="agent-map-line-key" aria-hidden="true" />Repository → worktree → agent</span>
+        <span>Helpers are started by your Claude or Codex chat; click one to review its changes. Arrows between helpers are dependencies.</span>
       </p>
     </div>}
   </section>;

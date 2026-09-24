@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { ClaudeMessages, claudeRecord, readClaudeModels } from './claudeControls';
-import { testedClaudeVersion } from './claudeProtocol';
 import { processLaunch, terminateProcessTree } from './process';
 import type { ModelOption } from './modelSelection';
+import { supportedCliDescription, supportedCliVersion, supportedCliVersionIn } from './cliVersions';
 
 /** Official CLI metadata only. No SDK, prompt, resume/history, or settings mutation. */
 export function discoverClaudeModels(executable: string, cwd: string, signal?: AbortSignal): Promise<ModelOption[]> {
@@ -50,7 +50,7 @@ export function discoverClaudeModels(executable: string, cwd: string, signal?: A
     void (async () => {
       const init = claudeRecord(await request('initialize'));
       const version = claudeRecord(await request('get_binary_version'));
-      if (version.version !== testedClaudeVersion) throw new Error('Claude discovery requires tested CLI 2.1.270.');
+      if (!supportedCliVersion('claude', version.version)) throw new Error(`Claude discovery requires ${supportedCliDescription('claude')}.`);
       result = readClaudeModels(init.models); child.stdin.end();
       closeTimer = setTimeout(() => { fail(new Error('Claude metadata connection did not close.')); }, 3000);
     })().catch(fail);

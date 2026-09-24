@@ -111,6 +111,10 @@
         "icon": "$(comment-discussion)"
       },
       {
+        "command": "hydra.stopAllHelpers",
+        "title": "Hydra: Stop All Helpers"
+      },
+      {
         "command": "hydra.exportDelegationRunArchive",
         "title": "Hydra: Export Delegated Run Archive"
       },
@@ -250,6 +254,13 @@
           "scope": "application",
           "description": "Paused: Hydra runs Solo while delegation is rebuilt as Hydra helpers (docs/Official_Extensions_Plan.md). A saved \"auto\" behaves as Solo.",
           "deprecationMessage": "Auto delegation is paused; Hydra runs Solo."
+        },
+        "hydra.maxConcurrentHelpers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 3,
+          "description": "Maximum Hydra helpers running at once in this window. More wait in a queue."
         },
         "hydra.maxDelegatedChildren": {
           "type": "integer",

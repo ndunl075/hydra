@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { claudeArguments, ClaudeProtocol, testedClaudeVersion } from './claudeProtocol';
+import { claudeArguments, ClaudeProtocol } from './claudeProtocol';
 import { claudeInitMatches, defaultPermissionMode, parsePermissionMode, permissionModeLabel } from './permissionMode';
 import { parseContextUsage } from './contextUsage';
 import { processLaunch, terminateProcessTree } from './process';
@@ -9,6 +9,7 @@ import { SessionStore } from './sessionStore';
 import { ClaudeMessages, claudeRecord, readClaudeEffective, readClaudeModels } from './claudeControls';
 import { parseModelSelection } from './modelSelection';
 import type { Approval, SessionView, Task, Turn } from './model';
+import { supportedCliDescription, supportedCliVersion, supportedCliVersionIn } from './cliVersions';
 
 export interface ManagedTurnObserver { prepared?: (task: Task, turn: Turn) => Promise<void>; completed?: (task: Task, turn: Turn) => Promise<void>; sessionIdentified?: (task: Task, sessionId: string) => Promise<void> }
 
@@ -33,7 +34,7 @@ export class ManagedClaude {
   }
   private async startTurn(task: Task, executable: string, prompt: string, beforeTurn: () => void | Promise<void>, environment: Record<string, string>): Promise<void> {
     const expectedSchedule = task.schedule;
-    if (task.provider !== 'claude' || task.providerVersion !== testedClaudeVersion) throw new Error('Managed Claude requires the tested CLI version 2.1.270. Check the configured provider first.');
+    if (task.provider !== 'claude' || !supportedCliVersion('claude', task.providerVersion)) throw new Error(`Managed Claude requires ${supportedCliDescription('claude')}. Check the configured provider first.`);
     if (task.sessionId && task.sessionProvider && task.sessionProvider !== 'claude') throw new Error('This recorded session belongs to another provider. Create a separate Claude task.');
     if (task.interface === 'official-extension' || task.state === 'external' || this.has(task.id)) throw new Error('Stop the existing task writer before starting a managed turn.');
     if (!this.views.has(task.id)) await this.load(task);
@@ -50,7 +51,7 @@ export class ManagedClaude {
     let sequence = 0;
     try {
       await this.store.save(task.id, view);
-      await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'start', cwd: task.worktree, version: testedClaudeVersion, args, prompt });
+      await this.store.log(task.id, turn.id, { sequence: ++sequence, type: 'start', cwd: task.worktree, version: task.providerVersion, args, prompt });
       await this.persistTask();
       if (expectedSchedule && (task.schedule !== expectedSchedule || expectedSchedule.state === 'cancelled')) {
         turn.status = 'interrupted'; turn.error = 'Cancelled before provider process started.';
@@ -216,7 +217,7 @@ export class ManagedClaude {
     void (async () => {
       const init = claudeRecord(await request('initialize'));
       const version = claudeRecord(await request('get_binary_version'));
-      if (version.version !== testedClaudeVersion) throw new Error('Claude pre-turn initialization did not match the tested version. No turn submitted.');
+      if (!supportedCliVersion('claude', version.version)) throw new Error('Claude pre-turn initialization reported an unsupported version. No turn submitted.');
       if (!claudeInitMatches(permissionMode, init.current_permission_mode)) throw new Error(`Claude reports ${String(init.current_permission_mode)} instead of the requested ${permissionModeLabel(permissionMode)} permission mode. No turn submitted.`);
       const models = readClaudeModels(init.models);
       const effective = readClaudeEffective(await request('get_settings'), models, selection);

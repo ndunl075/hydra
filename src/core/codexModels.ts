@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
-import { CodexMessages, record, testedCodexVersion } from './codexProtocol';
+import { CodexMessages, record } from './codexProtocol';
 import { processLaunch, terminateProcessTree } from './process';
 import { readModelCatalog, type ModelOption } from './modelSelection';
 import { version } from '../../package.json';
 import type { InitializeParams } from './generated/codex-0.154.0/InitializeParams';
+import { supportedCliDescription, supportedCliVersion, supportedCliVersionIn } from './cliVersions';
 
 /** Metadata-only connection. Never creates/resumes a thread, submits a turn, or handles auth. */
 export function discoverCodexModels(executable: string, cwd: string, signal?: AbortSignal): Promise<ModelOption[]> {
@@ -58,7 +59,7 @@ export function discoverCodexModels(executable: string, cwd: string, signal?: Ab
     signal?.addEventListener('abort', abort, { once: true });
     void (async () => {
       const init = record(await request('initialize', { clientInfo: { name: 'hydra', title: 'Hydra', version }, capabilities: { experimentalApi: false, requestAttestation: false } } satisfies InitializeParams));
-      if (typeof init.userAgent !== 'string' || !init.userAgent.includes(testedCodexVersion)) throw new Error('Model discovery requires tested Codex 0.154.0.');
+      if (!supportedCliVersionIn('codex', init.userAgent)) throw new Error(`Model discovery requires ${supportedCliDescription('codex')}.`);
       send({ method: 'initialized', params: {} });
       result = await readModelCatalog(request);
       child.stdin.end();

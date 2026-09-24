@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { ClientMessage, Provider, ProviderInfo } from '../src/core/model';
-import type { ModelCatalog, ModelOption, ModelSelection } from '../src/core/modelSelection';
+import type { EffectiveModel, ModelCatalog, ModelOption, ModelSelection } from '../src/core/modelSelection';
 import { permissionModeChoices, type ClaudePermissionMode, type CodexPermissionMode, type TaskPermissionMode } from '../src/core/permissionMode';
 import type { ContextUsage } from '../src/core/contextUsage';
 import { ComposerIcon } from './ComposerIcons';
@@ -73,8 +73,10 @@ function startingEffort(model: ModelOption): string {
   return model.efforts[Math.floor((model.efforts.length - 1) / 2)] || '';
 }
 
-export function ModelPicker({ selection, provider, catalogs, providers, busy, send, onSelect, locked }: {
-  selection: ModelSelection | null; provider: Provider; catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; busy: boolean; send: Send;
+export function ModelPicker({ selection, effective, provider, catalogs, providers, busy, send, onSelect, locked }: {
+  selection: ModelSelection | null; provider: Provider;
+  /** The model and effort the provider reported for the latest turn, when none was chosen. */
+  effective?: EffectiveModel | null; catalogs: Partial<Record<Provider, ModelCatalog>>; providers: ProviderInfo[]; busy: boolean; send: Send;
   onSelect: (selection: ModelSelection | null, provider: Provider) => void;
   /** Set once a task has launched: its session belongs to one provider and model. */
   locked?: string;
@@ -88,7 +90,8 @@ export function ModelPicker({ selection, provider, catalogs, providers, busy, se
   };
   useOutsideClose(ref, load);
   const selected = selection ? catalogs[provider]?.models.find(model => model.model === selection.model) : undefined;
-  const label = selection ? `${selected?.displayName || selection.model} ${capitalize(selection.effort)}` : providerLabel[provider];
+  const label = selection ? `${selected?.displayName || selection.model} ${capitalize(selection.effort)}`
+    : effective ? `${modelName(effective.model, catalogs[provider])}${effective.effort ? ` ${capitalize(effective.effort)}` : ''}` : providerLabel[provider];
   if (locked) return <span className="composer-chip" title={locked}>{label}</span>;
   return <details className="model-picker" ref={ref}>
     <summary title={selection ? 'Model and effort' : `${providerLabel[provider]} with its default model`}>{label}</summary>
@@ -129,9 +132,16 @@ export function ModelPicker({ selection, provider, catalogs, providers, busy, se
 }
 
 export type DelegationMode = 'solo' | 'auto';
-export function DelegationModePicker({ mode, send, locked }: { mode: DelegationMode; send: Send; locked?: string }) {
+export function DelegationModePicker({ mode: saved, send, locked }: { mode: DelegationMode; send: Send; locked?: string }) {
   const ref = useRef<HTMLDetailsElement>(null);
   useOutsideClose(ref);
+  // The chip changes the moment it is clicked instead of waiting for the settings
+  // write and the snapshot round trip. The saved value takes over once it arrives;
+  // if it never does (the write failed), the chip reverts to what is saved.
+  const [pending, setPending] = useState<DelegationMode | null>(null);
+  useEffect(() => { if (pending && saved === pending) setPending(null); }, [saved, pending]);
+  useEffect(() => { if (!pending) return; const timer = setTimeout(() => setPending(null), 5000); return () => clearTimeout(timer); }, [pending]);
+  const mode = pending ?? saved;
   const options: { id: DelegationMode; label: string; description: string }[] = [
     { id: 'solo', label: 'Solo', description: 'One agent keeps the whole task.' },
     { id: 'auto', label: 'Auto', description: 'The agent may split independent work into child agents, each in its own worktree.' },
@@ -143,7 +153,7 @@ export function DelegationModePicker({ mode, send, locked }: { mode: DelegationM
     <div className="mode-picker-body">
       {options.map(option => (
         <button key={option.id} type="button" className="mode-picker-option" aria-pressed={mode === option.id}
-          onClick={() => { send({ type: 'setDelegationMode', mode: option.id }); if (ref.current) ref.current.open = false; }}>
+          onClick={() => { if (option.id !== mode) { setPending(option.id); send({ type: 'setDelegationMode', mode: option.id }); } if (ref.current) ref.current.open = false; }}>
           <span className="mode-picker-option-text"><span>{option.label}</span><span className="muted">{option.description}</span></span>
           {mode === option.id && <span className="mode-picker-check">✓</span>}
         </button>
@@ -200,4 +210,14 @@ export function ContextRing({ usage }: { usage?: ContextUsage }) {
       <circle className="context-ring-fill" cx="8" cy="8" r={radius} strokeDasharray={`${(circumference * usage.percentage) / 100} ${circumference}`} transform="rotate(-90 8 8)" />
     </svg>
   </span>;
+}
+
+/** A readable model name: the catalog's, else "claude-opus-5" as "Opus 5". */
+function modelName(id: string, catalog?: ModelCatalog): string {
+  const known = catalog?.models.find(model => model.model === id || model.canonicalModel === id);
+  if (known) return known.displayName;
+  const words = id.replace(/^claude-/, '').split('-');
+  const name: string[] = [];
+  for (const word of words) { if (/^[0-9]+$/.test(word) && /[0-9]$/.test(name.at(-1) || '')) name[name.length - 1] += '.' + word; else name.push(word); }
+  return name.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 }

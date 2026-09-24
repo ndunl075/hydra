@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bindDelegationPlannerTurn, createDelegationPlannerRun, ingestDelegationPlannerCompletion, plannerMarker, plannerPromptSuffix } from '../src/core/delegationPlannerIngestion';
+import { bindDelegationPlannerTurn, createDelegationPlannerRun, ingestDelegationPlannerCompletion, plannerMarker, plannerPromptSuffix, withoutPlannerSuffix } from '../src/core/delegationPlannerIngestion';
 import type { Task } from '../src/core/model';
 import { DelegationStore } from '../src/core/delegationStore';
 import { digest } from '../src/core/delegationContext';
@@ -128,4 +128,15 @@ test('Auto offers the agent a delegate shape and Solo withholds it, which is wha
   const solo = plannerPromptSuffix(createDelegationPlannerRun(soloPolicy, { ...preferences, mode: 'solo' as const }, runId));
   assert.match(solo, /requires the Solo shape/);
   assert.doesNotMatch(solo, /decision "delegate"/);
+});
+
+test('the conversation shows what the user typed, not the planning suffix sent to the provider', () => {
+  const run = createDelegationPlannerRun(policy(), preferences, runId);
+  const sent = 'Fix the parser' + plannerPromptSuffix(run);
+  // The suffix is real and recorded; it is only hidden from the message card.
+  assert.match(sent, /HYDRA_DELEGATION_V1:/);
+  assert.equal(withoutPlannerSuffix(sent), 'Fix the parser');
+  assert.equal(withoutPlannerSuffix('No suffix here'), 'No suffix here');
+  // Text that merely mentions the phrase mid-line is not cut.
+  assert.equal(withoutPlannerSuffix('see Hydra planning receipt: docs'), 'see Hydra planning receipt: docs');
 });

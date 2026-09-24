@@ -128,6 +128,7 @@ export type ClientMessage =
   | { type: 'configureSchedule'; id: string; dependencies: string[]; startFromDependency?: string }
   | { type: 'saveBudgets'; id: string; scope: 'task' | 'project'; budgets: SoftBudget[] }
   | { type: 'retryBudgetHold'; id: string }
+  | { type: 'retryBlocked'; id: string }
   | { type: 'followUp'; id: string; prompt: string; draftVersion?: string }
   | { type: 'conversationDraft'; id: string; prompt: string; version: string }
   | { type: 'saveBrief'; id: string; brief: TaskBrief }
@@ -180,10 +181,10 @@ export function parseMessage(value: unknown): ClientMessage {
     const id = string('id'); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
     return type === 'saveResources' ? { type, id, config: parseResources(message.config) } : { type, id } as ClientMessage;
   }
-  if (type === 'saveBudgets' || type === 'retryBudgetHold') {
+  if (type === 'saveBudgets' || type === 'retryBudgetHold' || type === 'retryBlocked') {
     const id = string('id');
     if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
-    if (type === 'retryBudgetHold') return { type, id };
+    if (type === 'retryBudgetHold' || type === 'retryBlocked') return { type, id };
     const scope = string('scope');
     if (scope !== 'task' && scope !== 'project') throw new Error('Invalid budget scope.');
     return { type, id, scope, budgets: parseBudgets(message.budgets) };

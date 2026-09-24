@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { plannerSuffixStart } from './plannerSuffix';
 import type { Task, Turn } from './model';
 import { id, record, text } from './delegationContext';
 import { hostDelegationPolicy } from './delegationHost';
@@ -44,11 +45,12 @@ export function parseDelegationPlannerRun(value: unknown): DelegationPlannerRun 
   return { version: 1, runId: policy.runId, state, policy, preferences: { mode: (preferences as any).mode, maxChildren: (preferences as any).maxChildren, status: 'preparation' }, ...(hasTurn ? { turnId: input.turnId as string } : {}), ...(state === 'accepted' ? { proposalId: input.proposalId as string, sha256: input.sha256 as string } : {}), ...(state === 'rejected' ? { error: input.error as string } : {}) };
 }
 
+export { withoutPlannerSuffix } from './plannerSuffix';
 /** The provider receives this visible normal-turn suffix; only this exact one-line marker is eligible. */
 export function plannerPromptSuffix(run: DelegationPlannerRun): string {
   const solo = { version: 1, id: run.runId, parentId: run.policy.parentId, runId: run.runId, decision: 'solo', rationale: 'Brief reason for keeping this work with one agent.', children: [] };
   const child = { key: 'independent-part', goal: 'Specific bounded goal', deliverable: 'Concrete result', baseCommit: run.policy.approvedBases[0], writeScope: ['src/example/'], dependencies: [], acceptance: ['Observable acceptance check'], testCommands: [], contextRefs: [], provider: run.policy.provider, ...(run.policy.modelSelection ? { modelSelection: run.policy.modelSelection } : {}) };
-  return `\n\nHydra planning receipt: ${run.runId}. Complete the normal parent task first. At the end of your response emit exactly one line beginning ${plannerMarker} followed by compact JSON. Solo shape: ${JSON.stringify(solo)}. ${run.preferences.mode === 'auto' ? `If genuinely independent work remains, use decision "delegate" with the same version, id, parentId and runId, a brief rationale, and children shaped like ${JSON.stringify(child)}. Every child must use the recorded base and provider, stay within host write scope ${JSON.stringify(run.policy.writeScope)}, and have distinct nonoverlapping write scopes. The host validates and may refuse the proposal.` : 'The saved Solo preference requires the Solo shape.'} The rationale is a concise user-visible explanation, not hidden reasoning.`;
+  return `${plannerSuffixStart}${run.runId}. Complete the normal parent task first. At the end of your response emit exactly one line beginning ${plannerMarker} followed by compact JSON. Solo shape: ${JSON.stringify(solo)}. ${run.preferences.mode === 'auto' ? `If genuinely independent work remains, use decision "delegate" with the same version, id, parentId and runId, a brief rationale, and children shaped like ${JSON.stringify(child)}. Every child must use the recorded base and provider, stay within host write scope ${JSON.stringify(run.policy.writeScope)}, and have distinct nonoverlapping write scopes. The host validates and may refuse the proposal.` : 'The saved Solo preference requires the Solo shape.'} The rationale is a concise user-visible explanation, not hidden reasoning.`;
 }
 export function bindDelegationPlannerTurn(run: DelegationPlannerRun, turn: Pick<Turn, 'id'>): DelegationPlannerRun {
   const value = parseDelegationPlannerRun(run);

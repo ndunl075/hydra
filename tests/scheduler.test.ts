@@ -290,3 +290,23 @@ test('real Git pins selected base and reviewed predecessor, refuses changed/dirt
     assert.notEqual((await git(repository, ['rev-parse', 'HEAD'])).trim(), prepared.commit);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('a launch that failed at startup can be retried with the same request instead of only cancelled', async () => {
+  const failing = task(3); let attempts = 0; const requests: string[] = [];
+  const scheduler = new TaskScheduler({ tasks: () => [failing], capacity: () => 2, liveCount: () => 0, enabled: () => true, persist: async () => {},
+    prepare: async item => ({ commit: item.baseCommit, artifacts: [] }),
+    // First attempt fails the way a provider handshake error does: the task ends in error, no writer.
+    launch: async (item, request) => { requests.push(request.type); if (++attempts === 1) { item.state = 'error'; item.error = 'Claude emitted a non-control event before settings were verified.'; return; } item.state = 'running'; item.error = undefined; } });
+  await assert.rejects(scheduler.retryBlocked(failing), /no stopped launch to retry/);
+  await scheduler.enqueue(failing, { type: 'startManaged' }); await scheduler.drain();
+  assert.equal(failing.schedule?.state, 'blocked'); assert.match(failing.schedule?.reason || '', /non-control event/);
+  await scheduler.retryBlocked(failing); await scheduler.idle();
+  assert.deepEqual(requests, ['startManaged', 'startManaged']);
+  assert.equal(failing.schedule?.state, 'running'); assert.equal(failing.schedule?.reason, undefined);
+  // Delegated children and uncertain writers keep their own recovery paths.
+  const child = task(4); child.schedule = { state: 'blocked', dependencies: [], artifacts: [], request: { type: 'startManaged' } } as Task['schedule'];
+  child.delegation = {} as Task['delegation'];
+  await assert.rejects(scheduler.retryBlocked(child), /no stopped launch to retry/);
+  const uncertain = task(5); uncertain.schedule = { state: 'blocked', dependencies: [], artifacts: [], request: { type: 'startManaged' }, uncertain: true } as Task['schedule'];
+  await assert.rejects(scheduler.retryBlocked(uncertain), /no stopped launch to retry/);
+});

@@ -151,7 +151,13 @@ export class ManagedClaude {
         approvals.set(id, { requestId, input, toolUseId: request.tool_use_id, approval });
         view.approvals = sessionSaving ? [] : [...approvals.values()].map(entry => entry.approval); log('approval-request', { requestId, approval }); update(); this.changed(); return;
       }
-      if (!submitted) throw new Error('Claude emitted a non-control event before settings were verified. No turn submitted.');
+      // The CLI runs the user's own SessionStart hooks (from plugins such as
+      // claude-mem) before it answers the handshake, and reports each one as a
+      // system hook event. They carry no model output and change no setting Hydra
+      // verifies, so they are kept as evidence rather than failing the launch.
+      // Anything else before the settings are verified still stops the turn.
+      if (!submitted && message.type === 'system' && ['hook_started', 'hook_progress', 'hook_response'].includes(message.subtype)) { log('hook', { subtype: message.subtype, hookName: message.hook_name, hookEvent: message.hook_event, exitCode: message.exit_code }); return; }
+      if (!submitted) throw new Error(`Claude emitted a non-control event (${String(message.type)}${message.subtype ? '/' + String(message.subtype) : ''}) before settings were verified. No turn submitted.`);
       log('stdout', JSON.stringify(message) + '\n');
       protocol.push(Buffer.from(JSON.stringify(message) + '\n'));
       if (protocol.sessionId && task.sessionId !== protocol.sessionId) {

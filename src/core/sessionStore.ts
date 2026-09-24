@@ -71,7 +71,8 @@ export class SessionStore {
     });
   }
   log(id: string, turnId: string, event: unknown): Promise<void> {
-    const filename = this.rawPath(id, turnId), data = JSON.stringify(event) + '\n';
+    const stamped = event && typeof event === 'object' && !Array.isArray(event) ? { ...event, at: Date.now() } : event;
+    const filename = this.rawPath(id, turnId), data = JSON.stringify(stamped) + '\n';
     return this.enqueue(async () => { await mkdir(path.dirname(filename), { recursive: true }); await appendFile(filename, data); });
   }
   flush(): Promise<void> { return this.queue; }

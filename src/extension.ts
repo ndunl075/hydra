@@ -44,8 +44,9 @@ import { SettingsImport } from './extensionImport';
 import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
-import { findProvider, terminalLaunch } from './core/providers';
+import { executableFingerprint, findProvider, terminalLaunch } from './core/providers';
 import { checkProvider } from './core/diagnostics';
+import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
 import { SessionStore } from './core/sessionStore';
 import { ConversationDrafts } from './core/conversationDrafts';
@@ -70,6 +71,10 @@ import { officialExtensionInfo, openOfficialExtension } from './extensionBridge'
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
 
 let manager: Manager | undefined;
+/** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
+function otherHydraSettings(context: vscode.ExtensionContext): string[] {
+  return settingsRequiringRefresh([context.extension.packageJSON?.contributes?.configuration].flat().flatMap((section: { properties?: Record<string, unknown> } | undefined) => Object.keys(section?.properties || {})));
+}
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   manager = new Manager(context);
   await manager.initialize();
@@ -111,6 +116,12 @@ class Manager {
   private readonly tree = new TaskTree(() => this.tasks);
   private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   private readonly output = vscode.window.createOutputChannel('Hydra');
+  /** When each task's current send was received, for launch step timing in the Hydra log. */
+  private readonly sendStarted = new Map<string, number>();
+  private mark(taskId: string, step: string): void {
+    const start = this.sendStarted.get(taskId);
+    if (start !== undefined) this.output.appendLine(`[timing] ${taskId} +${Date.now() - start}ms ${step}`);
+  }
   private readonly locks: OwnershipLock[] = [];
   private readonly store: LocalStore;
   private readonly budgetStore: BudgetStore;
@@ -121,6 +132,8 @@ class Manager {
   private pendingNewTask = false;
   private handoff?: Handoff;
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
+  /** The last passing launch probe per provider, valid only for the identical binary. */
+  private readonly launchProbes = new Map<Provider, { fingerprint: string; diagnostic: ProviderDiagnostic }>();
   private readonly modelCatalogs = new Map<string, ModelCatalog>();
   private readonly draftModelCatalogs = new Map<Provider, ModelCatalog>();
   private readonly diagnosticChecks = new Set<AbortController>();
@@ -492,11 +505,16 @@ class Manager {
         void this.persist().catch(error => this.report(error));
       }
     }), vscode.workspace.onDidChangeConfiguration(event => {
-      if (event.affectsConfiguration('hydra')) {
-        this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear(); this.draftModelCatalogs.clear();
-        for (const controller of this.diagnosticChecks) controller.abort();
-        void this.refresh().catch(error => this.report(error));
-      }
+      if (!event.affectsConfiguration('hydra')) return;
+      // Delegation preferences are read fresh wherever they are used and touch no
+      // provider, model catalog or repository state. Treating them like a provider
+      // path change cleared both model catalogs, aborted provider checks and ran a
+      // full refresh on every Solo/Auto flip, so they only republish. Any other
+      // Hydra setting, including ones added later, still takes the full path.
+      if (!otherHydraSettings(this.context).some(key => event.affectsConfiguration(key))) { void this.publish().catch(error => this.report(error)); return; }
+      this.diagnosticGeneration++; this.diagnostics.clear(); this.modelCatalogs.clear(); this.draftModelCatalogs.clear();
+      for (const controller of this.diagnosticChecks) controller.abort();
+      void this.refresh().catch(error => this.report(error));
     }));
     try {
       this.tasks = await this.store.load();
@@ -597,7 +615,7 @@ class Manager {
     const config = vscode.workspace.getConfiguration('hydra');
     this.providers = await Promise.all(['claude', 'codex'].map(provider => findProvider(provider as 'claude' | 'codex', config.get<string>(`${provider}Path`))));
   }
-  private async refresh(): Promise<void> { this.error = undefined; this.fileCache = undefined; if (!this.disabled && vscode.workspace.isTrusted) await this.capacity.refresh(); await this.refreshProviders(); await this.publish(); await this.scheduler.drain(); }
+  private async refresh(): Promise<void> { this.launchProbes.clear(); this.error = undefined; this.fileCache = undefined; if (!this.disabled && vscode.workspace.isTrusted) await this.capacity.refresh(); await this.refreshProviders(); await this.publish(); await this.scheduler.drain(); }
   private describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
   private report(error: unknown): void {
     this.error = this.describe(error);
@@ -909,7 +927,14 @@ class Manager {
     }
     if (this.closing || this.disabled || !vscode.workspace.isTrusted) throw new Error('Workspace closed or lost trust. Task preserved.');
   }
+  private publishTimer: ReturnType<typeof setTimeout> | undefined;
+  /** One trailing publish for high-frequency updates; an immediate publish() supersedes it. */
+  private publishSoon(): void {
+    if (this.publishTimer) clearTimeout(this.publishTimer);
+    this.publishTimer = setTimeout(() => { this.publishTimer = undefined; void this.publish().catch(error => this.report(error)); }, 200);
+  }
   private async publish(): Promise<void> {
+    if (this.publishTimer) { clearTimeout(this.publishTimer); this.publishTimer = undefined; }
     const generation = ++this.snapshotGeneration;
     this.tree.changed.fire(undefined);
     const active = this.terminals.size + this.managed.count + this.resources.count;
@@ -1053,7 +1078,12 @@ class Manager {
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'newTask') { await vscode.commands.executeCommand('hydra.newTask'); return; }
-    if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); await this.publish(); return; }
+    // A reply draft changes on every keystroke. The typing panel gets its own ack
+    // (conversationDraftAck) and send-time validation reads the draft map, which
+    // updates here immediately; the publish only carries the draft to the other
+    // panel. Publishing the whole snapshot per keystroke made typing lag, so it
+    // is coalesced to one trailing publish once typing pauses.
+    if (message.type === 'conversationDraft') { this.getTask(message.id); this.conversationDrafts.update(message.id, message); this.publishSoon(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'setDelegationMode') { await this.setDelegationMode(message.mode); return; }
     if (message.type === 'refresh') { this.error = undefined; await this.refresh(); return; }
@@ -1118,8 +1148,8 @@ class Manager {
       await this.publish();
       return;
     }
-    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
-    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveBudgets', 'retryBudgetHold', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
+    if (this.handoff && ['create', 'handoff', 'launch', 'terminal', 'openWorktree', 'startManaged', 'followUp', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'saveBudgets', 'retryBudgetHold', 'retryBlocked', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('This window is an official-extension handoff. Manage task writers from the original Hydra window.');
+    if (this.busy && ['create', 'handoff', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveHandoffSummary', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveBudgets', 'retryBudgetHold', 'retryBlocked', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) throw new Error('Another task operation is in progress.');
     if (message.type === 'create') {
       if (this.busy) throw new Error('Another task operation is in progress.');
       if (!this.repositories.includes(message.repository)) throw new Error('Choose an open workspace repository.');
@@ -1165,7 +1195,7 @@ class Manager {
     if (task.delegationJournalPending && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) throw new Error('Delegation assignment journal recovery is pending. Reload or reconcile durable storage before starting this child.');
     if (task.state === 'discarded' && !['select', 'copyDiscardLocation', 'restoreDiscarded', 'showSessionDiagnostics', 'releaseResources', 'showSetupLog', 'reconcileSetup', 'reconcileCapacity'].includes(message.type)) throw new Error('Restore this discarded task before continuing work.');
     if (message.type === 'reconcileCapacity') { await this.reconcileCapacity(task); return; }
-    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
+    if (this.capacity.isUncertain(task.id) && ['launch', 'terminal', 'startManaged', 'followUp', 'configureSchedule', 'saveBrief', 'saveModelSelection', 'savePermissionMode', 'saveProviderSelection', 'saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'handoff', 'openWorktree', 'releaseExternal', 'prepareCommitReview', 'commitReviewed', 'prepareIntegration', 'promoteIntegration', 'reviewIntegrationResolution', 'acceptIntegrationResolution', 'prepareDiscard', 'confirmDiscard', 'restoreDiscarded', 'cancelQueued', 'retryBudgetHold', 'retryBlocked'].includes(message.type)) throw new Error('Stop surviving task writers and acknowledge this uncertain profile reservation first.');
     if (message.type === 'stopSetup') { const pending = this.pendingResource?.id === task.id ? this.pendingResource : undefined; pending?.controller.abort(); await pending?.done; await this.resources.stop(task.id); return; }
     if (message.type === 'showSetupLog') { const log = this.resources.snapshot()[task.id]?.log; if (!log) throw new Error('No setup diagnostics yet.'); await vscode.window.showTextDocument(vscode.Uri.file(log), { preview: true }); return; }
     if (['saveResources', 'runSetup', 'releaseResources', 'reacquireResources', 'reconcileSetup'].includes(message.type)) {
@@ -1212,6 +1242,10 @@ class Manager {
       try { await this.pendingBudgetSave; this.budgets = candidate; }
       finally { this.pendingBudgetSave = undefined; this.busy = false; await this.publish(); if (this.schedulerReady) void this.scheduler.drain().catch(error => this.report(error)); }
       return;
+    }
+    if (message.type === 'retryBlocked') {
+      if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop this writer before retrying.');
+      await this.scheduler.retryBlocked(task); return;
     }
     if (message.type === 'retryBudgetHold') {
       if (this.managed.has(task.id) || this.terminals.has(task.id)) throw new Error('Stop this writer before retrying held work.');
@@ -1345,6 +1379,7 @@ class Manager {
       return;
     }
     if (!scheduledLaunch && ['launch', 'terminal', 'startManaged', 'followUp'].includes(message.type)) {
+      if (message.type === 'startManaged' || message.type === 'followUp') { this.sendStarted.set(task.id, Date.now()); this.mark(task.id, `${message.type} received`); }
       if (message.type === 'followUp' && message.draftVersion) this.conversationDrafts.requireCurrent(task.id, message.prompt, message.draftVersion);
       if (this.integrationAbort?.taskId === task.id) throw new Error('Finish or cancel this task integration before queueing another writer.');
       if ((message.type === 'launch' || message.type === 'terminal') && this.terminals.has(task.id)) { this.terminals.get(task.id)!.show(false); return; }
@@ -1353,8 +1388,8 @@ class Manager {
       if (this.terminals.has(task.id) || task.state === 'external' || task.state === 'running') throw new Error('Stop this task writer before queueing another launch.');
       if (message.type === 'startManaged' && task.sessionId) throw new Error('Send a follow-up to resume this session.');
       if (message.type === 'followUp' && !task.sessionId) throw new Error('Start the task before sending a follow-up.');
-      await this.resources.check(task.id);
-      await lockTaskContext(task, () => this.persist());
+      await this.resources.check(task.id); this.mark(task.id, 'resources checked');
+      await lockTaskContext(task, () => this.persist()); this.mark(task.id, 'context locked and saved');
       await this.scheduler.enqueue(task, message.type === 'followUp' ? { type: 'followUp', prompt: message.prompt } : { type: message.type as 'launch' | 'terminal' | 'startManaged' });
       if (message.type === 'followUp' && message.draftVersion) {
         this.conversationDrafts.accepted(task.id, message.prompt, message.draftVersion);
@@ -1473,11 +1508,19 @@ class Manager {
       this.busy = true;
       const controller = new AbortController(), generation = this.diagnosticGeneration;
       this.diagnosticChecks.add(controller);
+      this.mark(task.id, 'scheduler launching');
       try {
         const info = await findProvider(task.provider, vscode.workspace.getConfiguration('hydra').get<string>(`${task.provider}Path`));
         if (!info.executable) throw new Error(`${task.provider} CLI not found. Set its executable path first.`);
-        // Re-probe immediately before a model request: cached help must not authorize a changed binary.
-        const diagnostic = await checkProvider(info, task.worktree, controller.signal);
+        this.mark(task.id, 'provider found');
+        // Probe before a model request unless this exact binary (path, size, mtime,
+        // ctime) already passed: cached help must not authorize a changed binary.
+        // Re-probing an unchanged one on every send cost ~0.65s per message.
+        const fingerprint = await executableFingerprint(info.executable);
+        const probed = this.launchProbes.get(task.provider);
+        const diagnostic = probed?.fingerprint === fingerprint ? probed.diagnostic : await checkProvider(info, task.worktree, controller.signal);
+        if (diagnostic.status === 'checked') this.launchProbes.set(task.provider, { fingerprint, diagnostic }); else this.launchProbes.delete(task.provider);
+        this.mark(task.id, 'provider probed');
         if (controller.signal.aborted || this.closing || generation !== this.diagnosticGeneration) throw new Error('Managed startup cancelled because the window closed or provider configuration changed.');
         this.diagnostics.set(task.provider, diagnostic);
         const testedVersion = task.provider === 'claude' ? testedClaudeVersion : testedCodexVersion;
@@ -1495,8 +1538,10 @@ class Manager {
           if (!scheduledLaunch || !task.sessionId && task.delegationExecution!.status !== 'starting') throw new Error('Delegated dispatch requires a durable scheduler reservation.');
         }
         task.delegationPlanner = planner; task.updatedAt = new Date().toISOString();
+        this.mark(task.id, 'resources and budget checked');
         // This task-store write is intentionally before Managed* can spawn or submit a provider turn.
         await this.persist();
+        this.mark(task.id, 'saved; starting provider');
         const normalPrompt = `${message.type === 'followUp' ? message.prompt : task.prompt}${planner ? plannerPromptSuffix(planner) : ''}`;
         await this.managed.start(task, info.executable, normalPrompt, async () => {
           await this.capacity.check(task.id, this.profileLimit()); await this.resources.check(task.id);

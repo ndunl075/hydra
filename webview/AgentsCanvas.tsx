@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { HelperJobView } from '../src/core/model';
-import { buildCanvas, elapsedLabel, headStatus, isActive, layout, type CanvasHead, type CanvasLead } from '../src/core/agentsCanvas';
+import type { ClientMessage, HelperJobView, Provider } from '../src/core/model';
+import { buildCanvas, elapsedLabel, headStatus, isActive, layout, type CanvasHead, type CanvasLead, type CanvasPlanJob, type CanvasPlanNode } from '../src/core/agentsCanvas';
+// Type-only (see the note in agentsCanvas.ts): plans.ts's storage code must never
+// enter this browser bundle, so only PlanJob's shape crosses this boundary.
+import type { Plan, PlanJob } from '../src/core/plans';
 import { ProviderLogo } from './ProviderLogo';
 import './agents-canvas.css';
 
@@ -20,7 +23,20 @@ interface LeadGhost { lead: CanvasLead; until: number }
 /** A chat stays briefly after its last head, so the heads visibly fold back into it. */
 const leadGraceMs = 1200;
 
-export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly HelperJobView[]; onAction: (action: HeadAction, jobId: string) => void; onStopAll?: () => void }) {
+/** Planner (docs/Lanes_And_Planner_Plan.md, section 4): a job-edit popover's own form state. */
+interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
+interface JobMenuState { planId: string; job: PlanJob; x: number; y: number }
+
+export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt }: {
+  heads: readonly HelperJobView[];
+  plans?: readonly Plan[];
+  defaultProvider?: Provider;
+  onAction: (action: HeadAction, jobId: string) => void;
+  onPlan?: (message: ClientMessage) => void;
+  onStopAll?: () => void;
+  /** Bumped by index.tsx when the extension asks (hydra.newPlan / "showNewPlan"): opens the New plan card. */
+  openNewPlanAt?: number;
+}) {
   const [now, setNow] = useState(() => Date.now());
   const [still, setStill] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -30,6 +46,11 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
   const [filter, setFilter] = useState<'running' | 'today'>('running');
   const [ghosts, setGhosts] = useState<Ghost[]>([]);
   const [leadGhosts, setLeadGhosts] = useState<LeadGhost[]>([]);
+  // ---- Planner UI state (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
+  const [newPlan, setNewPlan] = useState<{ title: string; brief: string }>();
+  const [jobPopover, setJobPopover] = useState<JobPopoverState>();
+  const [jobMenu, setJobMenu] = useState<JobMenuState>();
+  const dragging = useRef<{ planId: string; key: string } | undefined>(undefined);
   const previousLeads = useRef(new Map<string, CanvasLead>());
   // When each head was first drawn: for its first moments it grows out of its chat.
   const enteredAt = useRef(new Map<string, number>());
@@ -49,15 +70,46 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
 
   // One clock drives elapsed times, the finished-head timeout, and clearing heads that have collapsed away.
   useEffect(() => { const timer = setInterval(() => { setNow(Date.now()); setGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); setLeadGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); }, 250); return () => clearInterval(timer); }, []);
-  const model = useMemo(() => buildCanvas(heads, now), [heads, now]);
+  const model = useMemo(() => buildCanvas(heads, now, { plans }), [heads, now, plans]);
   useEffect(() => {
-    if (manual || !box.width || !box.height || !model.heads.length) return;
+    if (manual || !box.width || !box.height || (!model.heads.length && !model.plans.length)) return;
     const fit = Math.min(1, (box.width - 24) / model.width, (box.height - 24) / model.height);
     setZoom(Math.max(.4, +fit.toFixed(2)));
     setPan({ x: 0, y: 0 });
-  }, [manual, box, model.width, model.height, model.heads.length]);
+  }, [manual, box, model.width, model.height, model.heads.length, model.plans.length]);
   const leadAt = new Map(model.leads.map(lead => [lead.key, lead]));
   const headAt = new Map(model.heads.map(item => [item.id, item]));
+  const planAt = new Map(model.plans.map(node => [node.plan.id, node]));
+  const planJobAt = new Map(model.plans.flatMap(node => node.jobs.map(job => [job.id, job] as const)));
+
+  // The New plan card: opened by its toolbar button, or by the extension (hydra.newPlan / "showNewPlan").
+  useEffect(() => { if (openNewPlanAt) setNewPlan(current => current ?? { title: '', brief: '' }); }, [openNewPlanAt]);
+  useEffect(() => {
+    if (!newPlan) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setNewPlan(undefined); };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [newPlan !== undefined]);
+  const openJobMenu = (planId: string, job: PlanJob, x: number, y: number) => setJobMenu({ planId, job, x, y });
+  const openJobPopover = (planId: string, job: PlanJob, x: number, y: number) => setJobPopover({ planId, job, x, y });
+  const startDependencyDrag = (planId: string, key: string) => (event: React.PointerEvent) => {
+    event.stopPropagation();
+    dragging.current = { planId, key };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  };
+  const endDependencyDrag = (event: React.PointerEvent) => {
+    const drag = dragging.current;
+    dragging.current = undefined;
+    if (!drag) return;
+    const target = (document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null)?.closest('[data-plan-job]');
+    const dropped = target ? planJobAt.get(target.getAttribute('data-plan-job') || '') : undefined;
+    if (dropped && dropped.planId === drag.planId && dropped.job.key !== drag.key) onPlan({ type: 'planAddDependency', id: drag.planId, key: dropped.job.key, dependsOn: drag.key });
+  };
+  const removePlanEdge = (kind: string, from: string, to: string) => {
+    if (kind !== 'plan-dependency') return;
+    const dependency = planJobAt.get(from), dependent = planJobAt.get(to);
+    if (dependency && dependent) onPlan({ type: 'planRemoveDependency', id: dependent.planId, key: dependent.job.key, dependsOn: dependency.job.key });
+  };
 
   // Heads that just left the canvas collapse back into their chat before they disappear.
   useEffect(() => {
@@ -86,6 +138,19 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
     window.addEventListener('mousedown', close); window.addEventListener('keydown', escape);
     return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', escape); };
   }, [menu]);
+  useEffect(() => {
+    if (!jobMenu) return;
+    const close = (event: Event) => { if (!(event.target as HTMLElement).closest?.('.canvas-menu')) setJobMenu(undefined); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setJobMenu(undefined); };
+    window.addEventListener('mousedown', close); window.addEventListener('keydown', escape);
+    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', escape); };
+  }, [jobMenu]);
+  useEffect(() => {
+    if (!jobPopover) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setJobPopover(undefined); };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [jobPopover !== undefined]);
 
   const reveal = (id: string) => {
     setSelected(id);
@@ -113,13 +178,14 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
   const listed = (filter === 'running' ? running : heads.filter(head => Date.parse(head.createdAt) >= dayStart.getTime()))
     .slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const lingering = leadGhosts.filter(ghost => !leadAt.has(ghost.lead.key));
-  const empty = !model.heads.length && !ghosts.length && !lingering.length;
+  const empty = !model.heads.length && !ghosts.length && !lingering.length && !model.plans.length;
 
   return <section className={`agents-canvas${still ? ' still' : ''}`} aria-label="Agents">
     <div className="canvas-stage">
       <div className="canvas-toolbar">
         <div className="canvas-title"><strong>Agents</strong><span>{running.length ? `${running.length} ${running.length === 1 ? 'head' : 'heads'} working` : model.heads.length ? 'Nothing working' : 'Idle'}</span></div>
         <div className="canvas-controls">
+          <button className="canvas-button" aria-haspopup="dialog" aria-expanded={newPlan !== undefined} onClick={() => setNewPlan(current => current ? undefined : { title: '', brief: '' })}>New plan</button>
           {running.length > 0 && onStopAll && <button className="canvas-button danger" onClick={onStopAll}>Stop all heads</button>}
           <button className="canvas-button" aria-pressed={still} onClick={() => setStill(value => !value)}>{still ? 'Resume motion' : 'Pause motion'}</button>
           <div className="canvas-zoom" role="group" aria-label="Zoom">
@@ -129,22 +195,41 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
           </div>
         </div>
       </div>
+      {newPlan && <div className="canvas-newplan" role="dialog" aria-label="New plan">
+        <label>Title<input value={newPlan.title} onChange={event => setNewPlan({ ...newPlan, title: event.target.value })} maxLength={200} autoFocus /></label>
+        <label>Brief<textarea value={newPlan.brief} onChange={event => setNewPlan({ ...newPlan, brief: event.target.value })} maxLength={8000} rows={3} placeholder="What should this plan accomplish? Claude or Codex will read the repository and split it into jobs." /></label>
+        <div className="canvas-newplan-actions">
+          <button className="primary" disabled={!newPlan.title.trim() || !newPlan.brief.trim()} onClick={() => { onPlan({ type: 'planCreate', title: newPlan.title.trim(), brief: newPlan.brief.trim() }); setNewPlan(undefined); }}>Plan with {defaultProvider === 'codex' ? 'Codex' : 'Claude'}</button>
+          <button disabled={!newPlan.title.trim()} onClick={() => { onPlan({ type: 'planCreateEmpty', title: newPlan.title.trim() }); setNewPlan(undefined); }}>Start empty</button>
+          <button className="text-button" onClick={() => setNewPlan(undefined)}>Cancel</button>
+        </div>
+      </div>}
       <div className="canvas-viewport" ref={viewport}
-        onPointerDown={event => { if ((event.target as HTMLElement).closest('.canvas-node, .canvas-lead, button')) return; drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; setManual(true); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); }}
+        onPointerDown={event => { if ((event.target as HTMLElement).closest('.canvas-node, .canvas-lead, .canvas-plan-lead, button')) return; drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; setManual(true); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); }}
         onPointerMove={event => { const start = drag.current; if (start) setPan({ x: start.panX + event.clientX - start.x, y: start.panY + event.clientY - start.y }); }}
         onPointerUp={() => { drag.current = undefined; }}
         onWheel={event => { if (!event.ctrlKey) return; event.preventDefault(); setManual(true); setZoom(value => Math.min(1.5, Math.max(.4, +(value - Math.sign(event.deltaY) * .1).toFixed(2)))); }}>
         {empty ? <div className="canvas-empty"><div className="canvas-empty-mark" aria-hidden="true"><i /><i /><i /></div><p>Heads your Claude Code and Codex chats start will appear here.</p><span>Start a task in a chat that splits into independent pieces. Each head grows out of the chat that started it.</span></div>
           : <div className="canvas-plane" style={{ width: model.width, height: model.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
-            <svg className="canvas-edges" width={model.width} height={model.height} aria-hidden="true">
+            <svg className="canvas-edges" width={model.width} height={model.height}>
               {model.edges.map(edge => {
-                const to = headAt.get(edge.to); if (!to) return null;
-                const from = edge.kind === 'lead' ? leadAt.get(edge.from) : headAt.get(edge.from);
+                const leadLike = edge.kind === 'lead' || edge.kind === 'plan-lead';
+                const to = edge.kind === 'plan-dependency' ? planJobAt.get(edge.to) : headAt.get(edge.to);
+                if (!to) return null;
+                const from = edge.kind === 'lead' ? leadAt.get(edge.from) : edge.kind === 'plan-lead' ? planAt.get(edge.from) : edge.kind === 'plan-dependency' ? planJobAt.get(edge.from) : headAt.get(edge.from);
                 if (!from) return null;
-                const start = edge.kind === 'lead' ? edgeStart(from.x + layout.leadWidth, from.y) : edgeStart(from.x + layout.headWidth, from.y);
+                const start = edgeStart(from.x + (leadLike ? layout.leadWidth : layout.headWidth), from.y);
                 const end = edgeStart(to.x, to.y);
                 const d = curve(start.x, start.y, end.x, end.y);
-                return <g key={edge.id} className={`canvas-edge ${edge.kind}${edge.active ? ' active' : ''}${edge.waiting ? ' waiting' : ''}`}>
+                const removable = edge.kind === 'plan-dependency';
+                return <g key={edge.id} className={`canvas-edge ${edge.kind}${edge.active ? ' active' : ''}${edge.waiting ? ' waiting' : ''}${edge.cycle ? ' cycle' : ''}`} aria-hidden={!removable}
+                  {...(removable ? {
+                    tabIndex: 0, role: 'button',
+                    'aria-label': 'Dependency between two draft jobs. Press Delete to remove.',
+                    onKeyDown: (event: React.KeyboardEvent) => { if (event.key === 'Delete' || event.key === 'Backspace' || event.key === 'Enter') { event.preventDefault(); removePlanEdge(edge.kind, edge.from, edge.to); } },
+                    onContextMenu: (event: React.MouseEvent) => { event.preventDefault(); removePlanEdge(edge.kind, edge.from, edge.to); },
+                  } : {})}>
+                  <path className="hit" style={{ d: `path("${d}")` } as React.CSSProperties} />
                   <path className="base" style={{ d: `path("${d}")` } as React.CSSProperties} />
                   {edge.active && <path className="flow" style={{ d: `path("${d}")` } as React.CSSProperties} />}
                 </g>;
@@ -163,6 +248,11 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
             {ghosts.map(ghost => <div key={`ghost-${ghost.head.id}`} className={`canvas-node leaving provider-${ghost.head.head.provider}`} aria-hidden="true" style={{ transform: `translate(${ghost.head.x}px, ${ghost.head.y}px)`, '--to-x': `${ghost.to.x - ghost.head.x}px`, '--to-y': `${ghost.to.y - ghost.head.y}px` } as React.CSSProperties}>
               <div className="canvas-node-card"><strong>{ghost.head.head.title}</strong></div>
             </div>)}
+            {model.plans.map(node => <PlanLeadNode key={node.plan.id} node={node} defaultProvider={defaultProvider} onPlan={onPlan} />)}
+            {model.plans.flatMap(node => node.jobs.map(item => <PlanJobNode key={item.id} item={item}
+              onOpen={() => openJobPopover(item.planId, item.job, item.x, item.y)}
+              onMenu={(x, y) => openJobMenu(item.planId, item.job, x, y)}
+              onHandleDown={startDependencyDrag(item.planId, item.job.key)} onHandleUp={endDependencyDrag} />))}
           </div>}
       </div>
         {model.tray.length > 0 && <div className="canvas-tray" aria-label="Finished heads">
@@ -195,6 +285,13 @@ export function AgentsCanvas({ heads, onAction, onStopAll }: { heads: readonly H
       {menuHead.state === 'blocked' && <button role="menuitem" onClick={() => { setMenu(undefined); onAction('helperAnswer', menuHead.id); }}>Answer question…</button>}
       {isActive(menuHead) && <button role="menuitem" className="danger" onClick={() => { setMenu(undefined); onAction('helperCancel', menuHead.id); }}>Cancel head</button>}
     </div>}
+    {jobMenu && <div className="canvas-menu" role="menu" style={{ left: jobMenu.x, top: jobMenu.y }}>
+      <button role="menuitem" autoFocus onClick={() => { setJobMenu(undefined); openJobPopover(jobMenu.planId, jobMenu.job, jobMenu.x, jobMenu.y); }}>Edit</button>
+      <button role="menuitem" onClick={() => { setJobMenu(undefined); onPlan({ type: 'planDependsOn', id: jobMenu.planId, key: jobMenu.job.key }); }}>Depends on…</button>
+      <button role="menuitem" className="danger" onClick={() => { setJobMenu(undefined); onPlan({ type: 'planDeleteJob', id: jobMenu.planId, key: jobMenu.job.key }); }}>Delete</button>
+    </div>}
+    {jobPopover && <JobEditPopover key={`${jobPopover.planId}:${jobPopover.job.key}`} state={jobPopover} onCancel={() => setJobPopover(undefined)}
+      onSave={(title, brief, provider) => { onPlan({ type: 'planSaveJob', id: jobPopover.planId, key: jobPopover.job.key, title, brief, provider }); setJobPopover(undefined); }} />}
   </section>;
 }
 
@@ -225,6 +322,82 @@ function HeadNode({ item, now, fresh, from, selected, onSelect, onOpen, onMenu, 
         <span>{elapsedLabel(head, now)}</span>
         <button className="canvas-node-more" aria-label={`More actions for ${head.title}`} onClick={event => { event.stopPropagation(); const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); onMenu(rect.left, rect.bottom + 4); }}>⋯</button>
       </div>
+    </div>
+  </div>;
+}
+
+/**
+ * Planner (docs/Lanes_And_Planner_Plan.md, section 4): a plan still being
+ * drafted (planning, draft or failed). A running or done plan's heads render
+ * through the ordinary lead/head path above instead (see agentsCanvas.ts).
+ */
+function PlanLeadNode({ node, defaultProvider, onPlan }: { node: CanvasPlanNode; defaultProvider?: Provider; onPlan: (message: ClientMessage) => void }) {
+  const plan = node.plan, providerName = defaultProvider === 'codex' ? 'Codex' : 'Claude';
+  return <div className={`canvas-plan-lead state-${plan.state}`} style={{ transform: `translate(${node.x}px, ${node.y}px)` }}>
+    <div className="canvas-plan-lead-head"><b title={plan.title}>Plan · {plan.title}</b></div>
+    {plan.state === 'planning' && <>
+      <p className="canvas-plan-status">Planning with {providerName}…</p>
+      <div className="canvas-plan-actions"><button onClick={() => onPlan({ type: 'planCancel', id: plan.id })}>Cancel</button></div>
+    </>}
+    {plan.state === 'failed' && <>
+      <p className="canvas-plan-status error" role="alert">{plan.error || 'Planning failed.'}</p>
+      <div className="canvas-plan-actions">
+        {plan.brief && <button onClick={() => onPlan({ type: 'planRetry', id: plan.id })}>Retry</button>}
+        <button onClick={() => onPlan({ type: 'planStartEmpty', id: plan.id })}>Start empty</button>
+        <button className="danger" aria-label={`Delete plan "${plan.title}"`} onClick={() => onPlan({ type: 'planDelete', id: plan.id })}>Delete plan</button>
+      </div>
+    </>}
+    {plan.state === 'draft' && <>
+      {node.cycleMessage && <p className="canvas-plan-status error" role="alert">{node.cycleMessage}</p>}
+      <p className="canvas-plan-status">{plan.jobs.length} {plan.jobs.length === 1 ? 'job' : 'jobs'}</p>
+      <div className="canvas-plan-actions">
+        <button aria-label={`Add a job to "${plan.title}"`} disabled={plan.jobs.length >= 12} onClick={() => onPlan({ type: 'planAddJob', id: plan.id })}>+ Job</button>
+        <button className="primary" disabled={!!node.cycleMessage || !plan.jobs.length} title={node.cycleMessage || undefined} onClick={() => onPlan({ type: 'planRun', id: plan.id })}>Run plan</button>
+        <button className="danger" aria-label={`Delete plan "${plan.title}"`} onClick={() => onPlan({ type: 'planDelete', id: plan.id })}>Delete plan</button>
+      </div>
+    </>}
+  </div>;
+}
+
+/** A draft job: dashed, since nothing has run yet. Click (or Enter) edits it; the handle drags a dependency onto another job. */
+function PlanJobNode({ item, onOpen, onMenu, onHandleDown, onHandleUp }: {
+  item: CanvasPlanJob; onOpen: () => void; onMenu: (x: number, y: number) => void;
+  onHandleDown: (event: React.PointerEvent) => void; onHandleUp: (event: React.PointerEvent) => void;
+}) {
+  const job = item.job, providerLabel = job.provider === 'codex' ? 'Codex' : job.provider === 'claude' ? 'Claude' : 'Auto';
+  return <div className="canvas-node canvas-plan-job" data-plan-job={item.id} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
+    role="button" tabIndex={0} aria-label={`${job.title}, draft job, ${providerLabel}. Enter to edit; Shift+F10 for more.`}
+    onClick={onOpen}
+    onKeyDown={event => {
+      if (event.key === 'Enter') { event.preventDefault(); onOpen(); }
+      if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) { event.preventDefault(); const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); onMenu(rect.left + 24, rect.top + 24); }
+    }}
+    onContextMenu={event => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}>
+    <div className="canvas-node-card">
+      <div className="canvas-node-top"><span className="canvas-node-kind">Draft job</span><span className="canvas-state"><i aria-hidden="true" />{providerLabel}</span></div>
+      <strong className="canvas-node-title" title={job.title}>{job.title}</strong>
+      <p className="canvas-node-detail" title={job.brief}>{job.brief}</p>
+      <button className="canvas-plan-handle" aria-label={`Drag onto another job to make it depend on "${job.title}"`}
+        onClick={event => event.stopPropagation()} onPointerDown={onHandleDown} onPointerUp={onHandleUp}>⋮</button>
+    </div>
+  </div>;
+}
+
+/** The job-edit popover: title, brief, and provider (Auto/Claude/Codex). */
+function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; onSave: (title: string, brief: string, provider?: Provider) => void; onCancel: () => void }) {
+  const [title, setTitle] = useState(state.job.title);
+  const [brief, setBrief] = useState(state.job.brief);
+  const [provider, setProvider] = useState<'' | Provider>(state.job.provider || '');
+  return <div className="canvas-menu canvas-job-popover" role="dialog" aria-label={`Edit "${state.job.title}"`} style={{ left: state.x, top: state.y }}
+    onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onCancel(); } }}>
+    <label>Title<input value={title} onChange={event => setTitle(event.target.value)} maxLength={80} autoFocus /></label>
+    <label>Brief<textarea value={brief} onChange={event => setBrief(event.target.value)} maxLength={4000} rows={3} /></label>
+    <label>Provider<select value={provider} onChange={event => setProvider(event.target.value as '' | Provider)}>
+      <option value="">Auto</option><option value="claude">Claude</option><option value="codex">Codex</option>
+    </select></label>
+    <div className="canvas-newplan-actions">
+      <button className="primary" disabled={!title.trim() || !brief.trim()} onClick={() => onSave(title.trim(), brief.trim(), provider || undefined)}>Save</button>
+      <button className="text-button" onClick={onCancel}>Cancel</button>
     </div>
   </div>;
 }

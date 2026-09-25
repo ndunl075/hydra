@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { ClientMessage, HelperJobView, Snapshot, Provider, Handoff, OfficialExtensionInfo } from '../src/core/model';
+import type { Plan } from '../src/core/plans';
 import './styles.css';
 import { AgentsCanvas } from './AgentsCanvas';
 import { HydraMark } from './HydraMark';
@@ -42,10 +43,15 @@ function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: Officia
 function App() {
   const [snapshot, setSnapshot] = useState(initial);
   const [heads, setHeads] = useState<HelperJobView[]>([]);
+  // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [newPlanSignal, setNewPlanSignal] = useState(0);
   useEffect(() => {
     const listener = (event: MessageEvent) => {
-      if (event.data?.type === 'snapshot') { const next = event.data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); }
+      if (event.data?.type === 'snapshot') { const next = event.data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); }
       if (event.data?.type === 'heads') setHeads(event.data.heads as HelperJobView[]);
+      if (event.data?.type === 'plans') setPlans(event.data.plans as Plan[]);
+      if (event.data?.type === 'showNewPlan') setNewPlanSignal(value => value + 1);
     };
     window.addEventListener('message', listener);
     send({ type: 'ready' });
@@ -60,7 +66,8 @@ function App() {
     {(snapshot.error) && <div className="error" role="alert"><strong>Needs attention</strong><p>{snapshot.error}</p><button onClick={() => send({ type: 'refresh' })}>Retry</button></div>}
     {snapshot.handoff
       ? <HandoffView handoff={snapshot.handoff} info={snapshot.officialExtensions?.find(info => info.provider === snapshot.handoff?.task.provider)} busy={snapshot.busy} />
-      : <div className="agents-body"><AgentsCanvas heads={heads} onAction={(type, jobId) => send({ type, jobId })} onStopAll={() => send({ type: 'helperStopAll' })} /></div>}
+      : <div className="agents-body"><AgentsCanvas heads={heads} plans={plans} defaultProvider={snapshot.defaultProvider} openNewPlanAt={newPlanSignal}
+          onAction={(type, jobId) => send({ type, jobId })} onPlan={send} onStopAll={() => send({ type: 'helperStopAll' })} /></div>}
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

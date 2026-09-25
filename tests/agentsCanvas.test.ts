@@ -129,6 +129,7 @@ test('buildCanvas flags a plan\'s cycle edges and names the cycle on the plan no
   const cycleEdges = model.edges.filter(edge => edge.kind === 'plan-dependency');
   assert.equal(cycleEdges.length, 2);
   assert.ok(cycleEdges.every(edge => edge.cycle === true));
+  assert.equal(Math.min(...node.jobs.map(item => item.x)), layout.headX, 'a cycle still starts in the first column, with no gap');
 });
 
 test('buildCanvas only draws a lead node for a plan still being drafted; a running or done plan\'s heads group under the ordinary lead', () => {
@@ -165,6 +166,7 @@ test('an SSR render shows the New plan card, and a draft, planning and failed pl
   assert.match(draftHtml, /Draft job/);
   assert.match(draftHtml, /Job api/);
   assert.match(draftHtml, /2 jobs/);
+  assert.match(draftHtml, /canvas-edge plan-lead/, 'the plan node is joined to its first job');
 
   const planning = plan('planning', []);
   const planningHtml = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], plans: [planning], defaultProvider: 'codex', onAction: () => {} }));

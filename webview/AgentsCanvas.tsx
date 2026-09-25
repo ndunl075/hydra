@@ -214,7 +214,7 @@ export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onP
             <svg className="canvas-edges" width={model.width} height={model.height}>
               {model.edges.map(edge => {
                 const leadLike = edge.kind === 'lead' || edge.kind === 'plan-lead';
-                const to = edge.kind === 'plan-dependency' ? planJobAt.get(edge.to) : headAt.get(edge.to);
+                const to = edge.kind === 'plan-dependency' || edge.kind === 'plan-lead' ? planJobAt.get(edge.to) : headAt.get(edge.to);
                 if (!to) return null;
                 const from = edge.kind === 'lead' ? leadAt.get(edge.from) : edge.kind === 'plan-lead' ? planAt.get(edge.from) : edge.kind === 'plan-dependency' ? planJobAt.get(edge.from) : headAt.get(edge.from);
                 if (!from) return null;

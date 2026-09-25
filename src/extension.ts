@@ -53,6 +53,8 @@ export async function deactivate(): Promise<void> { await manager?.shutdown(); }
 class Manager {
   private repositories: string[] = [];
   private panel?: vscode.WebviewPanel;
+  /** hydra.newPlan on a panel that is still loading: shown once its webview says it is ready. */
+  private pendingNewPlan = false;
   private mode: 'editor' | 'agents' = 'editor';
   private busy = false;
   private error?: string;
@@ -519,8 +521,10 @@ class Manager {
     return this.plans;
   }
   private async newPlan(): Promise<void> {
+    const loaded = !!this.panel;
+    this.pendingNewPlan = !loaded;
     await this.openAgents();
-    await this.broadcast({ type: 'showNewPlan' });
+    if (loaded) await this.broadcast({ type: 'showNewPlan' });
   }
   private async planCreateEmpty(title: string): Promise<void> {
     const plans = this.requirePlans();
@@ -712,7 +716,11 @@ class Manager {
   }
   private async handle(value: unknown): Promise<void> {
     const message = parseMessage(value);
-    if (message.type === 'ready') { await this.publish(); return; }
+    if (message.type === 'ready') {
+      await this.publish();
+      if (this.pendingNewPlan) { this.pendingNewPlan = false; await this.broadcast({ type: 'showNewPlan' }); }
+      return;
+    }
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }

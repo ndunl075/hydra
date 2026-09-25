@@ -150,8 +150,10 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
       depthOf.set(job.key, value);
       return value;
     };
+    // In a cycle every job has a parent, so no job sits at depth 0: start at the shallowest.
+    const shallowest = plan.jobs.length ? Math.min(...plan.jobs.map(job => depth(job))) : 0;
     const columns = new Map<number, PlanJob[]>();
-    for (const job of plan.jobs) columns.set(depth(job), [...(columns.get(depth(job)) || []), job]);
+    for (const job of plan.jobs) { const column = depth(job) - shallowest; columns.set(column, [...(columns.get(column) || []), job]); }
     const rows = Math.max(1, ...[...columns.values()].map(column => column.length));
     const groupHeight = rows * layout.rowGap;
     const jobs: CanvasPlanJob[] = [];

@@ -9,7 +9,7 @@ import { publicCodexQuota, readCodexQuota } from '../src/core/quota';
 
 const script = path.resolve('scripts/codex-acceptance.mjs');
 
-test('Codex acceptance fixture records only documented order, redacted evidence, owned cancellation and unavailable quota', async () => {
+test('Codex acceptance fixture records only documented account and quota order, redacted evidence, owned cancellation and unavailable quota', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hydra-codex-acceptance-'));
   const output = path.join(root, 'fixture-evidence.json');
   try {
@@ -21,11 +21,7 @@ test('Codex acceptance fixture records only documented order, redacted evidence,
     assert.deepEqual(evidence.rpc.accountRefresh, ['initialize', 'initialized', 'account/read']);
     assert.deepEqual(evidence.rpc.accountLoginCancel, ['initialize', 'initialized', 'account/login/start', 'account/login/cancel']);
     assert.deepEqual(evidence.rpc.quotaRefresh, ['initialize', 'initialized', 'account/rateLimits/read']);
-    const windowsReadiness = process.platform === 'win32' ? ['windowsSandbox/readiness'] : [];
-    assert.deepEqual(evidence.rpc.managedStart, ['initialize', 'initialized', ...windowsReadiness, 'model/list', 'thread/start', 'turn/start']);
-    assert.deepEqual(evidence.rpc.managedInterrupt, ['turn/interrupt']);
-    assert.deepEqual(evidence.rpc.managedResume, ['initialize', 'initialized', ...windowsReadiness, 'model/list', 'thread/resume', 'turn/start']);
-    assert.deepEqual(evidence.rpc.scopedApproval, { request: 'item/commandExecution/requestApproval', response: 'decision: decline' });
+    assert.deepEqual(Object.keys(evidence.rpc), ['accountRefresh', 'accountLoginCancel', 'quotaRefresh'], 'No model-turn sequence is claimed');
     assert.deepEqual(evidence.assertions.cancellation, { ownedChannelClosed: true, extraRequestsAfterCancellation: 0 });
     assert.deepEqual(evidence.assertions.quota, { status: 'unavailable' });
     assert.equal(evidence.assertions.identityAndResetTokensAbsent, true);

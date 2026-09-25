@@ -148,7 +148,7 @@ export const generalPage: SettingsPage = {
       case 'windowLayout': {
         const value = message.value === 'agents' ? 'agents' : 'editor';
         await vscode.workspace.getConfiguration('hydra').update('startupLayout', value, vscode.ConfigurationTarget.Global);
-        const state = await Promise.resolve(vscode.commands.executeCommand<{ mode: 'editor' | 'agents' }>('hydra.getConversationState')).catch(() => undefined);
+        const state = await Promise.resolve(vscode.commands.executeCommand<{ mode: 'editor' | 'agents' }>('hydra.getLayoutMode')).catch(() => undefined);
         if (state && state.mode !== value) await vscode.commands.executeCommand('hydra.toggleMode');
         await ctx.post({ type: 'windowLayoutState', value });
         await ctx.post({ type: 'status', text: `Window layout set to ${value === 'agents' ? 'Agents' : 'Editor'}.` });

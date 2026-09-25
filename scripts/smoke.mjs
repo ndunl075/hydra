@@ -9,9 +9,9 @@ const localCode = process.platform === 'win32' ? path.join(process.env.LOCALAPPD
 const desktopCode = process.env.HYDRA_TEST_DESKTOP;
 if (desktopCode && path.resolve(desktopCode) !== path.join(root, '.desktop', 'VSCode-win32-x64', 'Hydra.exe')) throw new Error('Desktop smoke must use the workspace-built Hydra executable.');
 await fs.mkdir(path.join(root, '.test-build'), { recursive: true });
-// The smoke assumes a fresh Hydra profile. A run that stopped early leaves capacity
-// reservations in the reused test user data, which fills the slot limit and makes the
-// next run queue its terminals, so each run starts from clean Hydra state.
+// The smoke assumes a fresh Hydra profile. A run that stopped early leaves Hydra state
+// (ownership locks, head records) in the reused test user data, so each run starts
+// from clean Hydra state.
 for (const userData of ['vscode-user-data', 'hydra-user-data']) await fs.rm(path.join(root, '.test-build', userData, 'User', 'globalStorage', 'nico-dunlap.hydra-agent-manager'), { recursive: true, force: true });
 const fixture = await fs.mkdtemp(path.join(root, '.test-build', 'smoke spaces ü-'));
 let developmentPath = root, testsPath = path.join(root, 'dist', 'smoke.cjs');
@@ -54,7 +54,7 @@ const options = {
   extensionDevelopmentPath: desktopCode && process.platform === 'win32' ? `"${developmentPath}"` : developmentPath,
   extensionTestsPath: desktopCode && process.platform === 'win32' ? `"${testsPath}"` : testsPath,
   ...(desktopCode || localCode ? { vscodeExecutablePath: desktopCode || localCode } : {}),
-  extensionTestsEnv: { HYDRA_TEST_NODE: process.execPath, HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_CODEX_PROVIDER: codexProvider, HYDRA_TEST_FIXTURE: fixture },
+  extensionTestsEnv: { HYDRA_TEST_REPOSITORY: await fs.realpath(repository), HYDRA_TEST_PROVIDER: provider, HYDRA_TEST_CODEX_PROVIDER: codexProvider, HYDRA_TEST_FIXTURE: fixture },
   // The official Windows test runner uses cmd.exe and requires explicit quoting for positional folders.
   launchArgs: [process.platform === 'win32' ? `"${repository}"` : repository, ...(desktopCode ? ['--profile', '"Hydra Native Acceptance"'] : []), '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--user-data-dir', path.join(root, '.test-build', desktopCode ? 'hydra-user-data' : 'vscode-user-data')]
 };

@@ -14,19 +14,10 @@ export async function findProvider(provider: Provider, configured?: string): Pro
   }
   return { provider, available: false };
 }
-export function terminalLaunch(executable: string): { shellPath: string; shellArgs: string[] } {
-  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
-    const script = `& '${executable.replace(/'/g, "''")}'`;
-    const shellPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    return { shellPath, shellArgs: ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] };
-  }
-  return { shellPath: executable, shellArgs: [] };
-}
-
 /**
  * Identifies one exact binary on disk. Any replacement or in-place update changes
- * its size, modification or change time, so a probe result keyed by this is never
- * reused for a different binary.
+ * its size, modification or change time, so a CLI self-check keyed by this is
+ * never reused for a different binary.
  */
 export async function executableFingerprint(executable: string): Promise<string> {
   const info = await stat(executable);

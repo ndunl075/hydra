@@ -74,7 +74,6 @@ export interface Job {
   maxAttempts: number;
   /** A helper that stops without reporting is nudged once, then failed. */
   nudged: boolean;
-  taskId?: string;
   /** The helper's own git worktree, created when it starts. */
   worktree?: string;
   baseCommit?: string;
@@ -220,8 +219,8 @@ export class JobStore {
     });
   }
 
-  /** Change fields that don't change state (progress, replies, task link). Refused once a job is final. */
-  async update(id: string, patch: Partial<Pick<Job, 'progress' | 'replies' | 'taskId' | 'worktree' | 'baseCommit' | 'branch' | 'question' | 'nudged' | 'attempts'>>): Promise<Job> {
+  /** Change fields that don't change state (progress, replies, worktree). Refused once a job is final. */
+  async update(id: string, patch: Partial<Pick<Job, 'progress' | 'replies' | 'worktree' | 'baseCommit' | 'branch' | 'question' | 'nudged' | 'attempts'>>): Promise<Job> {
     return this.serialize(async () => {
       this.assertLoaded();
       const job = this.jobs.get(id);

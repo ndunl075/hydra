@@ -10,10 +10,8 @@
   },
   "automatedAssertions": [
     { "id": "editor-agents-preservation", "status": "defined", "evidence": "tests/smoke.ts" },
-    { "id": "selected-agent-workspace", "status": "defined", "evidence": "webview/FocusedWorkspace.tsx" },
-    { "id": "context-result-budget-inspection", "status": "defined", "evidence": "webview/DelegationContextInbox.tsx, webview/DelegationResultInspection.tsx, webview/DelegationRunBudgetView.tsx" },
     { "id": "keyboard-focus", "status": "defined", "evidence": "webview/AgentsCanvas.tsx, webview/agents-canvas.css" },
-    { "id": "high-contrast-and-reduced-motion", "status": "defined", "evidence": "webview/agents-canvas.css, webview/delegation-*.css" }
+    { "id": "high-contrast-and-reduced-motion", "status": "defined", "evidence": "webview/agents-canvas.css" }
   ],
   "humanAcceptance": {
     "status": "pending",

@@ -2,6 +2,8 @@
 
 Features ship in separate branches and PRs. Type checking, builds, appropriate tests, and packaging must pass before a feature is merged.
 
+> **2026-09-24:** the managed-task system was removed: tasks and the Tasks view, the Editor conversation, managed Claude/Codex sessions, scheduling, profile slots, resources and setup, soft budgets and usage, model controls, review/commit/discard and integration. Rows below that describe those features are history. Hydra heads and the Agents canvas replace them; see [Heads.md](Heads.md).
+
 | Feature | State | Evidence / limits |
 | --- | --- | --- |
 | Cursor-style Editor conversation | Implemented; local unit and browser checks passed | Native secondary-sidebar chat shares worktree task/session state with Agents; graph stays in Agents. Drafts survive mode switches within the window, with revisioned receipts that protect newer typing. Code OSS 1.113 is required. Native split/diff and session fixtures validate composition; this does not establish automatic adaptive delegation or a new release installer |

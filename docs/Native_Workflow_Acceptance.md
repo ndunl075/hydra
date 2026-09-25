@@ -1,6 +1,6 @@
 # Native workflow acceptance
 
-Feature 33 adds a bounded local fixture record for the Hydra workflow. It covers Editor/Agents switching, selected agent-workspace identity, context and result inspection, reported-budget labels, keyboard focus, high contrast, and reduced motion. The record is [native-workflow-acceptance.json](../tests/fixtures/native-workflow-acceptance.json).
+Feature 33 adds a bounded local fixture record for the Hydra workflow. It covers Editor/Agents switching and the Agents canvas's keyboard focus, high contrast, and reduced motion. (Its selected-workspace, context, result and budget entries went with the task system.) The record is [native-workflow-acceptance.json](../tests/fixtures/native-workflow-acceptance.json).
 
 Run the fixture with the normal local suite:
 

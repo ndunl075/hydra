@@ -71,16 +71,8 @@
         "title": "Hydra: Check Default Provider Capabilities"
       },
       {
-        "command": "hydra.handoffClaude",
-        "title": "Hydra: Open Task in Claude Code"
-      },
-      {
-        "command": "hydra.handoffCodex",
-        "title": "Hydra: Open Task in Codex"
-      },
-      {
         "command": "hydra.openOfficialExtension",
-        "title": "Hydra: Open Official Extension in Task Workspace"
+        "title": "Hydra: Open Official Extension in Handoff Workspace"
       },
       {
         "command": "hydra.toggleMode",
@@ -90,29 +82,6 @@
       {
         "command": "hydra.openAgents",
         "title": "Hydra: Open Agents"
-      },
-      {
-        "command": "hydra.newTask",
-        "title": "Hydra: New Task",
-        "icon": "$(add)"
-      },
-      {
-        "command": "hydra.openTask",
-        "title": "Hydra: Open Task"
-      },
-      {
-        "command": "hydra.refresh",
-        "title": "Hydra: Refresh Tasks",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "hydra.createTask",
-        "title": "Hydra: Create Task"
-      },
-      {
-        "command": "hydra.openConversation",
-        "title": "Hydra: Open Agent Conversation",
-        "icon": "$(comment-discussion)"
       },
       {
         "command": "hydra.stopAllHelpers",
@@ -131,53 +100,6 @@
         "mac": "cmd+shift+,"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "hydra",
-          "title": "Hydra",
-          "icon": "hydra-logo.png"
-        }
-      ],
-      "secondarySidebar": [
-        {
-          "id": "hydra-chat",
-          "title": "Hydra",
-          "icon": "hydra-logo.png"
-        }
-      ]
-    },
-    "views": {
-      "hydra": [
-        {
-          "id": "hydra.tasks",
-          "name": "Tasks"
-        }
-      ],
-      "hydra-chat": [
-        {
-          "id": "hydra.conversation",
-          "name": "Agent",
-          "type": "webview",
-          "when": "hydra.mode != agents",
-          "visibility": "visible"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "hydra.newTask",
-          "when": "view == hydra.tasks",
-          "group": "navigation"
-        },
-        {
-          "command": "hydra.refresh",
-          "when": "view == hydra.tasks",
-          "group": "navigation"
-        }
-      ]
-    },
     "themes": [
       {
         "label": "Hydra Dark",
@@ -207,7 +129,7 @@
           ],
           "default": null,
           "scope": "window",
-          "description": "Task descriptor in a generated Hydra handoff workspace. Do not edit manually."
+          "description": "Handoff descriptor in a generated Hydra handoff workspace. Do not edit manually."
         },
         "hydra.defaultProvider": {
           "type": "string",
@@ -216,7 +138,7 @@
             "codex"
           ],
           "default": "claude",
-          "description": "Provider selected for new tasks."
+          "description": "Provider checked by \"Hydra: Check Default Provider Capabilities\"."
         },
         "hydra.claudePath": {
           "type": "string",
@@ -228,25 +150,10 @@
           "default": "",
           "description": "Absolute Codex CLI executable path. Empty searches PATH."
         },
-        "hydra.maxConcurrentTasks": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 8,
-          "default": 2,
-          "description": "Maximum managed sessions, provider terminals and setup writers Hydra starts in this window."
-        },
         "hydra.worktreeRoot": {
           "type": "string",
           "default": "",
-          "description": "Absolute directory for task worktrees, outside the repository. Empty uses a sibling <repository>.worktrees folder."
-        },
-        "hydra.maxConcurrentProfileTasks": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 8,
-          "default": 2,
-          "scope": "application",
-          "description": "Maximum reserved task slots across participating Hydra windows in this local editor profile. Uncertain writers retain reservations until explicitly reconciled. This does not limit official clients, other profiles or escaped/nested workers."
+          "description": "Absolute directory for Hydra head worktrees, outside the repository. Empty uses a sibling <repository>.worktrees folder."
         },
         "hydra.maxConcurrentHelpers": {
           "type": "integer",

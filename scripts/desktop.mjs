@@ -351,9 +351,9 @@ export function brandedGettingStartedContent(text) {
 \t\t\t\t\tmedia: { type: 'markdown', path: 'empty' },
 \t\t\t\t},
 \t\t\t\t{
-\t\t\t\t\tid: 'hydraStartTask',
-\t\t\t\t\ttitle: localize('gettingStarted.hydraStartTask.title', "Start an agent task"),
-\t\t\t\t\tdescription: localize('gettingStarted.hydraStartTask.description.interpolated', "Give Hydra a focused task. The agent works in its own isolated worktree while your editor stays untouched.\\n{0}", Button(localize('gettingStarted.hydraStartTask.button', "New Task"), 'command:hydra.newTask')),
+\t\t\t\t\tid: 'hydraWatchHeads',
+\t\t\t\t\ttitle: localize('gettingStarted.hydraWatchHeads.title', "Watch your Hydra heads"),
+\t\t\t\t\tdescription: localize('gettingStarted.hydraWatchHeads.description.interpolated', "Ask Claude Code or Codex for something big: it splits the work across Hydra heads, each in its own worktree. Watch them in the Agents view.\\n{0}", Button(localize('gettingStarted.hydraWatchHeads.button', "Open Agents View"), 'command:hydra.openAgents')),
 \t\t\t\t\tmedia: { type: 'markdown', path: 'empty' },
 \t\t\t\t}
 \t\t\t]

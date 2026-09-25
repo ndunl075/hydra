@@ -1,5 +1,7 @@
 # Soft launch and turn budgets
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 Hydra can warn or hold new terminal launches and managed turns when recorded usage reaches an explicit task or project limit. Budgets default to off. Configure **Soft budgets** on a task, choose task/project and provider, enter positive limits, and save. Claude and Codex settings remain separate; a task hold or project hold can stop new work for its provider.
 
 ## Measurements and scope

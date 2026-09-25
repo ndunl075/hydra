@@ -194,7 +194,7 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
   // ---- heads already grouped above, by their lead.sessionId of `plan-<id>`. Only a  ----
   // ---- plan still being drafted (planning, draft or failed) gets its own node here. ----
   const plans: CanvasPlanNode[] = [];
-  for (const plan of (extras.plans || []).filter(plan => plan.state !== 'running' && plan.state !== 'done')) {
+  for (const plan of (extras.plans || []).filter(plan => plan.state !== 'running' && plan.state !== 'done' && plan.state !== 'incomplete')) {
     const jobById = new Map(plan.jobs.map(job => [job.key, job]));
     const planJobId = (key: string) => `${plan.id}:${key}`;
     const depthOf = new Map<string, number>();

@@ -12,6 +12,12 @@ import { createPlan, PlanStore, type PlanJob } from '../src/core/plans';
 import { PlanRunner, type PlanHeadLook } from '../src/core/planRunner';
 import type { GateRuntime } from '../src/core/gates';
 import { fakePtyModule } from './lanePtyFake';
+import { parseMessage } from '../src/core/model';
+import { JobStore } from '../src/core/jobs';
+import { HelperEndpoint, callHelperEndpoint } from '../src/core/helperEndpoint';
+import { HelperService } from '../src/core/helperService';
+import { laneGuidance, planJobAdvice, toolAllowed } from '../src/core/helperTools';
+import { createBridge, laneFromEnv } from '../src/core/mcpBridge';
 
 /** Plan lanes against real git (docs/Plan_Lanes_Plan.md): where a lane starts, what it hands on, and what it is measured from. */
 async function fixture(gates?: unknown) {
@@ -259,4 +265,69 @@ test('a stored lane\'s plan link, merged HEAD, close mode and gates commit are v
   assert.throws(() => validateLane(sample({ mergedHead: 'HEAD' })), /invalid merged commit/);
   assert.throws(() => validateLane(sample({ closedAs: 'burn' as never })), /invalid close mode/);
   assert.throws(() => validateLane(sample({ lastGates: { source: 'gates', at: '2026-09-25T10:00:00.000Z', results: [], commit: 'x' } })), /invalid gates commit/);
+});
+
+// ---- Wiring (phase 2): messages, hydra_job_ready and hydra_lanes ----
+
+test('parseMessage: planSaveJob with runAs, the new plan messages and the plan lane actions', () => {
+  const planId = 'abcdefabcdef', key = 'build-api';
+  assert.deepEqual(parseMessage({ type: 'planSaveJob', id: planId, key, title: 'API', brief: 'Build it', runAs: 'lane' }), { type: 'planSaveJob', id: planId, key, title: 'API', brief: 'Build it', provider: undefined, runAs: 'lane' });
+  assert.deepEqual(parseMessage({ type: 'planSaveJob', id: planId, key, title: 'API', brief: 'Build it' }), { type: 'planSaveJob', id: planId, key, title: 'API', brief: 'Build it', provider: undefined }, 'no runAs keeps the job as it is');
+  assert.throws(() => parseMessage({ type: 'planSaveJob', id: planId, key, title: 'API', brief: 'Build it', runAs: 'agent' }), /head or a lane/);
+  assert.deepEqual(parseMessage({ type: 'planRetryJobs', id: planId }), { type: 'planRetryJobs', id: planId });
+  for (const type of ['planCancelJob', 'planStartJob']) {
+    assert.deepEqual(parseMessage({ type, id: planId, key }), { type, id: planId, key });
+    assert.throws(() => parseMessage({ type, id: planId, key: 'Bad Key' }), /Invalid job key/);
+    assert.throws(() => parseMessage({ type, id: 'nope', key }), /Invalid plan ID/);
+  }
+  for (const action of ['markJobDone', 'cancelJob', 'showPlan']) assert.deepEqual(parseMessage({ type: 'laneAction', id: 'abcdef012345', action }), { type: 'laneAction', id: 'abcdef012345', action });
+});
+
+test('hydra_job_ready: a lead action for a plan lane only, which asks the user and never marks the job itself', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hydra-job-ready-'));
+  const store = new JobStore(path.join(root, 'jobs')); await store.load();
+  let service!: HelperService;
+  const endpoint = new HelperEndpoint((caller, tool, args, signal) => service.handle(caller, tool, args, signal));
+  const port = await endpoint.start();
+  const asked: [string, string | undefined][] = [];
+  service = new HelperService({
+    store, endpoint, leadFolder: root, leadKey: 'window', executable: async () => { throw new Error('unused'); },
+    startRun: () => { throw new Error('unused'); }, bridge: { command: 'x', args: [] }, logDirectory: path.join(root, 'logs'), maxConcurrent: () => 1, watchdogMs: 60_000,
+    lanes: { describe: async () => ({}), name: () => 'Build API', jobReady: async (lane, note) => { asked.push([lane, note]); return { asked: true }; } },
+  });
+  try {
+    const inLane = endpoint.issue({ role: 'lead', leadKey: 'window', leadSessionId: 'aaaaaaaaaaaa', lane: id });
+    assert.deepEqual((await callHelperEndpoint(port, inLane, 'hydra_job_ready', { note: '  The API is in src/api.ts.  ' })).result, { asked: true });
+    assert.deepEqual((await callHelperEndpoint(port, inLane, 'hydra_job_ready', {})).result, { asked: true });
+    assert.deepEqual(asked, [[id, 'The API is in src/api.ts.'], [id, undefined]]);
+    assert.match((await callHelperEndpoint(port, inLane, 'hydra_job_ready', { note: 'n'.repeat(2001) })).error || '', /at most 2000/);
+    const chat = endpoint.issue({ role: 'lead', leadKey: 'window', leadSessionId: 'bbbbbbbbbbbb' });
+    assert.match((await callHelperEndpoint(port, chat, 'hydra_job_ready', {})).error || '', /only in a Hydra lane that runs a plan job/);
+    assert.equal(toolAllowed('helper', 'hydra_job_ready'), false, 'a head can\'t call it');
+  } finally { await service.dispose(); await endpoint.close(); await rm(root, { recursive: true, force: true }); }
+  // The bridge lists it, and says how the job ends, only in a lane that runs a plan job.
+  const env = { HYDRA_HELPERS_DIR: path.join(root, 'none'), HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Build API', HYDRA_LANE_BRANCH: `lane/build-api-${id}` };
+  const names = async (extra: Record<string, string>) => ((await createBridge({ env: { ...env, ...extra }, cwd: root, version: 'test' }).handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as { result: { tools: { name: string }[] } }).result.tools.map(tool => tool.name);
+  assert.equal((await names({})).includes('hydra_job_ready'), false);
+  assert.equal((await names({ HYDRA_LANE_PLAN_JOB: '1' })).includes('hydra_job_ready'), true);
+  assert.deepEqual(laneFromEnv({ ...env, HYDRA_LANE_PLAN_JOB: '1' }), { id, name: 'Build API', branch: `lane/build-api-${id}`, planJob: true });
+  const init = await createBridge({ env: { ...env, HYDRA_LANE_PLAN_JOB: '1' }, cwd: root, version: 'test' }).handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: {} }) as { result: { instructions: string } };
+  assert.ok(init.result.instructions.endsWith(laneGuidance('Build API', `lane/build-api-${id}`, true)));
+  assert.ok(laneGuidance('Build API', `lane/build-api-${id}`, true).endsWith(planJobAdvice));
+  assert.match(planJobAdvice, /hydra_job_ready.*Never mark the job done yourself\./);
+});
+
+test('hydra_lanes names the plan job a lane runs, so other lanes\' agents know', async () => {
+  const f = await fixture();
+  try {
+    (f.service as unknown as { options: { planOf: (id: string) => unknown } }).options.planOf = laneId => laneId === planLane.id ? { title: 'Checkout', job: 'Build API', dependents: 2 } : undefined;
+    const planLane = await f.service.create({ name: 'Build API', provider: 'claude' }, { plan: link() });
+    const plain = await f.service.create({ name: 'Plain', provider: 'claude' });
+    const answer = await f.service.describe(plain.id);
+    const [first, second] = answer.lanes as { id: string; plan?: unknown }[];
+    assert.deepEqual([first!.id, first!.plan], [planLane.id, { title: 'Checkout', job: 'Build API', dependents: 2 }]);
+    assert.equal(second!.plan, undefined);
+    await f.service.unlinkPlan(planLane.id);
+    assert.equal(f.store.get(planLane.id)!.plan, undefined, 'Cancel job leaves an ordinary lane');
+  } finally { await f.close(); }
 });

@@ -85,7 +85,7 @@ test('the bridge picks the right window by folder, ignores dead windows, and exp
     const init = await lead.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }) as { result: { protocolVersion: string; instructions: string } };
     assert.equal(init.result.protocolVersion, '2025-11-25'); assert.match(init.result.instructions, /hydra_start_head/);
     const listed = await lead.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) as { result: { tools: { name: string }[] } };
-    assert.deepEqual(listed.result.tools.map(tool => tool.name), leadTools.map(tool => tool.name));
+    assert.deepEqual(listed.result.tools.map(tool => tool.name), leadTools.map(tool => tool.name).filter(name => name !== 'hydra_job_ready'), 'hydra_job_ready is only for a plan lane');
     const called = await lead.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hydra_list_heads', arguments: {} } }) as { result: { content: { text: string }[]; isError?: boolean } };
     assert.equal(called.result.isError, undefined); assert.match(called.result.content[0]!.text, /"window": "A"/);
     assert.equal(await lead.handle({ jsonrpc: '2.0', method: 'notifications/initialized' }), undefined);

@@ -37,6 +37,7 @@ export function buildHydraTree(lanes: readonly LaneView[], heads: readonly Helpe
   }));
   const planItems: TreePlanItem[] = livePlans(plans).map(plan => ({
     id: plan.id, label: plan.title, description: plan.state === 'running' ? `Running · ${plan.jobs.length} ${plan.jobs.length === 1 ? 'job' : 'jobs'}`
+      : plan.state === 'incomplete' ? 'Incomplete'
       : plan.state === 'planning' ? 'Planning…' : plan.state === 'failed' ? 'Planning failed' : `Draft · ${plan.jobs.length} ${plan.jobs.length === 1 ? 'job' : 'jobs'}`,
     state: plan.state,
   }));

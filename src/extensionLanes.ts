@@ -5,7 +5,7 @@ import { findProvider } from './core/providers';
 import { claudeStatus, codexStatus, providerPaths, type HelperServerSpec } from './core/helperRegistration';
 import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePty';
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
-import { LaneService } from './core/laneService';
+import { LaneService, maxOpenLanes } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
 import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesOutcome } from './core/gates';
 import type { JobCheckResult } from './core/jobs';
@@ -14,6 +14,11 @@ import { otherProvider, type LimitEvent } from './core/limitEvents';
 import { buildHandoff } from './core/limitHandoff';
 import { laneOfferButtons, laneOfferMessage, laneSwitchCountdownSeconds, LimitOfferTracker } from './core/limitOffer';
 import { openHandoffPreview, saveHandoff } from './extensionLimitOffer';
+// ---- Plan lanes (docs/Plan_Lanes_Plan.md). Their own block. ----
+import { laneNameFromTitle, type LanePlanLink } from './core/lanes';
+import type { LanePlanJobView } from './core/model';
+import type { Plan, PlanJob } from './core/plans';
+import type { PlanLaneLook, PlanLaneResultInput, PlanLaneStart } from './core/planRunner';
 
 /**
  * The editor side of Hydra lanes (docs/Lanes_And_Planner_Plan.md): commands,
@@ -35,6 +40,13 @@ export interface LanesHost {
   // ---- Gates (docs/Gates_Plan.md, "Lanes"): the same checked executable and limit awareness as HelperService's ----
   gatesExecutable(provider: Provider): Promise<string>;
   gatesLimited(provider: Provider): boolean;
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md): the plan job a lane runs, and what its plan actions do ----
+  /** The plan job this lane runs, with its status; undefined for an ordinary lane. */
+  planJob?(laneId: string): LanePlanJobView | undefined;
+  /** Mark job done: record what the lane hands on; the jobs after it start. */
+  markJobDone?(laneId: string, result: PlanLaneResultInput): Promise<void>;
+  /** Cancel job: the job is cancelled and the lane stays open, as an ordinary lane. */
+  cancelPlanJob?(laneId: string): Promise<void>;
 }
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
@@ -67,6 +79,8 @@ export class LanesController implements vscode.Disposable {
   // ---- The usage-limit banner (docs/Gates_Plan.md, section 2), one per lane at most ----
   private readonly limitOffers = new Map<string, LaneLimitOfferView & { event: LimitEvent }>();
   private readonly switchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Lanes whose agent called hydra_job_ready and whose prompt is still showing (decision 6). */
+  private readonly readyAsked = new Set<string>();
   /** Shared with registerLimitOffer's chat/head notifications, so "the other provider is limited too" sees every source. */
   constructor(private readonly host: LanesHost, private readonly limitTracker = new LimitOfferTracker()) {}
 
@@ -121,6 +135,7 @@ export class LanesController implements vscode.Disposable {
       gatesExecutable: provider => this.host.gatesExecutable(provider),
       gatesLimited: provider => this.host.gatesLimited(provider),
       gatesLogDirectory: path.join(storageDirectory, 'lanes', 'gates'),
+      planOf: id => { const job = this.planJobOf(id); return job ? { title: job.planTitle, job: job.jobTitle, dependents: job.dependents } : undefined; },
     });
     this.disposables.push(vscode.workspace.registerTextDocumentContentProvider(baseScheme, { provideTextDocumentContent: uri => this.baseContent(uri) }));
     this.service.activate();
@@ -151,7 +166,10 @@ export class LanesController implements vscode.Disposable {
 
   // ---- The Agents webview ----
 
-  state(): { lanes: LaneView[]; terminals: boolean } { return { lanes: this.service?.views() ?? [], terminals: !!this.ptyModule() }; }
+  state(): { lanes: LaneView[]; terminals: boolean } {
+    const lanes = (this.service?.views() ?? []).map(view => { const planJob = this.planJobOf(view.id); return planJob ? { ...view, planJob } : view; });
+    return { lanes, terminals: !!this.ptyModule() };
+  }
   private viewOf(id: string): LaneView | undefined { return this.service?.views().find(view => view.id === id); }
   private postState(force = false): void {
     const state = this.state(), text = JSON.stringify(state);
@@ -278,6 +296,71 @@ export class LanesController implements vscode.Disposable {
     this.postState(true);
   }
 
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
+
+  /** Whether this window has lanes at all (a trusted Git folder, started): without them a plan's lane jobs neither start nor fail. */
+  get available(): boolean { return !!this.service; }
+  /** The plan job a lane runs, while the lane still carries its plan link. */
+  private planJobOf(laneId: string): LanePlanJobView | undefined {
+    return this.service?.record(laneId)?.plan ? this.host.planJob?.(laneId) : undefined;
+  }
+  /** A lane as the plan runner sees it, closed or not, while the store keeps it. */
+  laneLook(id: string): PlanLaneLook | undefined {
+    const lane = this.service?.record(id);
+    return lane && { name: lane.name, state: lane.state, branch: lane.branch, baseCommit: lane.baseCommit, ...(lane.mergedHead ? { mergedHead: lane.mergedHead } : {}), ...(lane.closedAs ? { closedAs: lane.closedAs } : {}) };
+  }
+  /** Open lanes whose plan link names a job of this plan, for adopting a start whose record was never saved. */
+  planLanes(planId: string): { laneId: string; jobKey: string; attempt: number }[] {
+    return (this.service?.lanes() ?? []).filter(lane => lane.plan?.planId === planId).map(lane => ({ laneId: lane.id, jobKey: lane.plan!.jobKey, attempt: lane.plan!.attempt ?? 0 }));
+  }
+  /**
+   * Start a plan's lane job (docs/Plan_Lanes_Plan.md, "Starting a lane job"): named from the job's title,
+   * with its brief as the goal (the full brief in .hydra-job/brief.md), from the commit its dependencies
+   * handed on. With 24 lanes open it waits instead.
+   */
+  async startPlanLane(plan: Plan, job: PlanJob, start: PlanLaneStart, defaultProvider: Provider): Promise<{ laneId: string } | { wait: string }> {
+    const service = this.requireService();
+    if (!service.terminalsAvailable) throw new Error(terminalsUnavailable);
+    if (service.lanes().length >= maxOpenLanes) return { wait: `Waiting: ${maxOpenLanes} lanes are open.` };
+    const brief = job.brief.trim();
+    const goal = brief.length > laneGoalMax ? `${brief.slice(0, laneGoalMax - 1).trimEnd()}…` : brief;
+    const link: LanePlanLink = {
+      planId: plan.id, jobKey: job.key, planTitle: plan.title, jobTitle: job.title, ...(job.attempt ? { attempt: job.attempt } : {}),
+      ...(start.dependencies.length ? { startsFrom: start.dependencies.slice(0, 12).map(dependency => ({ title: dependency.title.slice(0, 80), commit: dependency.commit })) } : {}),
+      ...(job.writeScope?.length ? { writeScope: job.writeScope.slice(0, 32) } : {}),
+    };
+    const file = `# ${job.title}\n\nJob "${job.title}" of Hydra plan "${plan.title}". Hydra wrote this file for the lane; it is never committed.\n\n${brief}\n`;
+    const lane = await service.create({ name: laneNameFromTitle(job.title), provider: job.provider ?? defaultProvider, goal }, { ...(start.baseCommit ? { baseCommit: start.baseCommit } : {}), plan: link, brief: file });
+    this.postState(true);
+    return { laneId: lane.id };
+  }
+  /** Cancel job: the lane carries on as an ordinary lane. */
+  async unlinkPlan(id: string): Promise<void> {
+    await this.requireService().unlinkPlan(id);
+    this.postState(true);
+  }
+  /** A plan's jobs changed: the tiles' plan chips follow. */
+  planStatesChanged(): void { this.postState(); }
+  /**
+   * hydra_job_ready (decision 6): the lane's agent says its plan job is ready. You get a Mark job done
+   * prompt; Hydra never marks the job itself. Its note, if any, is the note's default.
+   */
+  async jobReady(laneId: string, note?: string): Promise<unknown> {
+    const lane = this.service?.get(laneId);
+    const job = lane ? this.planJobOf(laneId) : undefined;
+    if (!lane || !job) throw new Error('This lane doesn\'t run a plan job, so there is nothing to mark done.');
+    if (job.state === 'failed' || job.state === 'cancelled' || job.state === 'skipped') throw new Error(`Job ${job.jobTitle} has ended (${job.state}); it can't be marked done.`);
+    if (job.dependentsStarted) throw new Error(`Job ${job.jobTitle} is done, and the jobs after it have already started from its result.`);
+    if (this.readyAsked.has(laneId)) return { asked: true, message: 'The user already has a prompt to mark this job done. Wait for them.' };
+    this.readyAsked.add(laneId);
+    void vscode.window.showInformationMessage(`Lane ${lane.name} says job ${job.jobTitle} of plan ${job.planTitle} is ready.`, 'Mark job done', 'Show lane').then(async pick => {
+      this.readyAsked.delete(laneId);
+      if (pick === 'Mark job done') await this.action(laneId, 'markJobDone', true, note ? { message: note } : {});
+      else if (pick === 'Show lane') await this.show('lanes', laneId);
+    }, () => { this.readyAsked.delete(laneId); });
+    return { asked: true, message: 'Hydra asked the user to mark the job done. It never marks the job by itself: the user decides, and may merge the lane instead. Wait for them.' };
+  }
+
   /** `hydra.openLanes` / `hydra.openCanvas`: open the Agents view on that view, optionally focusing a lane or head. */
   async show(view: AgentsView, focus?: unknown): Promise<void> {
     const message: LaneServerMessage = { type: 'show', view, ...(typeof focus === 'string' && isLaneId(focus) ? { focus } : {}) };
@@ -389,19 +472,9 @@ export class LanesController implements vscode.Disposable {
         }
         // Gates (docs/Gates_Plan.md, "Merge"): after the commit-first refusals, before the merge
         // confirmation, when this project's gates.json says lanes: "onMerge" and there are gates.
-        const gatesConfig = await loadGates(lane.repository).catch(() => undefined);
-        let gatesNote = '';
-        if (gatesConfig && gatesConfig.lanes === 'onMerge' && gatesConfig.gates.length) {
-          const outcome = await this.runGatesFlow(service, lane, interactive);
-          if (!outcome) return undefined; // cancelled, or gates couldn't run and this was interactive
-          if (outcome.failed.length) {
-            if (!interactive) throw new Error(`Gates failed for lane ${lane.name}:\n${summarizeGateFailures(outcome.results)}`);
-            // Send to lane first: it's the default (Enter), so a quick Enter never merges failing work.
-            const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. Merge anyway?`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Send to lane', 'Merge anyway');
-            if (choice === 'Send to lane') { this.sendGatesToLane(service, lane, outcome.results); return undefined; }
-            if (choice !== 'Merge anyway') return undefined; // Cancel
-          } else gatesNote = ' Gates passed.';
-        }
+        const gated = await this.gatesBefore(service, lane, interactive, 'Merge anyway?', 'Merge anyway');
+        if (!gated) return undefined; // cancelled, sent to the lane, or gates couldn't run and this was interactive
+        const gatesNote = gated.note;
         if (interactive) {
           const pick = await vscode.window.showInformationMessage(`Merge lane ${lane.name} into ${lane.target}?`, { modal: true, detail: `${plural(check.commits, 'commit')}, ${plural(check.files, 'file')}. Merges cleanly.${gatesNote}` }, 'Merge');
           if (pick !== 'Merge') return undefined;
@@ -435,17 +508,21 @@ export class LanesController implements vscode.Disposable {
       }
       case 'close': {
         const kind = await service.closeKind(lane.id);
+        // Plan lanes (docs/Plan_Lanes_Plan.md, "Before you close"): closing before the job is done fails it.
+        const planJob = this.planJobOf(lane.id);
+        const planWarning = planJob?.state === 'active' && lane.state !== 'merged'
+          ? `This lane runs job ${planJob.jobTitle} of plan ${planJob.planTitle}. Closing it without marking the job done fails the job${planJob.dependents ? `, and ${plural(planJob.dependents, 'job')} that depend on it won't start` : ''}.\n\n` : '';
         let mode: CloseMode;
         if (!interactive) {
           if (options.close) mode = options.close;
           else if (kind === 'merged') mode = 'merged';
           else throw new Error(`Lane ${lane.name} isn't merged: pass close "keep" or "delete".`);
         } else if (kind === 'merged') {
-          const pick = await vscode.window.showInformationMessage(`Close lane ${lane.name}?`, { modal: true, detail: `Its terminal session ends, and its worktree and branch ${lane.branch} are removed. Its work is already in ${lane.target}.` }, 'Close lane');
+          const pick = await vscode.window.showInformationMessage(`Close lane ${lane.name}?`, { modal: true, detail: `${planWarning}Its terminal session ends, and its worktree and branch ${lane.branch} are removed. Its work is already in ${lane.target}.` }, 'Close lane');
           if (pick !== 'Close lane') return undefined;
           mode = 'merged';
         } else {
-          const pick = await vscode.window.showWarningMessage(`Close lane ${lane.name}? Its work isn't merged.`, { modal: true, detail: `Keep branch: commits any changes as "WIP: ${lane.name}", removes the worktree and keeps ${lane.branch}.\nDelete everything: removes the worktree and the branch, with all their changes.` }, 'Keep branch', 'Delete everything');
+          const pick = await vscode.window.showWarningMessage(`Close lane ${lane.name}? Its work isn't merged.`, { modal: true, detail: `${planWarning}Keep branch: commits any changes as "WIP: ${lane.name}", removes the worktree and keeps ${lane.branch}.\nDelete everything: removes the worktree and the branch, with all their changes.` }, 'Keep branch', 'Delete everything');
           if (!pick) return undefined;
           mode = pick === 'Keep branch' ? 'keep' : 'delete';
         }
@@ -470,7 +547,86 @@ export class LanesController implements vscode.Disposable {
         await vscode.commands.executeCommand('hydra.openEvidence', 'lane', lane.id);
         return undefined;
       }
+      // ---- Plan lanes (docs/Plan_Lanes_Plan.md, "What done means for a lane job" and "Failures") ----
+      case 'markJobDone': return this.markJobDone(service, lane, interactive, options);
+      case 'cancelJob': {
+        const job = this.planJobOf(lane.id);
+        if (!job) throw new Error(`Lane ${lane.name} doesn't run a plan job.`);
+        if (interactive) {
+          const waiting = job.dependents ? ` ${plural(job.dependents, 'job')} that depend on it won't start.` : '';
+          const pick = await vscode.window.showWarningMessage(`Cancel job ${job.jobTitle} of plan ${job.planTitle}?`, { modal: true, detail: `The lane stays open, as an ordinary lane.${waiting}` }, 'Cancel job');
+          if (pick !== 'Cancel job') return undefined;
+        }
+        if (!this.host.cancelPlanJob) throw new Error('Plans aren\'t ready in this window yet.');
+        await this.host.cancelPlanJob(lane.id);
+        this.postState(true);
+        return { cancelled: true };
+      }
+      case 'showPlan': {
+        const job = this.planJobOf(lane.id);
+        if (!job) throw new Error(`Lane ${lane.name} doesn't run a plan job.`);
+        await this.show('canvas', job.planId);
+        return undefined;
+      }
     }
+  }
+
+  /**
+   * Mark job done (docs/Plan_Lanes_Plan.md, "What done means for a lane job"): refuse a lane with uncommitted
+   * work (offering Commit…) or nothing to hand on; run the gates as Merge does; ask for a note for the next
+   * jobs (the commit subjects by default; Esc cancels); then record the lane's HEAD. The lane stays open.
+   * Pressing it again moves the result forward while no job after it has started (decision 3).
+   */
+  private async markJobDone(service: LaneService, lane: Lane, interactive: boolean, options: LaneActionOptions): Promise<unknown> {
+    const job = this.planJobOf(lane.id);
+    if (!job) throw new Error(`Lane ${lane.name} doesn't run a plan job.`);
+    if (job.state === 'failed' || job.state === 'cancelled' || job.state === 'skipped') throw new Error(`Job ${job.jobTitle} has ended; it can't be marked done.`);
+    if (job.dependentsStarted) throw new Error(`The jobs after ${job.jobTitle} have already started from ${job.commit ? job.commit.slice(0, 7) : 'its result'}, so its result can't move.`);
+    if (options.message !== undefined && options.message.length > 2000) throw new Error('The note must be at most 2000 characters.');
+    if (!this.host.markJobDone) throw new Error('Plans aren\'t ready in this window yet.');
+    const work = await service.handOn(lane.id);
+    if (!work.ok) {
+      if (!interactive) throw new Error(work.message);
+      if (work.reason === 'nothing') { void vscode.window.showInformationMessage(work.message); return undefined; }
+      const pick = await vscode.window.showWarningMessage(work.message, { modal: true }, 'Commit…');
+      if (pick !== 'Commit…') return undefined;
+      const committed = await this.run(service, lane, 'commit', true, {}) as { commit?: string } | undefined;
+      return committed?.commit ? this.markJobDone(service, service.get(lane.id) ?? lane, true, options) : undefined;
+    }
+    const gated = await this.gatesBefore(service, lane, interactive, 'Mark the job done anyway?', 'Mark done anyway');
+    if (!gated) return undefined;
+    let note = options.message;
+    if (interactive) {
+      note = await vscode.window.showInputBox({
+        title: `Mark job ${job.jobTitle} done`, prompt: 'What should the next jobs know? (optional)', value: options.message ?? work.subjects.join('; ').slice(0, 2000), ignoreFocusOut: true,
+        validateInput: value => value.length <= 2000 && !value.includes('\0') ? undefined : 'Keep the note under 2000 characters.',
+      });
+      if (note === undefined) return undefined; // Esc cancels
+    }
+    await this.host.markJobDone(lane.id, { commit: work.commit, ...(note?.trim() ? { note: note.trim() } : {}), changedFiles: work.changedFiles });
+    this.postState(true);
+    if (interactive) void vscode.window.showInformationMessage(`Job ${job.jobTitle} is done at ${work.commit.slice(0, 7)}.${gated.note} The jobs after it can start.`);
+    return { commit: work.commit };
+  }
+
+  /**
+   * The gates before Merge or Mark job done (docs/Gates_Plan.md, "Merge"; docs/Plan_Lanes_Plan.md, section 3), when
+   * gates.json says lanes "onMerge" and there are gates. A passing run on the lane's current commit is reused
+   * instead of run again. If they fail: Send to lane (the default, so a quick Enter never hands on failing
+   * work), `anyway`, or Cancel. Undefined means stop; `note` is what the confirmation adds.
+   */
+  private async gatesBefore(service: LaneService, lane: Lane, interactive: boolean, question: string, anyway: string): Promise<{ note: string } | undefined> {
+    const gatesConfig = await loadGates(lane.repository).catch(() => undefined);
+    if (!gatesConfig || gatesConfig.lanes !== 'onMerge' || !gatesConfig.gates.length) return { note: '' };
+    const reused = await service.reusableGates(lane.id).catch(() => undefined);
+    if (reused?.commit) return { note: ` Gates passed on ${reused.commit.slice(0, 7)} at ${new Date(reused.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` };
+    const outcome = await this.runGatesFlow(service, lane, interactive);
+    if (!outcome) return undefined; // cancelled, or gates couldn't run and this was interactive
+    if (!outcome.failed.length) return { note: ' Gates passed.' };
+    if (!interactive) throw new Error(`Gates failed for lane ${lane.name}:\n${summarizeGateFailures(outcome.results)}`);
+    const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. ${question}`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Send to lane', anyway);
+    if (choice === 'Send to lane') { this.sendGatesToLane(service, lane, outcome.results); return undefined; }
+    return choice === anyway ? { note: '' } : undefined; // Cancel
   }
 
   /**

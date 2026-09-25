@@ -1,5 +1,6 @@
 import type { Lane } from './lanes';
-import type { Plan } from './plans';
+import type { Plan, PlanJobRunAs } from './plans';
+import type { PlanJobStatus, PlanJobView } from './planRunner';
 import type { HeadCheckView, JobCheckResult } from './jobs';
 export type { HeadCheckView } from './jobs';
 
@@ -39,6 +40,8 @@ export interface Snapshot {
   defaultProvider?: Provider;
   /** Finished-head ids the tray's Clear button has dismissed (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"); a new finished head still shows up. */
   dismissedTray?: string[];
+  /** Plan lanes (docs/Plan_Lanes_Plan.md): each plan's job statuses, by plan id, for plans that have run. Also sent with every `plans` message. */
+  planJobs?: Record<string, PlanJobView[]>;
 }
 export type ClientMessage =
   | LaneClientMessage
@@ -56,10 +59,13 @@ export type ClientMessage =
   | { type: 'planCreate'; title: string; brief: string }
   | { type: 'planCreateEmpty'; title: string }
   | { type: 'planRetry' | 'planCancel' | 'planDelete' | 'planAddJob' | 'planRun' | 'planStartEmpty'; id: string }
-  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider }
+  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider; runAs?: PlanJobRunAs }
   | { type: 'planDeleteJob'; id: string; key: string }
   | { type: 'planDependsOn'; id: string; key: string }
-  | { type: 'planAddDependency' | 'planRemoveDependency'; id: string; key: string; dependsOn: string };
+  | { type: 'planAddDependency' | 'planRemoveDependency'; id: string; key: string; dependsOn: string }
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md): Retry failed jobs on an incomplete plan; Cancel job and Start lane on a job's node ----
+  | { type: 'planRetryJobs'; id: string }
+  | { type: 'planCancelJob' | 'planStartJob'; id: string; key: string };
 
 export function parseMessage(value: unknown): ClientMessage {
   if (!value || typeof value !== 'object') throw new Error('Invalid message.');
@@ -99,7 +105,11 @@ export function parseMessage(value: unknown): ClientMessage {
   if (type === 'planCreate') return { type, title: string('title', 200), brief: string('brief', 8000) };
   if (type === 'planCreateEmpty') return { type, title: string('title', 200) };
   if (type === 'planRetry' || type === 'planCancel' || type === 'planDelete' || type === 'planAddJob' || type === 'planRun' || type === 'planStartEmpty') return { type, id: planId() };
-  if (type === 'planSaveJob') return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider() };
+  if (type === 'planSaveJob') {
+    const runAs = message.runAs;
+    if (runAs !== undefined && runAs !== 'head' && runAs !== 'lane') throw new Error('A job runs as a head or a lane.');
+    return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider(), ...(runAs ? { runAs } : {}) };
+  }
   if (type === 'planDeleteJob') return { type, id: planId(), key: jobKey() };
   if (type === 'planDependsOn') return { type, id: planId(), key: jobKey() };
   if (type === 'planAddDependency' || type === 'planRemoveDependency') {
@@ -108,6 +118,8 @@ export function parseMessage(value: unknown): ClientMessage {
     if (dependsOn === key) throw new Error('A job cannot depend on itself.');
     return { type, id, key, dependsOn };
   }
+  if (type === 'planRetryJobs') return { type, id: planId() };
+  if (type === 'planCancelJob' || type === 'planStartJob') return { type, id: planId(), key: jobKey() };
   throw new Error('Unknown command.');
 }
 
@@ -124,10 +136,21 @@ export interface LaneSyncView {
   checkedAt: string;
   error?: string;
 }
-/** A lane as the webview shows it: the record, its last sync, and whether its terminal is alive. */
-export type LaneView = Lane & { sync?: LaneSyncView; running: boolean };
-export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh' | 'switchProvider' | 'runGates' | 'evidence';
-export const laneActions: readonly LaneAction[] = ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh', 'switchProvider', 'runGates', 'evidence'];
+/**
+ * The plan job a lane runs, as the tile shows it (docs/Plan_Lanes_Plan.md, section 5): the chip
+ * "Plan · Checkout › Build API", and "Job done · a1b2c3d" once `state` is done. `dependents` jobs
+ * wait for it; `dependentsStarted` have started from its result, which then can't move.
+ */
+export interface LanePlanJobView {
+  planId: string; planTitle: string; jobKey: string; jobTitle: string; state: PlanJobStatus;
+  commit?: string; dependents: number; dependentsStarted: number;
+}
+/** A lane as the webview shows it: the record, its last sync, whether its terminal is alive and, for a plan lane, its job. */
+export type LaneView = Lane & { sync?: LaneSyncView; running: boolean; planJob?: LanePlanJobView };
+export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh' | 'switchProvider' | 'runGates' | 'evidence'
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 5) ----
+  | 'markJobDone' | 'cancelJob' | 'showPlan';
+export const laneActions: readonly LaneAction[] = ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh', 'switchProvider', 'runGates', 'evidence', 'markJobDone', 'cancelJob', 'showPlan'];
 export type AgentsView = 'canvas' | 'lanes';
 
 /** The lane tile's usage-limit banner (docs/Gates_Plan.md, section 2). Buttons match src/core/limitOffer.ts's LaneOfferButtonId. */

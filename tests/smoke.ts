@@ -289,6 +289,46 @@ export async function run(): Promise<void> {
     }
   }
   if (repository && process.env.HYDRA_TEST_FIXTURE) await laneSmoke(repository, process.env.HYDRA_TEST_FIXTURE);
+  if (repository && process.env.HYDRA_TEST_FIXTURE) await planLaneSmoke(process.env.HYDRA_TEST_FIXTURE);
+}
+
+/**
+ * Plan lanes (docs/Plan_Lanes_Plan.md, "Smoke"): lane job A runs the harmless lane command, and head job B
+ * depends on it. Run plan starts A's lane and not B; after a commit in A, Mark job done creates B, which
+ * starts from A's HEAD. (Refusing a plan with a lane job without terminals is unit-tested: this host has them.)
+ */
+async function planLaneSmoke(fixture: string): Promise<void> {
+  type LaneState = { terminals: boolean; lanes: LaneView[] };
+  process.env.HYDRA_TEST_LANE_COMMAND = path.join(fixture, process.platform === 'win32' ? 'lane.cmd' : 'lane.sh');
+  try {
+    const plan: Plan = { ...createPlan({ title: 'Smoke plan' }), jobs: [
+      { key: 'schema', title: 'Schema', brief: 'Add the schema.', dependsOn: [], runAs: 'lane' },
+      { key: 'api', title: 'API', brief: 'Build the API on the schema.', dependsOn: ['schema'], writeScope: ['src/'] },
+    ] };
+    await vscode.commands.executeCommand('hydra.plans.save', plan);
+    const running = await vscode.commands.executeCommand<Plan>('hydra.plans.run', plan.id);
+    const schema = running.jobs.find(job => job.key === 'schema')!;
+    assert.equal(running.state, 'running');
+    assert.match(schema.laneId ?? '', /^[a-f0-9]{12}$/, 'Run plan starts the lane job');
+    assert.equal(running.jobs.find(job => job.key === 'api')!.jobId, undefined, 'the head after it isn\'t created yet');
+    const lane = (await vscode.commands.executeCommand<LaneState>('hydra.lanes.list')).lanes.find(item => item.id === schema.laneId)!;
+    assert.deepEqual([lane.plan?.jobKey, lane.planJob?.jobTitle, lane.planJob?.state], ['schema', 'Schema', 'active']);
+    assert.match(await readFile(path.join(lane.worktree, '.hydra-job', 'brief.md'), 'utf8'), /Add the schema\./);
+    await writeFile(path.join(lane.worktree, 'schema.sql'), 'create table items (id int);\n');
+    await git(lane.worktree, ['add', '-A']); await git(lane.worktree, ['commit', '-q', '-m', 'Add the schema']);
+    const head = (await git(lane.worktree, ['rev-parse', 'HEAD'])).trim();
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.lanes.action', lane.id, 'markJobDone', { message: 'The schema is in schema.sql.' }), { commit: head });
+    const after = (await vscode.commands.executeCommand<Plan[]>('hydra.plans.list')).find(item => item.id === plan.id)!;
+    assert.deepEqual([after.jobs[0]!.result?.commit, after.jobs[0]!.result?.note], [head, 'The schema is in schema.sql.']);
+    const api = after.jobs.find(job => job.key === 'api')!;
+    assert.match(api.jobId ?? '', /^[a-f0-9]{12}$/, 'Mark job done creates the head');
+    const created = (await vscode.commands.executeCommand<{ id: string; baseCommit?: string; lead?: { sessionId: string } }[]>('hydra.listHelpers')).find(item => item.id === api.jobId)!;
+    assert.equal(created.baseCommit, head, 'the head starts from the lane\'s HEAD');
+    assert.equal(created.lead?.sessionId, `plan-${plan.id}`);
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.lanes.action', lane.id, 'close', { close: 'delete' }), { closed: true, mode: 'delete' });
+    assert.equal((await vscode.commands.executeCommand<Plan[]>('hydra.plans.list')).find(item => item.id === plan.id)!.jobs[0]!.outcome, undefined, 'a job that is done stays done when its lane closes');
+  } finally { delete process.env.HYDRA_TEST_LANE_COMMAND; }
+  console.log('PASS: a plan starts its lane job, Mark job done hands the lane\'s HEAD on, and the head after it starts from it.');
 }
 
 /**

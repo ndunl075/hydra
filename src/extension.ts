@@ -38,14 +38,21 @@ import { LanesController, isLaneMessage } from './extensionLanes';
 import { HydraTreeProvider } from './extensionTree';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
-import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
+import { createPlan, maxPlanJobs, PlanStore, type Plan, type PlanJob } from './core/plans';
 import { planBrief } from './core/planner';
+// ---- Plan lanes (docs/Plan_Lanes_Plan.md). Their own block. ----
+import { cycleMessage, dependentsOf, findCycle, jobRunAs, jobStarted, planIdPattern, planJobKeyPattern, type PlanJobRunAs } from './core/plans';
+import { planHeadKey, PlanRunner, type PlanJobView, type PlanLaneResultInput } from './core/planRunner';
+import type { LanePlanJobView } from './core/model';
 // ---- Gates (docs/Gates_Plan.md). Their own block. ----
 import { otherStillLimited } from './core/limitOffer';
 import { toHeadCheckView } from './core/jobs';
 import { buildEvidenceMarkdown } from './core/evidence';
 
 let manager: Manager | undefined;
+// ---- Plan lanes (docs/Plan_Lanes_Plan.md): arguments of the hydra.plans.* test commands ----
+const planIdArgument = (value: unknown): string => { if (typeof value !== 'string' || !planIdPattern.test(value)) throw new Error('Pass a plan id.'); return value; };
+const jobKeyArgument = (value: unknown): string => { if (typeof value !== 'string' || !planJobKeyPattern.test(value)) throw new Error('Pass a job key.'); return value; };
 /** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
 function otherHydraSettings(context: vscode.ExtensionContext): string[] {
   return settingsRequiringRefresh([context.extension.packageJSON?.contributes?.configuration].flat().flatMap((section: { properties?: Record<string, unknown> } | undefined) => Object.keys(section?.properties || {})));
@@ -77,6 +84,8 @@ class Manager {
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own store, and the brief-planning ----
   // ---- CLI runs in flight (by plan id), so Cancel and window close can abort them. ----
   private plans?: { store: PlanStore; planning: Map<string, AbortController> };
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md): runs plans whose jobs are heads or lanes ----
+  private planRunner?: PlanRunner;
   private readonly leadKey: string;
   private snapshotGeneration = 0;
   private handoff?: Handoff;
@@ -128,6 +137,10 @@ class Manager {
       changed: () => this.laneFoldersChanged(),
       gatesExecutable: provider => this.helperExecutable(provider),
       gatesLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
+      // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
+      planJob: laneId => this.planJobOfLane(laneId),
+      markJobDone: (laneId, result) => this.markPlanJobDone(laneId, result),
+      cancelPlanJob: laneId => this.cancelPlanJobOfLane(laneId),
     }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
     const storedDismissed = context.workspaceState.get<string[]>(this.dismissedTrayKey);
@@ -170,6 +183,11 @@ class Manager {
     command('hydra.plans.list', () => structuredClone(this.plans?.store.list() ?? []));
     command('hydra.plans.save', async (plan: unknown) => { const saved = await this.requirePlans().store.save(plan as Plan); this.plansChanged(); return saved; });
     command('hydra.plans.run', async (id: unknown) => { await this.runPlanById(String(id)); return structuredClone(this.requirePlans().store.get(String(id))); });
+    // ---- Plan lanes (docs/Plan_Lanes_Plan.md): test and automation commands, never asking anything ----
+    command('hydra.plans.status', (id: unknown) => structuredClone(this.requirePlanRunner().statuses(planIdArgument(id)) ?? []));
+    command('hydra.plans.retry', async (id: unknown) => { await this.requirePlanRunner().retry(planIdArgument(id)); return structuredClone(this.requirePlans().store.get(planIdArgument(id))); });
+    command('hydra.plans.cancelJob', async (id: unknown, key: unknown) => { await this.requirePlanRunner().cancelJob(planIdArgument(id), jobKeyArgument(key), 'Cancelled.'); return structuredClone(this.requirePlans().store.get(planIdArgument(id))); });
+    command('hydra.plans.startJob', async (id: unknown, key: unknown) => { await this.requirePlanRunner().startJob(planIdArgument(id), jobKeyArgument(key)); return structuredClone(this.requirePlans().store.get(planIdArgument(id))); });
     command('hydra.helperConnections', () => this.helperConnections());
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
@@ -347,7 +365,9 @@ class Manager {
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
       lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id),
         // Gates plan, section 3: a lane's heads branch from the lane's HEAD.
-        worktree: id => this.lanes.state().lanes.find(lane => lane.id === id)?.worktree },
+        worktree: id => this.lanes.state().lanes.find(lane => lane.id === id)?.worktree,
+        // Plan lanes (docs/Plan_Lanes_Plan.md, decision 6): a plan lane's agent asks you to mark its job done.
+        jobReady: (laneId, note) => this.lanes.jobReady(laneId, note) },
       // ---- Gates (docs/Gates_Plan.md) ----
       providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
     });
@@ -362,7 +382,9 @@ class Manager {
     const planStore = new PlanStore(path.join(this.storageDirectory, 'plans'));
     await planStore.load();
     this.plans = { store: planStore, planning: new Map() };
-    await this.finishDonePlans();
+    // Plan lanes: the runner picks up running plans; a lane job that is ready now waits for Start lane.
+    this.planRunner = this.createPlanRunner(planStore, service, leadFolder);
+    await this.planRunner.advanceAll({ startup: true }).catch(error => this.output.appendLine(`[plans] ${this.describe(error)}`));
     this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list() });
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
@@ -378,6 +400,8 @@ class Manager {
    */
   private laneFoldersChanged(): void {
     this.tree.update({ lanes: this.lanes.state().lanes });
+    // Plan lanes: a lane merged, marked, closed or started may move its plan along.
+    this.planRunner?.advanceSoon();
     const discovery = this.discovery;
     if (!discovery) return;
     const worktrees = this.lanes.openWorktrees(), key = JSON.stringify(worktrees);
@@ -531,6 +555,7 @@ class Manager {
     await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(file));
   }
   private async stopHelpers(): Promise<void> {
+    this.planRunner?.dispose(); this.planRunner = undefined;
     const plans = this.plans; this.plans = undefined;
     for (const controller of plans?.planning.values() ?? []) controller.abort();
     const helpers = this.helpers; this.helpers = undefined;
@@ -615,20 +640,9 @@ class Manager {
     const heads = this.headViews() ?? [];
     void this.broadcast({ type: 'heads', heads }).catch(() => undefined);
     this.tree.update({ heads });
-    void this.finishDonePlans().catch(error => this.report(error));
+    // Plan lanes: the runner moves running plans along (it also makes them done or incomplete).
+    this.planRunner?.advanceSoon();
     this.publishSoon();
-  }
-  /** A running plan whose every head is done becomes done. */
-  private async finishDonePlans(): Promise<void> {
-    const plans = this.plans, store = this.helpers?.store;
-    if (!plans || !store) return;
-    let changed = false;
-    for (const plan of plans.store.list()) {
-      if (plan.state !== 'running' || !allJobsDone(plan, id => store.get(id)?.state)) continue;
-      await plans.store.save({ ...plan, state: 'done' });
-      changed = true;
-    }
-    if (changed) this.plansChanged();
   }
   private publishSoon(): void {
     if (this.publishTimer) clearTimeout(this.publishTimer);
@@ -645,6 +659,7 @@ class Manager {
       helpers: this.headViews(), plans: this.plans?.store.list(), defaultProvider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude'),
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       dismissedTray: [...this.dismissedTrayIds],
+      planJobs: this.planJobViews(),
     };
     await this.broadcast({ type: 'snapshot', snapshot });
   }
@@ -652,8 +667,9 @@ class Manager {
   /** Plan changes go to the webview at once (mirrors headsChanged); the full snapshot follows, debounced. */
   private plansChanged(): void {
     const plans = this.plans?.store.list() ?? [];
-    void this.broadcast({ type: 'plans', plans }).catch(() => undefined);
+    void this.broadcast({ type: 'plans', plans, planJobs: this.planJobViews() }).catch(() => undefined);
     this.tree.update({ plans });
+    this.lanes.planStatesChanged();
     this.publishSoon();
   }
   private requirePlans(): { store: PlanStore; planning: Map<string, AbortController> } {
@@ -749,36 +765,44 @@ class Manager {
   }
   private async planDelete(id: string): Promise<void> {
     const plans = this.requirePlans();
+    // Plan lanes (docs/Plan_Lanes_Plan.md, section 4): deleting a plan that ran asks first, and stops nothing.
+    const current = plans.store.get(id);
+    if (current && (current.state === 'running' || current.state === 'incomplete')) {
+      const pick = await vscode.window.showWarningMessage(`Delete plan ${current.title}?`, { modal: true, detail: 'Its heads and lanes keep going; they are no longer part of a plan.' }, 'Delete plan');
+      if (pick !== 'Delete plan') return;
+    }
     plans.planning.get(id)?.abort();
     plans.planning.delete(id);
     await plans.store.remove(id);
     this.plansChanged();
   }
+  /** + Job. On a plan that has run (decision 5) the new job waits for Run plan, so a half-written job never starts by itself. */
   private async planAddJob(id: string): Promise<void> {
-    const plans = this.requirePlans();
-    const plan = plans.store.get(id);
-    if (!plan) throw new Error(`No plan ${id}.`);
-    if (plan.jobs.length >= maxPlanJobs) throw new Error(`A plan may have at most ${maxPlanJobs} jobs.`);
-    let index = plan.jobs.length + 1, key = `job-${index}`;
-    while (plan.jobs.some(job => job.key === key)) key = `job-${++index}`;
-    const job: PlanJob = { key, title: 'New job', brief: 'Describe what this job should do.', dependsOn: [] };
-    await plans.store.save({ ...plan, jobs: [...plan.jobs, job] });
-    this.plansChanged();
+    await this.editPlan(id, plan => {
+      if (plan.state === 'done' || plan.state === 'planning') throw new Error(plan.state === 'done' ? 'This plan is done.' : 'This plan is still being drafted.');
+      if (plan.jobs.length >= maxPlanJobs) throw new Error(`A plan may have at most ${maxPlanJobs} jobs.`);
+      let index = plan.jobs.length + 1, key = `job-${index}`;
+      while (plan.jobs.some(job => job.key === key)) key = `job-${++index}`;
+      const ran = plan.state === 'running' || plan.state === 'incomplete';
+      const job: PlanJob = { key, title: 'New job', brief: 'Describe what this job should do.', dependsOn: [], ...(ran ? { draft: true } : {}) };
+      return { ...plan, jobs: [...plan.jobs, job] };
+    });
   }
-  private async planSaveJob(id: string, key: string, title: string, brief: string, provider?: Provider): Promise<void> {
-    const plans = this.requirePlans();
-    const plan = plans.store.get(id);
-    if (!plan?.jobs.some(job => job.key === key)) throw new Error(`No job "${key}" in this plan.`);
-    await plans.store.save({ ...plan, jobs: plan.jobs.map(job => job.key === key ? { ...job, title, brief, provider } : job) });
-    this.plansChanged();
+  private async planSaveJob(id: string, key: string, title: string, brief: string, provider?: Provider, runAs?: PlanJobRunAs): Promise<void> {
+    await this.editPlan(id, plan => {
+      const job = plan.jobs.find(item => item.key === key);
+      if (!job) throw new Error(`No job "${key}" in this plan.`);
+      // A job that has started keeps what drives it (docs/Plan_Lanes_Plan.md, "Editing").
+      if (runAs && runAs !== jobRunAs(job) && jobStarted(job)) throw new Error(`Job ${job.title} has started, so it can't switch between Head and Lane.`);
+      return { ...plan, jobs: plan.jobs.map(item => item.key === key ? { ...item, title, brief, provider, ...(runAs ? { runAs } : {}) } : item) };
+    });
   }
   private async planDeleteJob(id: string, key: string): Promise<void> {
-    const plans = this.requirePlans();
-    const plan = plans.store.get(id);
-    if (!plan) throw new Error(`No plan ${id}.`);
-    const jobs = plan.jobs.filter(job => job.key !== key).map(job => ({ ...job, dependsOn: job.dependsOn.filter(dependency => dependency !== key) }));
-    await plans.store.save({ ...plan, jobs });
-    this.plansChanged();
+    await this.editPlan(id, plan => {
+      const job = plan.jobs.find(item => item.key === key);
+      if (job && jobStarted(job) && plan.state !== 'draft' && plan.state !== 'failed') throw new Error(`Job ${job.title} has started; cancel it instead.`);
+      return { ...plan, jobs: plan.jobs.filter(item => item.key !== key).map(item => ({ ...item, dependsOn: item.dependsOn.filter(dependency => dependency !== key) })) };
+    });
   }
   /** "Depends on…": a native multi-select quick pick of the plan's other jobs. */
   private async planDependsOn(id: string, key: string): Promise<void> {
@@ -793,46 +817,126 @@ class Manager {
     );
     if (picked === undefined) return; // Esc: leave it as it was
     const dependsOn = picked.map(item => item.description!);
-    await plans.store.save({ ...plan, jobs: plan.jobs.map(item => item.key === key ? { ...item, dependsOn } : item) });
-    this.plansChanged();
+    await this.editPlan(id, current => this.withDependencies(current, key, () => dependsOn));
   }
   private async planAddDependency(id: string, key: string, dependsOn: string): Promise<void> {
-    const plans = this.requirePlans();
-    const plan = plans.store.get(id);
-    if (!plan?.jobs.some(job => job.key === key) || !plan.jobs.some(job => job.key === dependsOn)) throw new Error('Unknown job.');
-    await plans.store.save({ ...plan, jobs: plan.jobs.map(job => job.key === key && !job.dependsOn.includes(dependsOn) ? { ...job, dependsOn: [...job.dependsOn, dependsOn] } : job) });
-    this.plansChanged();
+    await this.editPlan(id, plan => {
+      if (!plan.jobs.some(job => job.key === key) || !plan.jobs.some(job => job.key === dependsOn)) throw new Error('Unknown job.');
+      return this.withDependencies(plan, key, current => current.includes(dependsOn) ? current : [...current, dependsOn]);
+    });
   }
   private async planRemoveDependency(id: string, key: string, dependsOn: string): Promise<void> {
+    await this.editPlan(id, plan => this.withDependencies(plan, key, current => current.filter(dependency => dependency !== dependsOn)));
+  }
+  /** Run plan: the plan runner starts every job that is ready, dependencies first (docs/Plan_Lanes_Plan.md, section 2). Running it again starts only jobs added since. */
+  private async runPlanById(id: string): Promise<void> {
+    if (!this.helpers) throw new Error('Hydra heads are not ready in this window yet.');
+    await this.requirePlanRunner().run(id);
+  }
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md): the runner, its lookups, and the plan actions ----
+  private requirePlanRunner(): PlanRunner {
+    if (!this.planRunner) throw new Error('Hydra plans are not ready in this window yet.');
+    return this.planRunner;
+  }
+  /**
+   * Change a plan in place, on the plan runner's queue for that plan, so an edit and a job being
+   * started never overwrite each other.
+   */
+  private async editPlan(id: string, change: (plan: Plan) => Plan | undefined): Promise<void> {
     const plans = this.requirePlans();
-    const plan = plans.store.get(id);
-    if (!plan) throw new Error(`No plan ${id}.`);
-    await plans.store.save({ ...plan, jobs: plan.jobs.map(job => job.key === key ? { ...job, dependsOn: job.dependsOn.filter(dependency => dependency !== dependsOn) } : job) });
+    const work = async () => { if (!await plans.store.update(id, change)) throw new Error(`No plan ${id}.`); };
+    await (this.planRunner ? this.planRunner.withPlan(id, work) : work());
     this.plansChanged();
   }
-  /** Run plan: start every not-yet-started job in dependency order, under lead `plan-<id>` so the heads group under the plan node (jobs.jobId makes this idempotent). */
-  private async runPlanById(id: string): Promise<void> {
-    const plans = this.requirePlans(), helpers = this.helpers;
-    if (!helpers) throw new Error('Hydra heads are not ready in this window yet.');
-    const plan = plans.store.get(id);
-    if (!plan) throw new Error(`No plan ${id}.`);
-    if (plan.state === 'planning') throw new Error('This plan is still being drafted.');
-    if (plan.state === 'done') throw new Error('This plan is already done.');
-    const defaultProvider: Provider = vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude');
-    const updated = await runPlan(plan, async (job, dependsOn) => {
-      const result = await helpers.service.handle(
-        { role: 'lead', leadKey: this.leadKey, leadSessionId: `plan-${plan.id}` }, 'hydra_start_head',
-        {
+  /** A job's new dependencies. Once a plan has run, a job that started keeps its own, and no edit may make a cycle. */
+  private withDependencies(plan: Plan, key: string, change: (current: string[]) => string[]): Plan {
+    const job = plan.jobs.find(item => item.key === key);
+    if (!job) throw new Error(`No job "${key}" in this plan.`);
+    const ran = plan.state !== 'draft' && plan.state !== 'failed' && plan.state !== 'planning';
+    if (ran && jobStarted(job)) throw new Error(`Job ${job.title} has started, so what it depends on can't change.`);
+    const next = { ...plan, jobs: plan.jobs.map(item => item.key === key ? { ...item, dependsOn: change(item.dependsOn) } : item) };
+    const cycle = ran ? findCycle(next.jobs) : undefined;
+    if (cycle) throw new Error(cycleMessage(next.jobs, cycle));
+    return next;
+  }
+  private createPlanRunner(store: PlanStore, service: HelperService, leadFolder: string): PlanRunner {
+    const jobs = this.helpers!.store;
+    const defaultProvider = (): Provider => vscode.workspace.getConfiguration('hydra').get<string>('defaultProvider', 'claude') === 'codex' ? 'codex' : 'claude';
+    const lines = (text: string) => text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    return new PlanRunner({
+      store, repository: leadFolder,
+      look: {
+        head: id => { const job = jobs.get(id); return job && { state: job.state, title: job.title, ...(job.limitHit ? { limitHit: true } : {}), ...(job.reason ? { reason: job.reason } : {}), ...(job.branch ? { branch: job.branch } : {}), ...(job.result ? { result: { commit: job.result.commit, summary: job.result.summary, changedFiles: job.result.changedFiles } } : {}) }; },
+        lane: id => this.lanes.laneLook(id),
+        planLanes: planId => this.lanes.planLanes(planId),
+        lanesAvailable: () => this.lanes.available,
+      },
+      // A plan's heads group under its lead `plan-<id>`; a retried head gets a new idempotency key.
+      startHead: async (plan, job, dependsOn, inputs) => {
+        const result = await service.startForPlan({
           title: job.title, brief: job.brief, write_scope: job.writeScope?.length ? job.writeScope : [''],
-          provider: job.provider ?? defaultProvider, idempotency_key: `plan-${plan.id}-${job.key}`,
-          depends_on: dependsOn, lead_label: `Plan · ${plan.title}`,
-        },
-        new AbortController().signal,
-      ) as { job_id: string };
-      return { jobId: result.job_id };
+          provider: job.provider ?? defaultProvider(), idempotency_key: planHeadKey(plan, job),
+          depends_on: dependsOn, lead_label: `Plan · ${plan.title}`.slice(0, 60),
+        }, `plan-${plan.id}`, inputs) as { job_id: string };
+        return { jobId: result.job_id };
+      },
+      startLane: (plan, job, start) => this.lanes.startPlanLane(plan, job, start, defaultProvider()),
+      cancelHead: async (jobId, reason) => { await service.handle({ role: 'lead', leadKey: this.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason }, new AbortController().signal); },
+      unlinkLane: id => this.lanes.unlinkPlan(id),
+      commitSubjects: async (from, to) => lines(await git(leadFolder, ['log', '--format=%s', '-n', '10', `${from}..${to}`])),
+      changedFiles: async (from, to) => (await git(leadFolder, ['diff', '--name-only', '-z', '--no-renames', from, to, '--'])).split('\0').filter(Boolean),
+      terminalsAvailable: () => this.lanes.state().terminals,
+      onChange: () => this.plansChanged(),
+      // "Plan Checkout started lane Build API", with Show lane. It never switches views by itself.
+      onLaneStarted: (plan, job, laneId) => {
+        void vscode.window.showInformationMessage(`Plan ${plan.title} started lane ${this.lanes.laneName(laneId) ?? job.title}.`, 'Show lane')
+          .then(pick => { if (pick) void this.lanes.show('lanes', laneId); });
+      },
+      log: line => this.output.appendLine(line),
     });
-    await plans.store.save(updated);
-    this.plansChanged();
+  }
+  /** Each plan's job statuses, for plans that have run. */
+  private planJobViews(): Record<string, PlanJobView[]> {
+    const runner = this.planRunner, views: Record<string, PlanJobView[]> = {};
+    if (!runner) return views;
+    for (const plan of this.plans?.store.list() ?? []) {
+      if (plan.state !== 'running' && plan.state !== 'incomplete' && plan.state !== 'done') continue;
+      const statuses = runner.statuses(plan.id);
+      if (statuses) views[plan.id] = statuses;
+    }
+    return views;
+  }
+  /** The plan job a lane runs, as its tile and actions see it. */
+  private planJobOfLane(laneId: string): LanePlanJobView | undefined {
+    const found = this.planRunner?.jobForLane(laneId);
+    if (!found) return undefined;
+    const { plan, job, view } = found;
+    return {
+      planId: plan.id, planTitle: plan.title, jobKey: job.key, jobTitle: job.title, state: view.status, ...(view.commit ? { commit: view.commit } : {}),
+      dependents: dependentsOf(plan.jobs, job.key).filter(item => !jobStarted(item)).length,
+      dependentsStarted: plan.jobs.filter(item => item.dependsOn.includes(job.key) && !!(item.jobId || item.laneId || item.result)).length,
+    };
+  }
+  private async markPlanJobDone(laneId: string, result: PlanLaneResultInput): Promise<void> {
+    const found = this.requirePlanRunner().jobForLane(laneId);
+    if (!found) throw new Error('This lane doesn\'t run a plan job.');
+    await this.requirePlanRunner().markLaneDone(found.plan.id, found.job.key, laneId, result);
+  }
+  private async cancelPlanJobOfLane(laneId: string): Promise<void> {
+    const found = this.requirePlanRunner().jobForLane(laneId);
+    if (!found) throw new Error('This lane doesn\'t run a plan job.');
+    await this.requirePlanRunner().cancelJob(found.plan.id, found.job.key, 'Cancelled from its lane.');
+  }
+  /** Cancel job on a job's node (docs/Plan_Lanes_Plan.md, "Failures"), after asking. */
+  private async planCancelJob(id: string, key: string): Promise<void> {
+    const plan = this.requirePlans().store.get(id);
+    const job = plan?.jobs.find(item => item.key === key);
+    if (!plan || !job) throw new Error(`No job "${key}" in this plan.`);
+    const waiting = dependentsOf(plan.jobs, key).filter(item => !jobStarted(item)).length;
+    const what = job.laneId ? 'Its lane stays open, as an ordinary lane.' : job.jobId ? 'Its head is stopped; its branch is kept.' : 'It won\'t start.';
+    const pick = await vscode.window.showWarningMessage(`Cancel job ${job.title} of plan ${plan.title}?`, { modal: true, detail: `${what}${waiting ? ` ${waiting} ${waiting === 1 ? 'job' : 'jobs'} that depend on it won't start.` : ''}` }, 'Cancel job');
+    if (pick !== 'Cancel job') return;
+    await this.requirePlanRunner().cancelJob(id, key, 'Cancelled from the plan.');
   }
   private async broadcast(message: unknown): Promise<void> {
     await this.panel?.webview.postMessage(message);
@@ -906,12 +1010,16 @@ class Manager {
     if (message.type === 'planDelete') { await this.planDelete(message.id); return; }
     if (message.type === 'planStartEmpty') { await this.planStartEmpty(message.id); return; }
     if (message.type === 'planAddJob') { await this.planAddJob(message.id); return; }
-    if (message.type === 'planSaveJob') { await this.planSaveJob(message.id, message.key, message.title, message.brief, message.provider); return; }
+    if (message.type === 'planSaveJob') { await this.planSaveJob(message.id, message.key, message.title, message.brief, message.provider, message.runAs); return; }
     if (message.type === 'planDeleteJob') { await this.planDeleteJob(message.id, message.key); return; }
     if (message.type === 'planDependsOn') { await this.planDependsOn(message.id, message.key); return; }
     if (message.type === 'planAddDependency') { await this.planAddDependency(message.id, message.key, message.dependsOn); return; }
     if (message.type === 'planRemoveDependency') { await this.planRemoveDependency(message.id, message.key, message.dependsOn); return; }
     if (message.type === 'planRun') { await this.runPlanById(message.id); return; }
+    // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
+    if (message.type === 'planRetryJobs') { await this.requirePlanRunner().retry(message.id); return; }
+    if (message.type === 'planCancelJob') { await this.planCancelJob(message.id, message.key); return; }
+    if (message.type === 'planStartJob') { await this.requirePlanRunner().startJob(message.id, message.key); return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use Hydra.');
     if (this.disabled) throw new Error('Hydra is disabled in this window. Resolve the ownership or handoff error and reload this window.');
     if (message.type === 'checkProvider') {

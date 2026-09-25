@@ -18,7 +18,7 @@ A checklist for verifying a frontend change actually works, not just that it com
 Check the changed page or component at **390px** (phone), **768px** (tablet) and **1280px** (desktop) wide.
 
 - **With the Playwright MCP tools**, if your role has them: navigate to the page, resize the viewport to each width in turn, and take a screenshot at each. Look at the screenshot for wrapping, overlap, clipped text and broken layout.
-- **Without Playwright tools**: resize your own browser window to each width (or use its device toolbar) and look at the same things. Describe what you saw at each width in your report.
+- **Without Playwright tools** you can't see the page. Read the markup and styles for each width's breakpoints instead, and say plainly in your report that you didn't check it in a browser.
 
 At every width, check that: nothing overlaps or clips, text wraps instead of overflowing, and any newly-added controls stay reachable and readable.
 
@@ -40,4 +40,4 @@ At every width, check that: nothing overlaps or clips, text wraps instead of ove
 
 ## 6. Reading Hydra's screenshots gate
 
-If the project has a screenshots gate configured, Hydra runs it and attaches its captures to the gate result. Open that report and compare it against what you saw manually — it's evidence for your reviewer, not a replacement for your own look at the page. Note any mismatch between the gate's screenshots and your own findings in your summary.
+If the project has a screenshots gate, Hydra runs it on your work before it is accepted or merged: it starts the app on a free port, captures the configured pages at their widths, and fails when the app never gets ready, a page answers with an HTTP error, throws or logs to console.error, or renders an empty body. When it fails, Hydra's message lists the problems, and the screenshots it took are its evidence. Fix the cause and check that page again yourself. The gate is evidence for your reviewer, not a replacement for your own look at the page.

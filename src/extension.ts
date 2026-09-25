@@ -33,6 +33,9 @@ import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { registerLimitOffer } from './extensionLimitOffer';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
+// ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
+import { createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
+import { planBrief } from './core/planner';
 
 let manager: Manager | undefined;
 /** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
@@ -61,6 +64,10 @@ class Manager {
   private readonly storageDirectory: string;
   /** Hydra helpers for this window (docs/Official_Extensions_Plan.md): job store, local endpoint, service, discovery record. */
   private helpers?: { store: JobStore; endpoint: HelperEndpoint; service: HelperService; record: string };
+  // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own store, and the brief-planning ----
+  // ---- CLI runs in flight (by plan id), so Cancel and window close can abort them. ----
+  private plans?: { store: PlanStore; planning: Map<string, AbortController> };
+  private readonly leadKey: string;
   private snapshotGeneration = 0;
   private handoff?: Handoff;
   private readonly diagnostics = new Map<Provider, ProviderDiagnostic>();
@@ -87,6 +94,7 @@ class Manager {
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
+    this.leadKey = key;
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -118,6 +126,11 @@ class Manager {
       return stopped;
     });
     command('hydra.listHelpers', () => structuredClone(this.helpers?.service.list() ?? []));
+    // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). newPlan is public; the plans.* commands are test-only, not in menus. ----
+    command('hydra.newPlan', () => this.newPlan());
+    command('hydra.plans.list', () => structuredClone(this.plans?.store.list() ?? []));
+    command('hydra.plans.save', async (plan: unknown) => { const saved = await this.requirePlans().store.save(plan as Plan); this.plansChanged(); return saved; });
+    command('hydra.plans.run', async (id: unknown) => { await this.runPlanById(String(id)); return structuredClone(this.requirePlans().store.get(String(id))); });
     command('hydra.helperConnections', () => this.helperConnections());
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
@@ -275,6 +288,10 @@ class Manager {
     await service.recover();
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
     this.helpers = { store, endpoint, service, record };
+    // Plans need the same trusted repository as heads (they read it, and running one starts heads in it).
+    const planStore = new PlanStore(path.join(this.storageDirectory, 'plans'));
+    await planStore.load();
+    this.plans = { store: planStore, planning: new Map() };
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
   }
@@ -392,6 +409,8 @@ class Manager {
     await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.Beside });
   }
   private async stopHelpers(): Promise<void> {
+    const plans = this.plans; this.plans = undefined;
+    for (const controller of plans?.planning.values() ?? []) controller.abort();
     const helpers = this.helpers; this.helpers = undefined;
     if (!helpers) return;
     await removeWindowRecord(helpers.record).catch(() => undefined);
@@ -484,10 +503,168 @@ class Manager {
     if (generation !== this.snapshotGeneration) return;
     const snapshot: Snapshot = {
       mode: this.mode, busy: this.busy || this.disabled, error: this.error,
-      helpers: this.headViews(),
+      helpers: this.headViews(), plans: this.plans?.store.list(), defaultProvider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude'),
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
     };
     await this.broadcast({ type: 'snapshot', snapshot });
+  }
+  // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
+  /** Plan changes go to the webview at once (mirrors headsChanged); the full snapshot follows, debounced. */
+  private plansChanged(): void {
+    void this.broadcast({ type: 'plans', plans: this.plans?.store.list() ?? [] }).catch(() => undefined);
+    this.publishSoon();
+  }
+  private requirePlans(): { store: PlanStore; planning: Map<string, AbortController> } {
+    if (!this.plans) throw new Error('Hydra plans are not ready in this window yet.');
+    return this.plans;
+  }
+  private async newPlan(): Promise<void> {
+    await this.openAgents();
+    await this.broadcast({ type: 'showNewPlan' });
+  }
+  private async planCreateEmpty(title: string): Promise<void> {
+    const plans = this.requirePlans();
+    await plans.store.save(createPlan({ title, state: 'draft' }));
+    this.plansChanged();
+  }
+  private async planCreate(title: string, brief: string): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = await plans.store.save(createPlan({ title, brief, state: 'planning' }));
+    this.plansChanged();
+    void this.draftPlan(plan.id, brief);
+  }
+  private async planRetry(id: string): Promise<void> {
+    const plans = this.requirePlans();
+    const current = plans.store.get(id);
+    if (!current) throw new Error(`No plan ${id}.`);
+    if (current.state !== 'failed') throw new Error('Only a failed plan can be retried.');
+    if (!current.brief) throw new Error('This plan has no brief to retry; use "+ Job" instead.');
+    await plans.store.save({ ...current, state: 'planning', error: undefined });
+    this.plansChanged();
+    void this.draftPlan(id, current.brief);
+  }
+  private planCancel(id: string): void {
+    this.plans?.planning.get(id)?.abort();
+  }
+  /** The failed state's "Start empty": keep the plan, but clear the failed brief attempt to an empty draft. */
+  private async planStartEmpty(id: string): Promise<void> {
+    const plans = this.requirePlans();
+    const current = plans.store.get(id);
+    if (!current) throw new Error(`No plan ${id}.`);
+    plans.planning.get(id)?.abort();
+    plans.planning.delete(id);
+    await plans.store.save({ ...current, state: 'draft', jobs: [], error: undefined });
+    this.plansChanged();
+  }
+  /** Run the planner CLI and record the result. Runs in the background (called with `void`); `plansChanged` tells the webview when it settles. */
+  private async draftPlan(id: string, brief: string): Promise<void> {
+    const plans = this.plans;
+    if (!plans) return; // the window closed between starting this and getting here
+    const controller = new AbortController();
+    plans.planning.set(id, controller);
+    try {
+      const helpers = this.helpers;
+      if (!helpers) throw new Error('Hydra heads are not ready in this window yet.');
+      const provider: Provider = vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude');
+      const executable = await this.helperExecutable(provider);
+      const result = await planBrief({ provider, executable, repository: helpers.service.leadFolder, brief, signal: controller.signal });
+      const current = plans.store.get(id);
+      if (!current || current.state !== 'planning') return; // deleted, or cancelled and already marked failed
+      await plans.store.save(result.ok ? { ...current, jobs: result.jobs, state: 'draft', error: undefined } : { ...current, state: 'failed', error: result.error });
+    } catch (error) {
+      const current = plans.store.get(id);
+      if (current?.state === 'planning') await plans.store.save({ ...current, state: 'failed', error: this.describe(error) }).catch(() => undefined);
+    } finally {
+      plans.planning.delete(id);
+      this.plansChanged();
+    }
+  }
+  private async planDelete(id: string): Promise<void> {
+    const plans = this.requirePlans();
+    plans.planning.get(id)?.abort();
+    plans.planning.delete(id);
+    await plans.store.remove(id);
+    this.plansChanged();
+  }
+  private async planAddJob(id: string): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = plans.store.get(id);
+    if (!plan) throw new Error(`No plan ${id}.`);
+    if (plan.jobs.length >= maxPlanJobs) throw new Error(`A plan may have at most ${maxPlanJobs} jobs.`);
+    let index = plan.jobs.length + 1, key = `job-${index}`;
+    while (plan.jobs.some(job => job.key === key)) key = `job-${++index}`;
+    const job: PlanJob = { key, title: 'New job', brief: 'Describe what this job should do.', dependsOn: [] };
+    await plans.store.save({ ...plan, jobs: [...plan.jobs, job] });
+    this.plansChanged();
+  }
+  private async planSaveJob(id: string, key: string, title: string, brief: string, provider?: Provider): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = plans.store.get(id);
+    if (!plan?.jobs.some(job => job.key === key)) throw new Error(`No job "${key}" in this plan.`);
+    await plans.store.save({ ...plan, jobs: plan.jobs.map(job => job.key === key ? { ...job, title, brief, provider } : job) });
+    this.plansChanged();
+  }
+  private async planDeleteJob(id: string, key: string): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = plans.store.get(id);
+    if (!plan) throw new Error(`No plan ${id}.`);
+    const jobs = plan.jobs.filter(job => job.key !== key).map(job => ({ ...job, dependsOn: job.dependsOn.filter(dependency => dependency !== key) }));
+    await plans.store.save({ ...plan, jobs });
+    this.plansChanged();
+  }
+  /** "Depends on…": a native multi-select quick pick of the plan's other jobs. */
+  private async planDependsOn(id: string, key: string): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = plans.store.get(id);
+    const job = plan?.jobs.find(item => item.key === key);
+    if (!plan || !job) throw new Error(`No job "${key}" in this plan.`);
+    const others = plan.jobs.filter(item => item.key !== key);
+    const picked = await vscode.window.showQuickPick(
+      others.map(item => ({ label: item.title, description: item.key, picked: job.dependsOn.includes(item.key) })),
+      { canPickMany: true, title: `"${job.title}" depends on…`, placeHolder: 'Select the jobs that must finish first' },
+    );
+    if (picked === undefined) return; // Esc: leave it as it was
+    const dependsOn = picked.map(item => item.description!);
+    await plans.store.save({ ...plan, jobs: plan.jobs.map(item => item.key === key ? { ...item, dependsOn } : item) });
+    this.plansChanged();
+  }
+  private async planAddDependency(id: string, key: string, dependsOn: string): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = plans.store.get(id);
+    if (!plan?.jobs.some(job => job.key === key) || !plan.jobs.some(job => job.key === dependsOn)) throw new Error('Unknown job.');
+    await plans.store.save({ ...plan, jobs: plan.jobs.map(job => job.key === key && !job.dependsOn.includes(dependsOn) ? { ...job, dependsOn: [...job.dependsOn, dependsOn] } : job) });
+    this.plansChanged();
+  }
+  private async planRemoveDependency(id: string, key: string, dependsOn: string): Promise<void> {
+    const plans = this.requirePlans();
+    const plan = plans.store.get(id);
+    if (!plan) throw new Error(`No plan ${id}.`);
+    await plans.store.save({ ...plan, jobs: plan.jobs.map(job => job.key === key ? { ...job, dependsOn: job.dependsOn.filter(dependency => dependency !== dependsOn) } : job) });
+    this.plansChanged();
+  }
+  /** Run plan: start every not-yet-started job in dependency order, under lead `plan-<id>` so the heads group under the plan node (jobs.jobId makes this idempotent). */
+  private async runPlanById(id: string): Promise<void> {
+    const plans = this.requirePlans(), helpers = this.helpers;
+    if (!helpers) throw new Error('Hydra heads are not ready in this window yet.');
+    const plan = plans.store.get(id);
+    if (!plan) throw new Error(`No plan ${id}.`);
+    if (plan.state === 'planning') throw new Error('This plan is still being drafted.');
+    if (plan.state === 'done') throw new Error('This plan is already done.');
+    const defaultProvider: Provider = vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude');
+    const updated = await runPlan(plan, async (job, dependsOn) => {
+      const result = await helpers.service.handle(
+        { role: 'lead', leadKey: this.leadKey, leadSessionId: `plan-${plan.id}` }, 'hydra_start_head',
+        {
+          title: job.title, brief: job.brief, write_scope: job.writeScope?.length ? job.writeScope : [''],
+          provider: job.provider ?? defaultProvider, idempotency_key: `plan-${plan.id}-${job.key}`,
+          depends_on: dependsOn, lead_label: `Plan · ${plan.title}`,
+        },
+        new AbortController().signal,
+      ) as { job_id: string };
+      return { jobId: result.job_id };
+    });
+    await plans.store.save(updated);
+    this.plansChanged();
   }
   private async broadcast(message: unknown): Promise<void> {
     await this.panel?.webview.postMessage(message);
@@ -542,6 +719,20 @@ class Manager {
     if (message.type === 'refresh') { await this.refresh(); return; }
     if (message.type === 'helperStopAll') { await vscode.commands.executeCommand('hydra.stopAllHelpers'); return; }
     if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer') { await this.helperAction(message.type, message.jobId); return; }
+    // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
+    if (message.type === 'planCreate') { await this.planCreate(message.title, message.brief); return; }
+    if (message.type === 'planCreateEmpty') { await this.planCreateEmpty(message.title); return; }
+    if (message.type === 'planRetry') { await this.planRetry(message.id); return; }
+    if (message.type === 'planCancel') { this.planCancel(message.id); return; }
+    if (message.type === 'planDelete') { await this.planDelete(message.id); return; }
+    if (message.type === 'planStartEmpty') { await this.planStartEmpty(message.id); return; }
+    if (message.type === 'planAddJob') { await this.planAddJob(message.id); return; }
+    if (message.type === 'planSaveJob') { await this.planSaveJob(message.id, message.key, message.title, message.brief, message.provider); return; }
+    if (message.type === 'planDeleteJob') { await this.planDeleteJob(message.id, message.key); return; }
+    if (message.type === 'planDependsOn') { await this.planDependsOn(message.id, message.key); return; }
+    if (message.type === 'planAddDependency') { await this.planAddDependency(message.id, message.key, message.dependsOn); return; }
+    if (message.type === 'planRemoveDependency') { await this.planRemoveDependency(message.id, message.key, message.dependsOn); return; }
+    if (message.type === 'planRun') { await this.runPlanById(message.id); return; }
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to use Hydra.');
     if (this.disabled) throw new Error('Hydra is disabled in this window. Resolve the ownership or handoff error and reload this window.');
     if (message.type === 'checkProvider') {

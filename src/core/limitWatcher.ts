@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { isInside, maxEventAgeMs, maxEventFileBytes, parseLimitEventFile } from './limitDetection';
@@ -11,8 +11,10 @@ import type { LimitEvent } from './limitEvents';
  *
  * Which window takes an event: the one whose workspace contains the chat's cwd
  * claims it at once. If no window does, the first window to see it after a short
- * grace period takes it, so an event is never lost. Claiming is an atomic rename,
- * so exactly one window wins; the winner deletes the file and emits the event.
+ * grace period takes it, so an event is never lost. A claim is an exclusive
+ * create of `<event>.lock` (a rename alone is not enough on Windows: two renames of
+ * one file that both opened it first both succeed). The lock holder renames the
+ * event away, so a later holder finds nothing, then emits it.
  * Stale, oversized or malformed files are deleted unread or unused.
  */
 export interface LimitWatcherOptions {
@@ -80,24 +82,37 @@ export class LimitWatcher {
       const file = path.join(directory, name), match = eventName.exec(name);
       if (!match) {
         // Leftovers: a hook that died mid-write, or a window that died mid-claim.
-        if (/\.(tmp|claimed-[0-9a-f]+)$/.test(name)) { const info = await stat(file).catch(() => undefined); if (info && now - info.mtimeMs > 60_000) await rm(file, { force: true }); }
+        if (/\.(tmp|lock|claimed-[0-9a-f]+)$/.test(name)) { const info = await stat(file).catch(() => undefined); if (info && now - info.mtimeMs > 60_000) await discard(file); }
         continue;
       }
       const written = Number(match[1]);
-      if (now - written > maxEventAgeMs) { await rm(file, { force: true }); continue; }
+      if (now - written > maxEventAgeMs) { await discard(file); continue; }
       const info = await stat(file).catch(() => undefined);
       if (!info) continue;
-      if (info.size > maxEventFileBytes) { await rm(file, { force: true }); continue; }
-      const event = parseLimitEventFile(await readFile(file, 'utf8').catch(() => ''), { now, claudeProjectsDir: this.options.claudeProjectsDir });
-      if (!event) { await rm(file, { force: true }); continue; }
+      if (info.size > maxEventFileBytes) { await discard(file); continue; }
+      const text = await readFile(file, 'utf8').catch(() => undefined);
+      if (text === undefined) continue;
+      // Not JSON yet and just written: likely still being written (the hook renames
+      // its file into place, other writers may not). Look again later.
+      if (!parses(text) && now - info.mtimeMs < 5000) { waiting = true; continue; }
+      const event = parseLimitEventFile(text, { now, claudeProjectsDir: this.options.claudeProjectsDir });
+      if (!event) { await discard(file); continue; }
       const mine = !!event.cwd && this.owns(event.cwd);
       if (!mine && now - written < grace) { waiting = true; continue; }
-      const claimed = `${file}.claimed-${randomBytes(6).toString('hex')}`;
-      try { await rename(file, claimed); } catch { continue; } // another window won
-      await rm(claimed, { force: true });
-      this.emit(event);
+      if (await this.claim(file)) this.emit(event);
     }
     if (waiting && !this.disposed) { clearTimeout(this.retry); this.retry = setTimeout(() => { void this.scan(); }, grace); this.retry.unref?.(); }
+  }
+  /** Exactly one caller, in any window, gets true for a file. */
+  private async claim(file: string): Promise<boolean> {
+    const lock = `${file}.lock`;
+    try { await (await open(lock, 'wx')).close(); } catch { return false; } // another window holds it
+    try {
+      const claimed = `${file}.claimed-${randomBytes(6).toString('hex')}`;
+      try { await rename(file, claimed); } catch { return false; } // already taken
+      await discard(claimed);
+      return true;
+    } finally { await discard(lock); }
   }
   private owns(cwd: string): boolean { try { return this.options.owns(cwd); } catch { return false; } }
   private emit(event: LimitEvent): void {
@@ -116,3 +131,7 @@ function samePath(a: string, b: string): boolean {
   const pathApi = process.platform === 'win32' ? path.win32 : path;
   return pathApi.relative(pathApi.resolve(a), pathApi.resolve(b)) === '';
 }
+
+const parses = (text: string) => { try { JSON.parse(text); return true; } catch { return false; } };
+/** Remove a file; if another window has it open or is removing it too, a later pass tries again. */
+const discard = (file: string) => rm(file, { force: true }).catch(() => undefined);

@@ -308,6 +308,8 @@ export class PlanRunner {
       if (plan.state !== 'incomplete') throw new Error('Only an incomplete plan\'s jobs can be retried.');
       const again = new Set(planSteps(plan, this.options.look, this.stepOptions(planId)).jobs.filter(view => ended.has(view.status)).map(view => view.key));
       if (!again.size) throw new Error('This plan has no failed jobs to retry.');
+      const refusal = planRunRefusal({ jobs: plan.jobs.filter(job => again.has(job.key)).map(job => ({ ...job, jobId: undefined, laneId: undefined, result: undefined, outcome: undefined })) }, this.options.terminalsAvailable());
+      if (refusal) throw new Error(refusal);
       await this.options.store.update(planId, current => ({
         ...current, state: 'running',
         jobs: current.jobs.map(job => {

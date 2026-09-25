@@ -123,8 +123,20 @@ test('no terminals: Run plan refuses up front and names the lane jobs to switch 
   const f = await fixture([job('a'), lane('b', { title: 'Build API' })], { terminalsAvailable: () => false });
   try {
     await assert.rejects(f.runner.run(f.plan.id), /no terminals.*Switch Build API to Head/);
-    assert.deepEqual([f.started, f.get().state], [[], 'draft'], 'nothing starts and the plan stays a draft');
+    assert.deepEqual([f.started.length, f.get().state], [0, 'draft'], 'nothing starts and the plan stays a draft');
   } finally { await f.close(); }
+  // Retry failed jobs refuses the same way when a lane job would have to start again.
+  let terminals = true;
+  const g = await fixture([lane('b', { title: 'Build API' })], { terminalsAvailable: () => terminals });
+  try {
+    await g.runner.run(g.plan.id);
+    g.world.lanes.get(g.byKey('b').laneId!)!.state = 'closed';
+    await g.runner.advance(g.plan.id);
+    assert.equal(g.get().state, 'incomplete');
+    terminals = false;
+    await assert.rejects(g.runner.retry(g.plan.id), /Switch Build API to Head/);
+    assert.equal(g.get().state, 'incomplete');
+  } finally { await g.close(); }
 });
 
 // ---- The runner ----

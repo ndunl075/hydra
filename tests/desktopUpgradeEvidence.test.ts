@@ -80,3 +80,33 @@ test('fails closed for mismatched versions, expired baselines, wrong hashes, and
     assert.notEqual(result.status, 0); assert.match(result.stderr, /shortcut cycle is missing/);
   } finally { await fs.rm(current.directory, { recursive: true, force: true }); }
 });
+
+test('a published release baseline is pinned by tag, asset and hash, and does not expire', async () => {
+  const current = await fixture();
+  try {
+    const release = { source: 'release', version: '0.13.0', tag: 'v0.13.0', headSha: 'a'.repeat(40), assetName: 'HydraSetup.exe', installerSha256: current.baseline.installerSha256 };
+    await fs.writeFile(path.join(current.directory, 'baseline.json'), JSON.stringify(release));
+    await fs.writeFile(path.join(current.directory, 'provenance.json'), JSON.stringify({ prior: release, currentVersion: '0.22.0', currentInstallerSha256: digest('current installer'), runtimeCompared: ['Hydra.exe'] }));
+    let result = run(current, ['--now', '2099-01-01T00:00:00.000Z']);
+    assert.equal(result.status, 0, result.stderr);
+    const record = JSON.parse(result.stdout);
+    assert.deepEqual(record.baseline, { source: 'release', headSha: 'a'.repeat(40), tag: 'v0.13.0', assetName: 'HydraSetup.exe', installerSha256: current.baseline.installerSha256 });
+
+    await fs.writeFile(path.join(current.directory, 'baseline.json'), JSON.stringify({ ...release, tag: 'v0.12.0' }));
+    result = run(current);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /release tag must be v<version>/);
+
+    await fs.writeFile(path.join(current.directory, 'baseline.json'), JSON.stringify({ ...release, assetName: 'Other.exe' }));
+    result = run(current);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /release asset must be HydraSetup\.exe/);
+
+    await fs.writeFile(path.join(current.directory, 'baseline.json'), JSON.stringify({ ...release, source: 'somewhere' }));
+    result = run(current);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /source is unknown/);
+
+    await fs.writeFile(path.join(current.directory, 'baseline.json'), JSON.stringify(release));
+    await fs.writeFile(path.join(current.directory, 'provenance.json'), JSON.stringify({ prior: { ...release, tag: 'v0.12.0' }, currentVersion: '0.22.0', currentInstallerSha256: digest('current installer'), runtimeCompared: ['Hydra.exe'] }));
+    result = run(current);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /prior tag does not match/);
+  } finally { await fs.rm(current.directory, { recursive: true, force: true }); }
+});

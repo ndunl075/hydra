@@ -43,10 +43,23 @@ async function sha256(file, label = 'current installer') {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/** The baseline fields each form records; the hosted run's provenance must repeat them exactly. */
+const baselineKeys = baseline => baseline.source === 'release'
+  ? ['source', 'version', 'headSha', 'tag', 'assetName', 'installerSha256']
+  : ['version', 'headSha', 'runId', 'artifactId', 'artifactName', 'artifactDigest', 'installerSha256', 'expiresAt'];
+
 function validateBaseline(value, now) {
   const baseline = requireObject(value, 'pinned baseline');
   requireString(baseline.version, 'pinned baseline version', VERSION);
   requireString(baseline.headSha, 'pinned baseline head SHA', /^[a-f0-9]{40}$/i);
+  if (baseline.source === 'release') {
+    // A published release: pinned by tag, asset and hash. It doesn't expire the way a CI artifact does.
+    if (baseline.tag !== `v${baseline.version}`) fail('pinned baseline release tag must be v<version>.');
+    if (baseline.assetName !== 'HydraSetup.exe') fail('pinned baseline release asset must be HydraSetup.exe.');
+    requireString(baseline.installerSha256, 'pinned baseline installer SHA-256', SHA256);
+    return baseline;
+  }
+  if (baseline.source !== undefined) fail('pinned baseline source is unknown.');
   if (!Number.isSafeInteger(baseline.runId) || baseline.runId <= 0) fail('pinned baseline run ID is invalid.');
   if (!Number.isSafeInteger(baseline.artifactId) || baseline.artifactId <= 0) fail('pinned baseline artifact ID is invalid.');
   requireString(baseline.artifactName, 'pinned baseline artifact name', /\S/);
@@ -62,7 +75,7 @@ function validateBaseline(value, now) {
 function validateProvenance(value, baseline, version, currentHash) {
   const provenance = requireObject(value, 'PowerShell provenance');
   const prior = requireObject(provenance.prior, 'PowerShell provenance prior baseline');
-  for (const key of ['version', 'headSha', 'runId', 'artifactId', 'artifactName', 'artifactDigest', 'installerSha256', 'expiresAt']) {
+  for (const key of baselineKeys(baseline)) {
     if (prior[key] !== baseline[key]) fail(`PowerShell provenance prior ${key} does not match the pinned baseline.`);
   }
   if (provenance.currentVersion !== version) fail('PowerShell provenance current version does not match package.json.');
@@ -116,15 +129,7 @@ export async function parseDesktopUpgradeEvidence(options) {
     kind: 'desktop-distinct-version-upgrade-provenance',
     priorVersion: baseline.version,
     currentVersion: version,
-    baseline: {
-      headSha: baseline.headSha,
-      runId: baseline.runId,
-      artifactId: baseline.artifactId,
-      artifactName: baseline.artifactName,
-      artifactDigest: baseline.artifactDigest,
-      installerSha256: baseline.installerSha256,
-      expiresAt: baseline.expiresAt
-    },
+    baseline: Object.fromEntries(baselineKeys(baseline).filter(key => key !== 'version').map(key => [key, baseline[key]])),
     currentInstallerSha256: currentHash,
     shortcutCycles: { selected: 'recorded', unselected: 'recorded' },
     localParser: { status: 'consistent', acceptance: 'pending-disposable-windows-run' }

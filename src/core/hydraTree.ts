@@ -1,6 +1,8 @@
 import type { HelperJobView, LaneView, Provider } from './model';
 import type { Plan } from './plans';
 import { isActive } from './agentsCanvas';
+// Type-only, same rule as agentsCanvas.ts: planRunner.ts's PlanJobView is plain data the extension computes.
+import type { PlanJobView } from './planRunner';
 
 /**
  * The Hydra activity-bar panel (docs/Lanes_And_Planner_Plan.md, section 3): one
@@ -26,20 +28,33 @@ export function livePlans(plans: readonly Plan[]): Plan[] {
   return plans.filter(plan => plan.state !== 'done').slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function buildHydraTree(lanes: readonly LaneView[], heads: readonly HelperJobView[], plans: readonly Plan[]): HydraTree {
+/** A plan's job-progress line (docs/Plan_Lanes_Plan.md, section 5): "Running · 2 of 4 done · 1 lane waiting", or "Incomplete · 1 failed". */
+function planProgressLine(plan: Plan, views: readonly PlanJobView[] | undefined): string {
+  if (plan.state === 'planning') return 'Planning…';
+  if (plan.state === 'failed') return 'Planning failed';
+  const count = `${plan.jobs.length} ${plan.jobs.length === 1 ? 'job' : 'jobs'}`;
+  if (plan.state === 'draft' || !views) return `Draft · ${count}`;
+  const done = views.filter(view => view.status === 'done').length;
+  if (plan.state === 'incomplete') {
+    const bits = (['failed', 'cancelled', 'skipped'] as const)
+      .map(state => { const found = views.filter(view => view.status === state).length; return found ? `${found} ${state}` : undefined; })
+      .filter((text): text is string => !!text);
+    return `Incomplete · ${bits.join(', ') || 'nothing left to wait for'}`;
+  }
+  const laneWaiting = views.filter(view => view.status === 'active' && view.laneId).length;
+  const progress = `${done} of ${plan.jobs.length} done`;
+  return plan.state === 'done' ? progress : `Running · ${progress}${laneWaiting ? ` · ${laneWaiting} ${laneWaiting === 1 ? 'lane' : 'lanes'} waiting` : ''}`;
+}
+
+export function buildHydraTree(lanes: readonly LaneView[], heads: readonly HelperJobView[], plans: readonly Plan[], planJobs: Readonly<Record<string, readonly PlanJobView[]>> = {}): HydraTree {
   const laneItems: TreeLaneItem[] = openLanes(lanes).map(lane => {
     const conflicts = !!lane.sync?.conflicts.length;
-    const description = [providerName(lane.provider), lane.branch, conflicts ? 'conflicts' : undefined].filter(Boolean).join(' · ');
+    const description = [providerName(lane.provider), lane.branch, lane.planJob ? `Plan: ${lane.planJob.planTitle}` : undefined, conflicts ? 'conflicts' : undefined].filter(Boolean).join(' · ');
     return { id: lane.id, label: lane.name, description, state: lane.state, conflicts, dirty: !!lane.sync?.dirty };
   });
   const headItems: TreeHeadItem[] = heads.filter(isActive).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(head => ({
     id: head.id, label: head.title, description: `${headStatus[head.state] || head.state}${head.lead?.label ? ` · ${head.lead.label}` : ''}`, state: head.state,
   }));
-  const planItems: TreePlanItem[] = livePlans(plans).map(plan => ({
-    id: plan.id, label: plan.title, description: plan.state === 'running' ? `Running · ${plan.jobs.length} ${plan.jobs.length === 1 ? 'job' : 'jobs'}`
-      : plan.state === 'incomplete' ? 'Incomplete'
-      : plan.state === 'planning' ? 'Planning…' : plan.state === 'failed' ? 'Planning failed' : `Draft · ${plan.jobs.length} ${plan.jobs.length === 1 ? 'job' : 'jobs'}`,
-    state: plan.state,
-  }));
+  const planItems: TreePlanItem[] = livePlans(plans).map(plan => ({ id: plan.id, label: plan.title, description: planProgressLine(plan, planJobs[plan.id]), state: plan.state }));
   return { lanes: laneItems, heads: headItems, plans: planItems, empty: !laneItems.length && !headItems.length && !planItems.length };
 }

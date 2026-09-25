@@ -385,7 +385,7 @@ class Manager {
     // Plan lanes: the runner picks up running plans; a lane job that is ready now waits for Start lane.
     this.planRunner = this.createPlanRunner(planStore, service, leadFolder);
     await this.planRunner.advanceAll({ startup: true }).catch(error => this.output.appendLine(`[plans] ${this.describe(error)}`));
-    this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list() });
+    this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list(), planJobs: this.planJobViews() });
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
   }
@@ -668,7 +668,7 @@ class Manager {
   private plansChanged(): void {
     const plans = this.plans?.store.list() ?? [];
     void this.broadcast({ type: 'plans', plans, planJobs: this.planJobViews() }).catch(() => undefined);
-    this.tree.update({ plans });
+    this.tree.update({ plans, planJobs: this.planJobViews() });
     this.lanes.planStatesChanged();
     this.publishSoon();
   }

@@ -112,7 +112,7 @@ export async function freshDirectory(parent: string, name: string): Promise<stri
  * findings, errors or output, and its evidence; then what failed or didn't run
  * without blocking.
  */
-export function gateFailureMessage(results: readonly JobCheckResult[]): string {
+export function gateFailureMessage(results: readonly JobCheckResult[], ending = 'Fix them, commit, and call hydra_done again.'): string {
   const lines = ['These gates failed:'];
   for (const result of results.filter(gateBlocks)) {
     const kind = gateKind(result);
@@ -132,7 +132,7 @@ export function gateFailureMessage(results: readonly JobCheckResult[]): string {
     lines.push('', 'Also reported, but not blocking:');
     for (const result of others) lines.push(`- ${result.id}: ${gateState(result) === 'notRun' ? 'not run' : 'failed'}${result.summary ? `. ${clip(result.summary, 300)}` : ''}`);
   }
-  lines.push('Fix them, commit, and call hydra_done again.');
+  lines.push(ending);
   return lines.join('\n');
 }
 
@@ -146,8 +146,8 @@ export function summarizeGateFailures(results: readonly JobCheckResult[]): strin
     return `${result.id} (${kind}): ${detail}`;
   }).join('\n');
 }
-/** "Send to lane" (docs/Gates_Plan.md, "Merge"): gateFailureMessage flattened to one line, capped at ~1500 characters, so it fits a terminal's input line. */
+/** "Send to lane" (docs/Gates_Plan.md, "Merge"): gateFailureMessage flattened to one line, capped at ~1500 characters, so it fits a terminal's input line. A lane has no hydra_done. */
 export function flattenGateFailureMessage(results: readonly JobCheckResult[], max = 1500): string {
-  const flat = gateFailureMessage(results).replace(/\s+/g, ' ').trim();
+  const flat = gateFailureMessage(results, 'Fix them and commit; the gates run again when the lane is merged.').replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }

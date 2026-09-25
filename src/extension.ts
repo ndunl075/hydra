@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { OwnershipLock } from './core/ownership';
 import { git, repositoryRoot } from './core/worktrees';
@@ -43,7 +43,7 @@ import { planBrief } from './core/planner';
 // ---- Gates (docs/Gates_Plan.md). Their own block. ----
 import { otherStillLimited } from './core/limitOffer';
 import { toHeadCheckView } from './core/jobs';
-import { buildEvidenceMarkdown, evidenceScheme } from './core/evidence';
+import { buildEvidenceMarkdown } from './core/evidence';
 
 let manager: Manager | undefined;
 /** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
@@ -186,7 +186,10 @@ class Manager {
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
     this.lanes.registerCommands(command);
     // ---- Gates (docs/Gates_Plan.md): View evidence, a read-only Markdown document built fresh each time it's opened. ----
-    this.context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(evidenceScheme, { provideTextDocumentContent: uri => this.evidenceMarkdown(uri) }));
+    command('hydra.openEvidence', (kind: unknown, id: unknown) => {
+      if ((kind !== 'head' && kind !== 'lane') || typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw new Error('openEvidence takes "head" or "lane" and a 12-hex id.');
+      return this.openEvidence(kind, id);
+    });
     // ---- The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3) ----
     this.context.subscriptions.push(vscode.window.createTreeView('hydra.overview', { treeDataProvider: this.tree }));
     command('hydra.overview.mergeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'merge', true));
@@ -477,12 +480,7 @@ class Manager {
     const job = helpers?.store.get(jobId);
     if (!helpers || !job) throw new Error('That head is not in this window.');
     if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason: 'Cancelled from the Agents view.' }, new AbortController().signal); return; }
-    if (action === 'helperEvidence') {
-      if (!job.result?.checks.length) throw new Error('This head has no gate results yet.');
-      const uri = vscode.Uri.parse(`${evidenceScheme}://head/${jobId}`);
-      await vscode.commands.executeCommand('markdown.showPreview', uri);
-      return;
-    }
+    if (action === 'helperEvidence') { await this.openEvidence('head', jobId); return; }
     if (action === 'helperAnswer') {
       // The head is waiting on the lead; you can answer in its place from the Agents view.
       if (job.state !== 'blocked') throw new Error('That head is not waiting for an answer.');
@@ -502,22 +500,28 @@ class Manager {
     const document = await vscode.workspace.openTextDocument({ language: 'diff', content: `# ${job.title} (Hydra head ${job.id})\n# ${job.branch} ${job.baseCommit.slice(0, 12)}..${head.slice(0, 12)}\n# Merge it yourself with git when you're happy: git merge ${job.branch}\n\n${diff || '(no changes)'}` });
     await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.Beside });
   }
-  /** The `hydra-evidence:` scheme's content: `hydra-evidence://head/<jobId>` or `hydra-evidence://lane/<laneId>`. */
-  private evidenceMarkdown(uri: vscode.Uri): string {
-    const id = uri.path.replace(/^\/+/, '');
-    if (uri.authority === 'head') {
+  /**
+   * View evidence: the Markdown is written next to the evidence (in the run's log root) and
+   * previewed from there, because the preview follows links and shows images relative to the
+   * document but refuses `file:` links.
+   */
+  private async openEvidence(kind: 'head' | 'lane', id: string): Promise<void> {
+    let base: string, markdown: string;
+    if (kind === 'head') {
       const job = this.helpers?.store.get(id);
-      if (!job?.result?.checks.length) return `# Evidence\n\nThat head has no gate results.\n`;
-      const logDirectory = path.join(this.storageDirectory, 'helpers', 'logs');
-      return buildEvidenceMarkdown({ title: job.title, worktree: job.worktree ?? this.helpers!.service.leadFolder, logDirectories: [logDirectory], results: job.result.checks });
+      if (!job?.result?.checks.length) throw new Error('This head has no gate results yet.');
+      base = path.join(this.storageDirectory, 'helpers', 'logs');
+      markdown = buildEvidenceMarkdown({ title: job.title, worktree: job.worktree ?? this.helpers!.service.leadFolder, logDirectories: [base], baseDirectory: base, results: job.result.checks });
+    } else {
+      const evidence = this.lanes.laneEvidence(id), root = this.lanes.laneGatesLogRoot();
+      if (!evidence || !root) throw new Error('This lane has no gate results yet.');
+      base = root;
+      markdown = buildEvidenceMarkdown({ title: evidence.title, worktree: evidence.worktree, logDirectories: [root], baseDirectory: root, results: evidence.results });
     }
-    if (uri.authority === 'lane') {
-      const evidence = this.lanes.laneEvidence(id);
-      const root = this.lanes.laneGatesLogRoot();
-      if (!evidence || !root) return `# Evidence\n\nThat lane has no gate results.\n`;
-      return buildEvidenceMarkdown({ title: evidence.title, worktree: evidence.worktree, logDirectories: [root], results: evidence.results });
-    }
-    return `# Evidence\n\nUnknown evidence source.\n`;
+    await mkdir(base, { recursive: true });
+    const file = path.join(base, `${id}-evidence.md`);
+    await writeFile(file, markdown, 'utf8');
+    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(file));
   }
   private async stopHelpers(): Promise<void> {
     const plans = this.plans; this.plans = undefined;

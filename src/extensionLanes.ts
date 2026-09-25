@@ -9,7 +9,6 @@ import { LaneService } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
 import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesOutcome } from './core/gates';
 import type { JobCheckResult } from './core/jobs';
-import { evidenceScheme } from './core/evidence';
 import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneLimitOfferView, type LaneOfferButtonId, type LaneServerMessage, type LaneView, type Provider } from './core/model';
 import { otherProvider, type LimitEvent } from './core/limitEvents';
 import { buildHandoff } from './core/limitHandoff';
@@ -397,7 +396,8 @@ export class LanesController implements vscode.Disposable {
           if (!outcome) return undefined; // cancelled, or gates couldn't run and this was interactive
           if (outcome.failed.length) {
             if (!interactive) throw new Error(`Gates failed for lane ${lane.name}:\n${summarizeGateFailures(outcome.results)}`);
-            const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. Merge anyway?`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Merge anyway', 'Send to lane');
+            // Send to lane first: it's the default (Enter), so a quick Enter never merges failing work.
+            const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. Merge anyway?`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Send to lane', 'Merge anyway');
             if (choice === 'Send to lane') { this.sendGatesToLane(service, lane, outcome.results); return undefined; }
             if (choice !== 'Merge anyway') return undefined; // Cancel
           } else gatesNote = ' Gates passed.';
@@ -467,7 +467,7 @@ export class LanesController implements vscode.Disposable {
       }
       case 'evidence': {
         if (!service.get(lane.id)?.lastGates?.results.length) { void info(`Lane ${lane.name} has no gate results yet.`); return undefined; }
-        await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.parse(`${evidenceScheme}://lane/${lane.id}`));
+        await vscode.commands.executeCommand('hydra.openEvidence', 'lane', lane.id);
         return undefined;
       }
     }
@@ -492,7 +492,16 @@ export class LanesController implements vscode.Disposable {
   }
   /** "Send to lane" (docs/Gates_Plan.md, "Merge"): the failures as one line in the lane's terminal input, never pressing Enter. */
   private sendGatesToLane(service: LaneService, lane: Lane, results: readonly JobCheckResult[]): void {
-    service.input(lane.id, flattenGateFailureMessage(results));
+    const text = flattenGateFailureMessage(results);
+    if (service.input(lane.id, text)) {
+      void this.show('lanes', lane.id);
+      void vscode.window.showInformationMessage(`The gate failures are typed into lane ${lane.name}. Press Enter there to send them.`);
+      return;
+    }
+    // Its session has ended: nothing to type into. Keep the text for when it's resumed.
+    void vscode.env.clipboard.writeText(text);
+    void vscode.window.showInformationMessage(`Lane ${lane.name} isn't running, so the gate failures are on the clipboard. Resume it and paste them.`, 'Resume')
+      .then(async pick => { if (pick) { await service.resume(lane.id); await this.show('lanes', lane.id); } });
   }
 
   /** The multi-file diff of the lane against where it meets its target, uncommitted work included. */

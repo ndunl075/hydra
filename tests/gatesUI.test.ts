@@ -54,22 +54,23 @@ test('buildEvidenceMarkdown: state, summary, output tail, findings as file:line 
     }),
     check({ id: 'ui', kind: 'screenshots', state: 'passed', evidence: ['/logs/run/ui-390.png', '/logs/run/ui.log'] }),
   ];
-  const markdown = buildEvidenceMarkdown({ title: 'Add checkout', worktree: '/work/head', logDirectories: ['/logs/run'], results });
+  const markdown = buildEvidenceMarkdown({ title: 'Add checkout', worktree: '/work/head', logDirectories: ['/logs/run'], baseDirectory: '/logs', results });
   assert.match(markdown, /# Add checkout — gate evidence/);
   assert.match(markdown, /## unit — ✓ Passed \(command\)/);
   assert.match(markdown, /PASS 12 tests/);
   assert.match(markdown, /## review — ✗ Failed \(review, blocked it\)/);
   assert.match(markdown, /Reviewed by Codex\./);
-  // On Windows a rooted path gains the current drive (file:///C:/work/...).
-  assert.match(markdown, /\*\*blocker\*\* \[src\/a\.ts:42\]\(file:\/\/\/(?:[A-Za-z]:\/)?work\/head\/src\/a\.ts#42\)/);
+  // Links are relative to the .md file (the preview refuses file: links), with #L line anchors.
+  assert.match(markdown, /\*\*blocker\*\* \[src\/a\.ts:42\]\(\.\.\/work\/head\/src\/a\.ts#L42\)/);
   assert.match(markdown, /\*\*minor\*\* \(no location\) — nit/);
   assert.match(markdown, /## ui — ✓ Passed \(screenshots\)/);
-  assert.match(markdown, /!\[ui-390\.png\]\(file:\/\/\/(?:[A-Za-z]:\/)?logs\/run\/ui-390\.png\)/);
-  assert.match(markdown, /\[ui\.log\]\(file:\/\/\/(?:[A-Za-z]:\/)?logs\/run\/ui\.log\)/);
+  assert.match(markdown, /!\[ui-390\.png\]\(run\/ui-390\.png\)/);
+  assert.match(markdown, /Evidence: \[ui\.log\]\(run\/ui\.log\)/);
+  assert.doesNotMatch(markdown, /file:/, 'no file: links, which the preview would show as text');
 });
 
 test('buildEvidenceMarkdown: no results is a plain "no gates have run" document', () => {
-  assert.match(buildEvidenceMarkdown({ title: 'Lane 1', worktree: '/w', logDirectories: [], results: [] }), /No gates have run\./);
+  assert.match(buildEvidenceMarkdown({ title: 'Lane 1', worktree: '/w', logDirectories: [], baseDirectory: '/logs', results: [] }), /No gates have run\./);
 });
 
 test('underLogDirectories accepts only paths under the given directories; evidence outside them is dropped, never linked', () => {
@@ -78,7 +79,7 @@ test('underLogDirectories accepts only paths under the given directories; eviden
   assert.equal(underLogDirectories('/etc/passwd', ['/logs/run']), false);
   assert.equal(underLogDirectories('/logs/runaway/a.png', ['/logs/run']), false, 'a sibling that merely shares a prefix is not "under" it');
   const markdown = buildEvidenceMarkdown({
-    title: 'Lane 1', worktree: '/w', logDirectories: ['/logs/run'],
+    title: 'Lane 1', worktree: '/w', logDirectories: ['/logs/run'], baseDirectory: '/logs/run',
     results: [check({ id: 'ui', kind: 'screenshots', evidence: ['/etc/passwd', '/logs/run/ok.png'] })],
   });
   assert.doesNotMatch(markdown, /passwd/);
@@ -86,8 +87,10 @@ test('underLogDirectories accepts only paths under the given directories; eviden
 });
 
 test('findingLink: a finding with a file (and optional line) opens it in the given worktree; without a file it is plain text', () => {
-  assert.match(findingLink({ severity: 'major', note: 'x', file: 'src/a.ts', line: 7 }, '/work/head'), /^\[src\/a\.ts:7\]\(file:\/\/\/(?:[A-Za-z]:\/)?work\/head\/src\/a\.ts#7\)$/);
-  assert.equal(findingLink({ severity: 'major', note: 'x' }, '/work/head'), '(no location)');
+  assert.equal(findingLink({ severity: 'major', note: 'x', file: 'src/a.ts', line: 7 }, '/work/head', '/logs'), '[src/a.ts:7](../work/head/src/a.ts#L7)');
+  assert.equal(findingLink({ severity: 'major', note: 'x', file: 'my file.ts' }, '/work/head', '/work/head'), '[my file.ts](my%20file.ts)', 'segments are URL-encoded');
+  assert.equal(findingLink({ severity: 'major', note: 'x' }, '/work/head', '/logs'), '(no location)');
+  if (process.platform === 'win32') assert.equal(findingLink({ severity: 'major', note: 'x', file: 'src/a.ts', line: 7 }, 'D:\\w', 'C:\\logs'), '`src/a.ts:7`', 'another drive has no relative path: plain text');
 });
 
 // ---- Lane merge/run-gates text (docs/Gates_Plan.md, "Merge") ----
@@ -110,6 +113,9 @@ test('flattenGateFailureMessage: gateFailureMessage collapsed to one line, no li
   assert.match(gateFailureMessage(results), /\n/, 'the un-flattened message is still multi-line');
   const short = flattenGateFailureMessage([check({ id: 'unit', state: 'failed', passed: false, exitCode: 1 })]);
   assert.ok(!short.endsWith('…'), 'a short message is not truncated');
+  assert.doesNotMatch(short, /hydra_done/, 'a lane has no hydra_done');
+  assert.match(short, /Fix them and commit; the gates run again when the lane is merged\.$/);
+  assert.match(gateFailureMessage(results), /call hydra_done again\.$/, 'a head still gets its own instruction');
 });
 
 // ---- Settings -> Gates page model (docs/Gates_Plan.md, "Hydra Settings -> Gates") ----

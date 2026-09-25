@@ -5,8 +5,8 @@ import { filterPages, matchesQuery, matchingRows } from '../src/settings/search'
 import { pageOrder } from '../src/settings/pageOrder';
 import { dismissedPromptKeys, clearDismissedPrompts } from '../src/settings/dismissedPrompts';
 
-test('nav order is General, Connectors, MCP servers, Heads, Appearance, Docs', () => {
-  assert.deepEqual(pageOrder, ['general', 'connectors', 'mcpServers', 'heads', 'appearance', 'docs']);
+test('nav order is General, Connectors, MCP servers, Heads, Gates, Appearance, Docs', () => {
+  assert.deepEqual(pageOrder, ['general', 'connectors', 'mcpServers', 'heads', 'gates', 'appearance', 'docs']);
 });
 
 test('the page registry (src/settings/pages/index.ts) follows pageOrder', async () => {

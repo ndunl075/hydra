@@ -188,8 +188,13 @@ export class LanesController implements vscode.Disposable {
   async onLimitEvent(event: LimitEvent): Promise<void> {
     if (event.source !== 'lane' || !event.laneId || !this.exists(event.laneId)) return;
     const laneId = event.laneId;
+    // A late event from the agent a lane has already switched away from is stale.
+    if (this.service?.lanes().find(lane => lane.id === laneId)?.provider !== event.provider) return;
     const considered = this.limitTracker.consider(event, new Date());
     if (!considered) return; // a repeat of the same lane within the dedupe window
+    // The choice lives on the tile; a notification makes sure it isn't missed when the Lanes view is out of sight.
+    void vscode.window.showWarningMessage(`Lane ${this.laneName(laneId) ?? laneId}: ${laneOfferMessage(event, new Date())}`, 'Show lane')
+      .then(choice => { if (choice) void this.show('lanes', laneId); });
     if (considered.otherAlsoLimited) { this.setOffer(laneId, event, true); return; }
     const onLimit = vscode.workspace.getConfiguration('hydra').get<string>('lanes.onLimit', 'ask');
     if (onLimit === 'switch') { this.startSwitchCountdown(laneId, event); return; }

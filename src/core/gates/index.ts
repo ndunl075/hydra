@@ -48,9 +48,11 @@ export async function runGateList(gates: readonly Gate[], worktree: string, base
   if (!gates.length) return results;
   await mkdir(context.logDirectory, { recursive: true });
   let blocker: JobCheckResult | undefined;
+  // A pack's gate says so on its result, for "From the Coding pack" (docs/Packs_Plan.md).
+  const fromPack = (gate: Gate, result: JobCheckResult): JobCheckResult => gate.pack ? { ...result, pack: gate.pack } : result;
   for (const gate of gateOrder(gates)) {
-    if (context.signal?.aborted) { results.push(notRun(gate, 'Stopped before it ran.')); continue; }
-    if (blocker) { results.push(notRun(gate, `Skipped: ${blocker.id} failed first.`)); continue; }
+    if (context.signal?.aborted) { results.push(fromPack(gate, notRun(gate, 'Stopped before it ran.'))); continue; }
+    if (blocker) { results.push(fromPack(gate, notRun(gate, `Skipped: ${blocker.id} failed first.`))); continue; }
     context.onProgress?.({ done: [...results], running: gate.id });
     const run = { ...context, worktree, baseCommit, runtime, earlier: [...results] };
     let result: JobCheckResult;
@@ -61,6 +63,7 @@ export async function runGateList(gates: readonly Gate[], worktree: string, base
     } catch (error) {
       result = notRun(gate, `Hydra couldn't run it: ${error instanceof Error ? error.message : String(error)}`);
     }
+    result = fromPack(gate, result);
     context.log?.(`[gates] ${gate.id} (${gate.type}): ${describeState(result)}${result.summary ? `. ${clip(result.summary, 200)}` : ''}`);
     results.push(result);
     if (gateBlocks(result)) blocker = result;
@@ -68,6 +71,14 @@ export async function runGateList(gates: readonly Gate[], worktree: string, base
   context.onProgress?.({ done: [...results] });
   return results;
 }
+
+/**
+ * Where a folder's gates come from. `loadGates` reads gates.json only; the packs
+ * loader (src/core/packs/gates.ts, effectiveGates) adds the active packs' gates,
+ * and `notRun` results for the gates of listed packs that can't run
+ * (docs/Packs_Plan.md, "When a pack is active"). Those never block.
+ */
+export type GatesLoader = (folder: string) => Promise<GatesConfig & { notRun?: JobCheckResult[] }>;
 
 export interface GatesOutcome {
   /** Where the gates came from: gates.json, checks.json, or none at all. */
@@ -87,11 +98,11 @@ export interface GatesOutcome {
  * `baseCommit` is where the work started (for a lane, merge-base(target, lane)),
  * so the review sees `baseCommit..HEAD`.
  */
-export async function runGates(folder: string, worktree: string, baseCommit: string, context: GateContext): Promise<GatesOutcome> {
+export async function runGates(folder: string, worktree: string, baseCommit: string, context: GateContext, loader: GatesLoader = loadGates): Promise<GatesOutcome> {
   const canonical = async (value: string) => { const resolved = await realpath(value).catch(() => path.resolve(value)); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; };
   if (await canonical(folder) === await canonical(worktree)) throw new Error('Gates run in a worktree, never in the main checkout.');
-  const config = await loadGates(folder);
-  const results = await runGateList(config.gates, worktree, baseCommit, context);
+  const config = await loader(folder);
+  const results = [...await runGateList(config.gates, worktree, baseCommit, context), ...config.notRun ?? []];
   return { source: config.source, lanes: config.lanes, ...(config.maxAttempts !== undefined ? { maxAttempts: config.maxAttempts } : {}), results, failed: results.filter(gateBlocks) };
 }
 

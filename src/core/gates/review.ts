@@ -94,6 +94,8 @@ export interface ReviewPromptInput {
   earlier: readonly JobCheckResult[];
   screenshots: readonly string[];
   focus: string;
+  /** A pack review gate's role (docs/Packs_Plan.md): the reviewer works as it says. */
+  role?: { title: string; instructions: string };
 }
 
 /** What the reviewer is asked: the task, the change, what the earlier gates found, the screenshots, the focus, and JSON back. */
@@ -129,6 +131,7 @@ export function reviewPrompt(input: ReviewPromptInput): string {
       input.provider === 'codex' ? 'They are attached to this message, in this order:' : 'Open each of these images to see how the app renders:',
       ...input.screenshots.map(file => `- ${file}`));
   }
+  if (input.role) lines.push('', `## Your role: ${input.role.title}`, input.role.instructions.trim(), '', 'You still only read; the reply below is what counts.');
   if (input.focus) lines.push('', '## What to focus on', input.focus);
   lines.push('', '## Your reply',
     'Reply with JSON only: no prose and no code fences, nothing before or after the object.',
@@ -212,6 +215,7 @@ export async function runReviewGate(gate: ReviewGate, run: GateRun): Promise<Job
   const prompt = reviewPrompt({
     provider: pick.provider, title: run.title, brief: run.brief, writeScope: run.writeScope, baseCommit: run.baseCommit,
     diff: await reviewDiff(run.worktree, run.baseCommit), earlier: run.earlier, screenshots, focus: gate.focus,
+    ...(gate.reviewerRole ? { role: gate.reviewerRole } : {}),
   });
   const promptFile = path.join(run.logDirectory, `${gate.id}-prompt.md`), replyFile = path.join(run.logDirectory, `${gate.id}-reply.txt`);
   await writeFile(promptFile, prompt, 'utf8');

@@ -35,7 +35,7 @@ export async function runCommandGate(gate: CommandGate, run: GateRun): Promise<J
   const logFile = path.join(run.logDirectory, `${gate.id}.log`);
   const started = run.runtime.now();
   const executable = await resolveCommand(gate.command[0]!);
-  const outcome = await run.runtime.runCommand({ executable, args: gate.command.slice(1) }, run.worktree, logFile, gate.timeoutSeconds * 1000, run.signal, run.spawned);
+  const outcome = await run.runtime.runCommand({ executable, args: gate.command.slice(1), ...(gate.env ? { env: gate.env } : {}) }, run.worktree, logFile, gate.timeoutSeconds * 1000, run.signal, run.spawned);
   const output = await readFile(logFile, 'utf8').catch(() => '');
   const passed = outcome.exitCode === 0 && !outcome.timedOut && !outcome.interrupted;
   const summary = passed ? undefined

@@ -50,7 +50,7 @@ export interface ReviewerSpec {
 
 /** Everything a gate does to the outside world, so tests can replace any of it. */
 export interface GateRuntime {
-  runCommand(command: { executable: string; args: string[] }, cwd: string, logFile: string, timeoutMs: number, signal?: AbortSignal, spawned?: (pid: number) => void): Promise<CheckCommandResult>;
+  runCommand(command: { executable: string; args: string[]; env?: Record<string, string> }, cwd: string, logFile: string, timeoutMs: number, signal?: AbortSignal, spawned?: (pid: number) => void): Promise<CheckCommandResult>;
   runReviewer(spec: ReviewerSpec): Promise<ProbeOutput>;
   browser: ScreenshotBrowser;
   freePort(): Promise<number>;

@@ -34,7 +34,7 @@ export const substitutePort = (value: string, port: number): string => value.rep
 interface AppServer { pid?: number; exitCode(): number | null | undefined; exited: Promise<void>; stop(): Promise<void> }
 
 /** Start the app as a tracked process tree in the worktree, its output going to a log. */
-async function startApp(command: string[], cwd: string, port: number, logFile: string, runtime: GateRuntime, spawned?: (pid: number) => void): Promise<AppServer> {
+async function startApp(command: string[], cwd: string, port: number, logFile: string, runtime: GateRuntime, spawned?: (pid: number) => void, env: Record<string, string> = {}): Promise<AppServer> {
   const log = await open(logFile, 'w');
   let written = 0, writes = Promise.resolve(), exitCode: number | null | undefined;
   const append = (data: Buffer) => {
@@ -43,7 +43,7 @@ async function startApp(command: string[], cwd: string, port: number, logFile: s
     writes = writes.then(() => log.write(part).then(() => undefined)).catch(() => undefined);
   };
   const launch = processLaunch(await resolveCommand(command[0]!), command.slice(1));
-  const child = spawn(launch.executable, launch.args, { cwd, env: { ...process.env, PORT: String(port) }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(launch.executable, launch.args, { cwd, env: { ...process.env, ...env, PORT: String(port) }, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   if (child.pid) spawned?.(child.pid);
   child.stdout.on('data', append); child.stderr.on('data', append);
   const exited = new Promise<void>(resolve => {
@@ -97,7 +97,7 @@ export async function runScreenshotsGate(gate: ScreenshotsGate, run: GateRun): P
   const problems: string[] = [], pictures: string[] = [];
   let app: AppServer | undefined, session: BrowserSession | undefined, tooling: string | undefined;
   try {
-    app = await startApp(gate.start.map(part => substitutePort(part, port)), run.worktree, port, serverLog, runtime, run.spawned);
+    app = await startApp(gate.start.map(part => substitutePort(part, port)), run.worktree, port, serverLog, runtime, run.spawned, gate.env);
     const ready = await waitUntilReady(url, gate.readyTimeoutSeconds * 1000, app, runtime, run.signal);
     if (!ready.ok) problems.push(ready.reason);
     else {

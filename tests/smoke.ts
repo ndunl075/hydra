@@ -33,6 +33,12 @@ export async function run(): Promise<void> {
     assert.equal(path.relative(await realpath(bundled), await realpath(extension.extensionPath)), '', 'Hydra features load from the app bundle rather than the source checkout');
   }
   await extension.activate();
+  // The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3): the activity-bar container and its one tree view are
+  // contributed. (hydra.openLanes resolving is exercised below, in laneSmoke, alongside a real lane.)
+  const contributes = extension.packageJSON?.contributes as { viewsContainers?: { activitybar?: { id: string }[] }; views?: Record<string, { id: string }[]> } | undefined;
+  assert.ok(contributes?.viewsContainers?.activitybar?.some(container => container.id === 'hydra'), 'The Hydra activity-bar container is contributed');
+  assert.ok(contributes?.views?.hydra?.some(view => view.id === 'hydra.overview'), 'The hydra.overview tree view is contributed');
+  console.log('PASS: the Hydra activity-bar container and its overview tree view are contributed.');
   const repository = process.env.HYDRA_TEST_REPOSITORY;
   if (process.env.HYDRA_TEST_HANDOFF_PROVIDER) {
     const provider = process.env.HYDRA_TEST_HANDOFF_PROVIDER as 'claude' | 'codex';

@@ -79,7 +79,15 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 }
 
 /* Agents view layout: the canvas fills the page under the top bar. */
-.agents-body { flex: 1; min-height: 0; }
+.agents-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* Canvas | Lanes switch (docs/Lanes_And_Planner_Plan.md, section 2). */
+.agents-view-switch { display: flex; gap: 3px; padding: 8px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.agents-view-switch [role="tab"] { padding: 5px 12px; border-radius: 5px; font-size: 12px; color: var(--muted); border: 1px solid transparent; }
+.agents-view-switch [role="tab"].on { color: var(--text); background: var(--surface); border-color: var(--border); }
+.agents-view-count { color: var(--muted); }
+.agents-view-switch [role="tab"].on .agents-view-count { color: inherit; }
+.agents-view-pane { flex: 1; min-height: 0; }
+.agents-view-pane[hidden] { display: none; }
 .wordmark-mark { width: 22px; height: 22px; }
 .handoff-only { flex: 1; min-height: 0; overflow: auto; }
 .wordmark-mark img { width: 22px; height: 22px; display: block; }

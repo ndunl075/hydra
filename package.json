@@ -106,6 +106,16 @@
       {
         "command": "hydra.openCanvas",
         "title": "Hydra: Open Agents Canvas"
+      },
+      {
+        "command": "hydra.overview.mergeLane",
+        "title": "Merge",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "hydra.overview.closeLane",
+        "title": "Close",
+        "icon": "$(close)"
       }
     ],
     "menus": {
@@ -113,9 +123,69 @@
         {
           "command": "hydra.debug.simulateLimit",
           "when": "false"
+        },
+        {
+          "command": "hydra.overview.mergeLane",
+          "when": "false"
+        },
+        {
+          "command": "hydra.overview.closeLane",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "hydra.newLane",
+          "when": "view == hydra.overview",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hydra.newPlan",
+          "when": "view == hydra.overview",
+          "group": "navigation@2"
+        },
+        {
+          "command": "hydra.openAgents",
+          "when": "view == hydra.overview",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "hydra.overview.mergeLane",
+          "when": "view == hydra.overview && viewItem =~ /^lane/",
+          "group": "inline@1"
+        },
+        {
+          "command": "hydra.overview.closeLane",
+          "when": "view == hydra.overview && viewItem =~ /^lane/",
+          "group": "inline@2"
         }
       ]
     },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hydra",
+          "title": "Hydra",
+          "icon": "media/hydra.svg"
+        }
+      ]
+    },
+    "views": {
+      "hydra": [
+        {
+          "id": "hydra.overview",
+          "name": "Overview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "hydra.overview",
+        "contents": "Run several agents at once.\n[New lane](command:hydra.newLane)\n[New plan](command:hydra.newPlan)\n[Open Agents view](command:hydra.openAgents)"
+      }
+    ],
     "keybindings": [
       {
         "command": "hydra.toggleMode",
@@ -246,6 +316,8 @@
     }
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "jsonc-parser": "3.3.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

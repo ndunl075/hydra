@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { ClientMessage, HelperJobView, Snapshot, Provider, Handoff, OfficialExtensionInfo } from '../src/core/model';
+import type { ClientMessage, HelperJobView, LaneServerMessage, LaneView, Snapshot, Provider, Handoff, OfficialExtensionInfo } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
 import './styles.css';
-import { AgentsCanvas } from './AgentsCanvas';
+import { AgentsBody, type AgentsViewName } from './AgentsBody';
 import { HydraMark } from './HydraMark';
+import { emitLaneEvent } from './laneBus';
 
 declare function acquireVsCodeApi(): { postMessage(message: ClientMessage): void; getState(): unknown; setState(state: unknown): void };
 const api = acquireVsCodeApi();
@@ -40,18 +41,46 @@ function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: Officia
  * start (docs/Agents_View_Plan.md). Heads arrive with each snapshot, and at once
  * through "heads" events when a job changes.
  */
+/** The Canvas | Lanes view, remembered across reloads (docs/Lanes_And_Planner_Plan.md, section 2). */
+function initialView(): AgentsViewName {
+  try { const state = api.getState() as { view?: string } | undefined; return state?.view === 'lanes' ? 'lanes' : 'canvas'; } catch { return 'canvas'; }
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState(initial);
   const [heads, setHeads] = useState<HelperJobView[]>([]);
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
   const [plans, setPlans] = useState<Plan[]>([]);
   const [newPlanSignal, setNewPlanSignal] = useState(0);
+  // ---- Lanes (docs/Lanes_And_Planner_Plan.md, sections 1-2): its own block. ----
+  const [view, setView] = useState<AgentsViewName>(initialView);
+  const [lanes, setLanes] = useState<LaneView[]>([]);
+  const [terminals, setTerminals] = useState(true);
+  const [laneError, setLaneError] = useState<string>();
+  const [laneFocus, setLaneFocus] = useState<string>();
+  const [headFocus, setHeadFocus] = useState<{ id: string; at: number }>();
+  const changeView = (next: AgentsViewName, focus?: string) => {
+    setView(next);
+    try { api.setState({ view: next }); } catch { /* private windows: state just isn't remembered */ }
+    send({ type: 'view', view: next, ...(focus ? { focus } : {}) });
+  };
   useEffect(() => {
     const listener = (event: MessageEvent) => {
-      if (event.data?.type === 'snapshot') { const next = event.data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); }
-      if (event.data?.type === 'heads') setHeads(event.data.heads as HelperJobView[]);
-      if (event.data?.type === 'plans') setPlans(event.data.plans as Plan[]);
-      if (event.data?.type === 'showNewPlan') setNewPlanSignal(value => value + 1);
+      const data = event.data;
+      if (data?.type === 'snapshot') { const next = data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); }
+      if (data?.type === 'heads') setHeads(data.heads as HelperJobView[]);
+      if (data?.type === 'plans') setPlans(data.plans as Plan[]);
+      if (data?.type === 'showNewPlan') setNewPlanSignal(value => value + 1);
+      // ---- Lanes: 'lanes'/'show' update React state; 'laneData'/'laneReplay' skip it entirely (the lane bus writes straight into xterm). ----
+      const lane = data as LaneServerMessage | undefined;
+      if (lane?.type === 'lanes') { setLanes(lane.lanes); setTerminals(lane.terminals); }
+      if (lane?.type === 'laneError') setLaneError(lane.message);
+      if (lane?.type === 'laneData' || lane?.type === 'laneReplay') emitLaneEvent({ type: lane.type, id: lane.id, data: lane.data });
+      if (lane?.type === 'show') {
+        setView(lane.view);
+        try { api.setState({ view: lane.view }); } catch { /* ignore */ }
+        if (lane.focus) { if (lane.view === 'lanes') setLaneFocus(lane.focus); else setHeadFocus({ id: lane.focus, at: Date.now() }); }
+      }
     };
     window.addEventListener('message', listener);
     send({ type: 'ready' });
@@ -66,8 +95,10 @@ function App() {
     {(snapshot.error) && <div className="error" role="alert"><strong>Needs attention</strong><p>{snapshot.error}</p><button onClick={() => send({ type: 'refresh' })}>Retry</button></div>}
     {snapshot.handoff
       ? <HandoffView handoff={snapshot.handoff} info={snapshot.officialExtensions?.find(info => info.provider === snapshot.handoff?.task.provider)} busy={snapshot.busy} />
-      : <div className="agents-body"><AgentsCanvas heads={heads} plans={plans} defaultProvider={snapshot.defaultProvider} openNewPlanAt={newPlanSignal}
-          onAction={(type, jobId) => send({ type, jobId })} onPlan={send} onStopAll={() => send({ type: 'helperStopAll' })} /></div>}
+      : <AgentsBody view={view} onViewChange={changeView} heads={heads} plans={plans} lanes={lanes} terminals={terminals} defaultProvider={snapshot.defaultProvider}
+          laneError={laneError} laneFocus={laneFocus} onLaneFocused={() => setLaneFocus(undefined)} openNewPlanAt={newPlanSignal} focusHead={headFocus}
+          onAction={(type, jobId) => send({ type, jobId })} onPlan={send} onStopAll={() => send({ type: 'helperStopAll' })}
+          onOpenLane={id => { setLaneFocus(id); changeView('lanes', id); }} onSend={send} />}
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

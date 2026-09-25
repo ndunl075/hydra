@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientMessage, HelperJobView, Provider } from '../src/core/model';
+import type { ClientMessage, HelperJobView, LaneView, Provider } from '../src/core/model';
 import { buildCanvas, elapsedLabel, headStatus, isActive, layout, type CanvasHead, type CanvasLead, type CanvasPlanJob, type CanvasPlanNode } from '../src/core/agentsCanvas';
 // Type-only (see the note in agentsCanvas.ts): plans.ts's storage code must never
 // enter this browser bundle, so only PlanJob's shape crosses this boundary.
@@ -17,6 +17,8 @@ export type HeadAction = 'helperReview' | 'helperLog' | 'helperCancel' | 'helper
 const leaveMs = 650;
 const edgeStart = (x: number, y: number) => ({ x, y: y + 34 });
 const curve = (x1: number, y1: number, x2: number, y2: number) => { const mid = (x1 + x2) / 2; return `M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`; };
+/** A conflict edge bows out to the left of both lane leads, clear of the head columns to their right. */
+const conflictCurve = (x1: number, y1: number, x2: number, y2: number) => { const bow = 46; return `M${x1} ${y1} C${x1 - bow} ${y1} ${x2 - bow} ${y2} ${x2} ${y2}`; };
 
 interface Ghost { head: CanvasHead; to: { x: number; y: number }; until: number }
 interface LeadGhost { lead: CanvasLead; until: number }
@@ -27,15 +29,21 @@ const leadGraceMs = 1200;
 interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
 interface JobMenuState { planId: string; job: PlanJob; x: number; y: number }
 
-export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt }: {
+export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
   heads: readonly HelperJobView[];
   plans?: readonly Plan[];
+  /** Open lanes (docs/Lanes_And_Planner_Plan.md, section 2): every one is a lead node, even with no heads. */
+  lanes?: readonly LaneView[];
   defaultProvider?: Provider;
   onAction: (action: HeadAction, jobId: string) => void;
   onPlan?: (message: ClientMessage) => void;
   onStopAll?: () => void;
   /** Bumped by index.tsx when the extension asks (hydra.newPlan / "showNewPlan"): opens the New plan card. */
   openNewPlanAt?: number;
+  /** Clicking a lane node: switch to Lanes and focus that tile. */
+  onOpenLane?: (laneId: string) => void;
+  /** A `show` message asked to focus a head on the canvas (bumped each time, so the same id can be re-focused). */
+  focusHead?: { id: string; at: number };
 }) {
   const [now, setNow] = useState(() => Date.now());
   const [still, setStill] = useState(false);
@@ -70,7 +78,7 @@ export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onP
 
   // One clock drives elapsed times, the finished-head timeout, and clearing heads that have collapsed away.
   useEffect(() => { const timer = setInterval(() => { setNow(Date.now()); setGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); setLeadGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); }, 250); return () => clearInterval(timer); }, []);
-  const model = useMemo(() => buildCanvas(heads, now, { plans }), [heads, now, plans]);
+  const model = useMemo(() => buildCanvas(heads, now, { plans, lanes }), [heads, now, plans, lanes]);
   useEffect(() => {
     if (manual || !box.width || !box.height || (!model.heads.length && !model.plans.length)) return;
     const fit = Math.min(1, (box.width - 24) / model.width, (box.height - 24) / model.height);
@@ -160,6 +168,7 @@ export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onP
     setManual(true);
     setPan({ x: Math.min(0, box.clientWidth / 2 - (item.x + layout.headWidth / 2) * zoom), y: Math.min(0, box.clientHeight / 2 - (item.y + 40) * zoom) });
   };
+  useEffect(() => { if (focusHead) reveal(focusHead.id); }, [focusHead?.at]);
   const openMenu = (id: string, x: number, y: number) => { setSelected(id); setMenu({ id, x, y }); };
   const menuHead = menu ? heads.find(head => head.id === menu.id) : undefined;
   const ordered = model.heads.map(item => item.id);
@@ -178,7 +187,8 @@ export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onP
   const listed = (filter === 'running' ? running : heads.filter(head => Date.parse(head.createdAt) >= dayStart.getTime()))
     .slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const lingering = leadGhosts.filter(ghost => !leadAt.has(ghost.lead.key));
-  const empty = !model.heads.length && !ghosts.length && !lingering.length && !model.plans.length;
+  const laneLeads = model.leads.filter(lead => lead.kind === 'lane');
+  const empty = !model.heads.length && !ghosts.length && !lingering.length && !model.plans.length && !laneLeads.length;
 
   return <section className={`agents-canvas${still ? ' still' : ''}`} aria-label="Agents">
     <div className="canvas-stage">
@@ -209,10 +219,18 @@ export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onP
         onPointerMove={event => { const start = drag.current; if (start) setPan({ x: start.panX + event.clientX - start.x, y: start.panY + event.clientY - start.y }); }}
         onPointerUp={() => { drag.current = undefined; }}
         onWheel={event => { if (!event.ctrlKey) return; event.preventDefault(); setManual(true); setZoom(value => Math.min(1.5, Math.max(.4, +(value - Math.sign(event.deltaY) * .1).toFixed(2)))); }}>
-        {empty ? <div className="canvas-empty"><div className="canvas-empty-mark" aria-hidden="true"><i /><i /><i /></div><p>Heads your Claude Code and Codex chats start will appear here.</p><span>Start a task in a chat that splits into independent pieces. Each head grows out of the chat that started it.</span></div>
+        {empty ? <div className="canvas-empty"><div className="canvas-empty-mark" aria-hidden="true"><i /><i /><i /></div><p>Lanes you open, plans you draft and heads your chats start will appear here.</p><span>Start a task in a chat that splits into independent pieces. Each head grows out of the chat that started it.</span></div>
           : <div className="canvas-plane" style={{ width: model.width, height: model.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
             <svg className="canvas-edges" width={model.width} height={model.height}>
               {model.edges.map(edge => {
+                if (edge.kind === 'conflict') {
+                  const from = leadAt.get(edge.from), to = leadAt.get(edge.to);
+                  if (!from || !to) return null;
+                  const start = edgeStart(from.x, from.y), end = edgeStart(to.x, to.y);
+                  return <g key={edge.id} className="canvas-edge conflict" aria-hidden="true">
+                    <path className="base" style={{ d: `path("${conflictCurve(start.x, start.y, end.x, end.y)}")` } as React.CSSProperties} />
+                  </g>;
+                }
                 const leadLike = edge.kind === 'lead' || edge.kind === 'plan-lead';
                 const to = edge.kind === 'plan-dependency' || edge.kind === 'plan-lead' ? planJobAt.get(edge.to) : headAt.get(edge.to);
                 if (!to) return null;
@@ -235,10 +253,18 @@ export function AgentsCanvas({ heads, plans = [], defaultProvider, onAction, onP
                 </g>;
               })}
             </svg>
-            {model.leads.map(lead => <div key={lead.key} className={`canvas-lead provider-${lead.provider || 'unknown'}`} style={{ transform: `translate(${lead.x}px, ${lead.y}px)` }} title={lead.label}>
-              <span className="canvas-lead-logo">{lead.provider ? <ProviderLogo provider={lead.provider} /> : <span aria-hidden="true">◆</span>}</span>
-              <span className="canvas-lead-copy"><em>Lead</em><b>{lead.label}</b><span>{lead.heads.length} {lead.heads.length === 1 ? 'head' : 'heads'}</span></span>
-            </div>)}
+            {model.leads.map(lead => lead.kind === 'lane'
+              ? <div key={lead.key} className={`canvas-lead kind-lane provider-${lead.provider || 'unknown'}${lead.status?.startsWith('Conflicts') ? ' conflict' : ''}`}
+                  style={{ transform: `translate(${lead.x}px, ${lead.y}px)` }} title={lead.label}
+                  role="button" tabIndex={0} aria-label={`Lane ${lead.label}. ${lead.status || ''}. Opens the Lanes view.`}
+                  onClick={() => onOpenLane?.(lead.laneId!)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenLane?.(lead.laneId!); } }}>
+                  <span className="canvas-lead-logo">{lead.provider ? <ProviderLogo provider={lead.provider} /> : <span aria-hidden="true">◆</span>}</span>
+                  <span className="canvas-lead-copy"><em>Lane</em><b>{lead.label}</b><span>{lead.status}</span></span>
+                </div>
+              : <div key={lead.key} className={`canvas-lead provider-${lead.provider || 'unknown'}`} style={{ transform: `translate(${lead.x}px, ${lead.y}px)` }} title={lead.label}>
+                  <span className="canvas-lead-logo">{lead.provider ? <ProviderLogo provider={lead.provider} /> : <span aria-hidden="true">◆</span>}</span>
+                  <span className="canvas-lead-copy"><em>Lead</em><b>{lead.label}</b><span>{lead.heads.length} {lead.heads.length === 1 ? 'head' : 'heads'}</span></span>
+                </div>)}
             {lingering.map(ghost => <div key={`lead-ghost-${ghost.lead.key}`} className={`canvas-lead leaving provider-${ghost.lead.provider || 'unknown'}`} aria-hidden="true" style={{ transform: `translate(${ghost.lead.x}px, ${ghost.lead.y}px)` }}>
               <span className="canvas-lead-logo">{ghost.lead.provider ? <ProviderLogo provider={ghost.lead.provider} /> : <span>◆</span>}</span>
               <span className="canvas-lead-copy"><em>Lead</em><b>{ghost.lead.label}</b><span>Done</span></span>

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { buildCanvas, elapsedLabel, finishedLingerMs, layout, onCanvas, trayWindowMs } from '../src/core/agentsCanvas';
-import type { HelperJobView } from '../src/core/model';
+import type { HelperJobView, LaneView } from '../src/core/model';
 import { createPlan, type Plan, type PlanJob } from '../src/core/plans';
 
 const now = Date.parse('2026-09-24T12:00:00.000Z');
@@ -11,6 +11,10 @@ const head = (id: string, state: string, extra: Partial<HelperJobView> = {}): He
   id, title: `Head ${id}`, state, provider: 'claude', createdAt: at(60_000), changedFiles: 0, checks: [], dependsOn: [], ...extra,
 });
 const planJob = (key: string, extra: Partial<PlanJob> = {}): PlanJob => ({ key, title: `Job ${key}`, brief: `Do ${key}.`, dependsOn: [], ...extra });
+const lane = (id: string, name: string, extra: Partial<LaneView> = {}): LaneView => ({
+  id, name, provider: 'claude', repository: '/repo', worktree: `/repo.worktrees/${id}`, branch: `lane/${id}`, baseCommit: 'a'.repeat(40),
+  target: 'main', createdAt: at(60_000), state: 'running', running: true, ...extra,
+});
 const plan = (state: Plan['state'], jobs: PlanJob[] = [], extra: Partial<Plan> = {}): Plan => ({ ...createPlan({ title: 'Checkout refactor', brief: 'Refactor checkout.' }), state, jobs, ...extra });
 
 test('the canvas shows working heads and fresh results; merged heads leave; old results move to the tray', () => {
@@ -85,7 +89,7 @@ test('the canvas renders chats, heads, dependency edges and an accessible label;
   assert.match(html, /aria-label="Head 222222222222, Claude head, Needs an answer\. Asks: Which API\?\. Enter opens the diff; Shift\+F10 for more\."/);
   assert.match(html, /tabindex="0"/);
   const idle = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], onAction: () => {} }));
-  assert.match(idle, /Heads your Claude Code and Codex chats start will appear here\./);
+  assert.match(idle, /Lanes you open, plans you draft and heads your chats start will appear here\./);
   assert.doesNotMatch(idle, /canvas-node/);
 });
 
@@ -100,6 +104,36 @@ test('the Agents view offers only head actions: diff, log, answer, cancel and st
   assert.match(css, /\.canvas-node:focus-visible/);
   // The task-era panels are gone from the Agents view.
   for (const retired of ['task-rail', 'Resources and setup', 'Managed CLI', 'profile slots', 'Create task']) assert.ok(!page.includes(retired), retired);
+});
+
+// ---- Lanes (docs/Lanes_And_Planner_Plan.md, section 2): its own block. ----
+
+test('buildCanvas draws every open lane as a lead node, even with no heads; closed and merged lanes are hidden', () => {
+  const model = buildCanvas([], now, { lanes: [lane('111111111111', 'Lane 1'), lane('222222222222', 'Lane 2', { state: 'exited' }), lane('333333333333', 'Lane 3', { state: 'merged' }), lane('444444444444', 'Lane 4', { state: 'closed' })] });
+  const keys = model.leads.map(item => item.key);
+  assert.ok(keys.includes('111111111111') && keys.includes('222222222222'));
+  assert.ok(!keys.includes('333333333333') && !keys.includes('444444444444'), 'a merged or closed lane is not drawn');
+  const running = model.leads.find(item => item.key === '111111111111')!;
+  assert.equal(running.kind, 'lane'); assert.equal(running.label, 'Lane 1'); assert.equal(running.status, 'Working · lane/111111111111'); assert.deepEqual(running.heads, []);
+  const exited = model.leads.find(item => item.key === '222222222222')!;
+  assert.equal(exited.status, 'Exited');
+});
+
+test('buildCanvas groups a head under its lane, not a chat lead, when lead.lane is set', () => {
+  const model = buildCanvas([head('h1', 'running', { lead: { sessionId: 'sess-1', provider: 'claude', lane: '111111111111' } })], now, { lanes: [lane('111111111111', 'Lane 1')] });
+  assert.equal(model.leads.length, 1);
+  const laneLead = model.leads[0]!;
+  assert.equal(laneLead.key, '111111111111'); assert.equal(laneLead.kind, 'lane'); assert.equal(laneLead.label, 'Lane 1');
+  assert.deepEqual(laneLead.heads, ['h1']);
+});
+
+test('buildCanvas draws one red dashed conflict edge per conflicting pair of lanes', () => {
+  const a = lane('111111111111', 'Lane 1', { sync: { changedFiles: ['a.ts'], conflicts: [{ laneId: '222222222222', files: ['a.ts'] }], targetConflicts: [], behind: 0, dirty: false, checkedAt: at(0) } });
+  const b = lane('222222222222', 'Lane 2', { sync: { changedFiles: ['a.ts'], conflicts: [{ laneId: '111111111111', files: ['a.ts'] }], targetConflicts: [], behind: 0, dirty: false, checkedAt: at(0) } });
+  const model = buildCanvas([], now, { lanes: [a, b] });
+  const conflictEdges = model.edges.filter(edge => edge.kind === 'conflict');
+  assert.equal(conflictEdges.length, 1, 'one edge per pair, not one per direction');
+  assert.equal(model.leads.find(item => item.key === '111111111111')!.status, 'Conflicts with Lane 2');
 });
 
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----

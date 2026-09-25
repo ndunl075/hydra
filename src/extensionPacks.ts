@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 import path from 'node:path';
+import { defaultMcpContext, listMcpServers } from './core/mcpServers';
 import { PackService, defaultUserPacksFolder } from './core/packs/service';
 
 /**
  * Packs in the window (docs/Packs_Plan.md): the PackService built from the
  * extension's paths and the hydra.packs.folder setting. Heads and lanes read
- * their gates through `service.gates`.
+ * their gates through `service.gates` and their roles through `service.resolve`.
+ * A role's server named like one of your own servers is left out, so your
+ * servers' names are read here, as the MCP servers page reads them; never written.
  *
  * The Packs page, its commands, the file watchers and the "This project uses
  * the Coding pack" notification come in phase 4. Whatever calls `allow` or
@@ -25,5 +28,9 @@ export function createPackService(context: vscode.ExtensionContext, log: (line: 
     storage: path.join(context.globalStorageUri.fsPath, 'packs'),
     version: String((context.extension.packageJSON as { version?: unknown } | undefined)?.version ?? '0.0.0'),
     nodeExecutable: process.execPath,
+    userServers: async () => {
+      const { servers } = await listMcpServers(defaultMcpContext());
+      return { claude: servers.filter(server => server.agents.claude).map(server => server.name), codex: servers.filter(server => server.agents.codex).map(server => server.name) };
+    },
   });
 }

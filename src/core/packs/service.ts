@@ -2,9 +2,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { loadGates } from '../gates/config';
 import type { GatesLoader } from '../gates';
+import type { Provider } from '../model';
 import { allowPack, canonicalProject, revokePack } from './allowed';
+import { buildRolePlugin } from './cache';
 import { effectiveGates, overGateCap, type EffectiveGates } from './gates';
-import { projectPacks, readPacksFile, withPack, withSkipGate, writePacksFile, type PackPlaces, type ProjectPack } from './project';
+import { RoleUnavailable, activeRolesSentence, findRole, parseRoleRef, roleRefPattern, roleSummaries, roleUnavailableReason, type ResolvedRole, type RoleSource, type RoleSummary } from './launch';
+import { activePacks, projectPacks, readPacksFile, withPack, withSkipGate, writePacksFile, type PackPlaces, type ProjectPack } from './project';
 
 /**
  * Packs for one Hydra window (docs/Packs_Plan.md): where they live, each
@@ -27,12 +30,17 @@ export interface PackServiceOptions {
   version: string;
   /** Hydra's own executable, run as Node for `{node}`. */
   nodeExecutable?: string;
+  /**
+   * The names of your own MCP servers, per agent (read-only, as the MCP servers page
+   * reads them): a pack server with the same name is left out. Missing: none.
+   */
+  userServers?: () => Promise<Partial<Record<Provider, readonly string[]>>>;
 }
 
 /** Decision 1: your packs live in ~/.hydra/packs unless hydra.packs.folder names another absolute folder. */
 export const defaultUserPacksFolder = (): string => path.join(homedir(), '.hydra', 'packs');
 
-export class PackService {
+export class PackService implements RoleSource {
   constructor(private readonly options: PackServiceOptions) {}
 
   places(): PackPlaces {
@@ -88,6 +96,60 @@ export class PackService {
   /** Forget your OK for a pack in this project. */
   async forget(folder: string, id: string): Promise<void> {
     await revokePack(this.places().allowedFile, await canonicalProject(folder), id);
+  }
+
+  // ---- Roles (docs/Packs_Plan.md, section 5) ----
+
+  /** The active packs' roles, in packs.json order: the lead's instructions, hydra_start_head's `role`, and the pickers. */
+  async roles(folder: string): Promise<RoleSummary[]> {
+    const active = await activePacks(folder, this.places());
+    return roleSummaries(active.map(pack => ({ id: pack.id, title: pack.title, roles: pack.pack?.valid?.manifest.roles ?? [] })));
+  }
+
+  /** The active role a name means ("builder" or "coding/builder"), or why there's none, listing the active roles. */
+  async pick(folder: string, name: string): Promise<RoleSummary> {
+    const roles = await this.roles(folder);
+    try { return findRole(roles, name); }
+    catch (error) {
+      const ref = roleRefPattern.exec(name);
+      if (!ref) throw error;
+      const unavailable = await this.unavailable(folder, ref[1]!, ref[2]!);
+      throw new Error(`The role ${name} isn't available (${unavailable.reason}). ${activeRolesSentence(roles)}`);
+    }
+  }
+
+  /**
+   * A role for one launch, from its active pack's checked copy: the copy's hash is
+   * verified (and the copy repaired) here, at every launch, since a head can write
+   * outside its worktree (R8). Its Claude plugin is built beside the copy. Throws
+   * RoleUnavailable with the reason when the pack isn't on or has no such role.
+   */
+  async resolve(folder: string, ref: string): Promise<ResolvedRole> {
+    const { pack: packId, role: roleId } = parseRoleRef(ref);
+    const listed = (await projectPacks(folder, this.places(), { listedOnly: true })).packs.find(pack => pack.id === packId);
+    const valid = listed?.state === 'on' ? listed.pack?.valid : undefined;
+    const role = valid?.manifest.roles.find(candidate => candidate.id === roleId);
+    if (!listed || !valid || !role || !listed.copy || !listed.pack?.hash || !listed.pack.files) throw await this.unavailable(folder, packId, roleId);
+    const plugin = role.skills.length
+      ? await buildRolePlugin(this.places().cacheRoot, { id: packId, hash: listed.pack.hash, files: listed.pack.files, title: listed.title }, role).catch(() => undefined)
+      : undefined;
+    const userServers = await this.options.userServers?.().catch(() => ({})) ?? {};
+    return {
+      ref: `${packId}/${roleId}`, pack: packId, packTitle: listed.title, role, copy: listed.copy,
+      instructions: valid.instructions[roleId] ?? '',
+      skills: role.skills.map(id => ({ id, description: valid.skills.find(skill => skill.id === id)?.description ?? '' })),
+      servers: role.mcpServers.flatMap(id => valid.manifest.mcpServers[id] && valid.servers[id] ? [{ id, spec: valid.manifest.mcpServers[id]!, info: valid.servers[id]! }] : []),
+      ...(plugin ? { plugin } : {}),
+      nodeExecutable: this.options.nodeExecutable ?? process.execPath,
+      userServers,
+    };
+  }
+
+  /** Why a pack's role can't be used here, with its title when the pack can still be read. */
+  private async unavailable(folder: string, packId: string, roleId: string): Promise<RoleUnavailable> {
+    const pack = (await this.state(folder).catch(() => ({ packs: [] as ProjectPack[] }))).packs.find(candidate => candidate.id === packId);
+    const title = pack?.pack?.valid?.manifest.roles.find(candidate => candidate.id === roleId)?.title ?? roleId;
+    return new RoleUnavailable(`${packId}/${roleId}`, title, roleUnavailableReason(packId, pack?.pack?.valid ? pack.title : undefined, pack?.state, roleId));
   }
 
   /** "Skip in this project" for one pack gate, written to packs.json. */

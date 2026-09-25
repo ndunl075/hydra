@@ -15,7 +15,7 @@ node scripts/desktop-upgrade-evidence.mjs `
   --logs-dir .desktop\upgrade-test-logs
 ```
 
-The baseline must contain the version, exact source head, Actions run and artifact IDs, artifact name/digest, prior-installer SHA-256, and a future `expiresAt` ISO timestamp. The existing pinned baseline predates this parser and has no expiry timestamp, so it deliberately blocks until a release owner refreshes the baseline from a successful disposable run. This prevents a stale downloaded artifact from being treated as current evidence.
+The baseline takes one of two forms. **A published release** (`"source": "release"`): the version, the tag `v<version>`, the tagged commit, the asset `HydraSetup.exe` and its SHA-256; a release doesn't expire. **A CI artifact** (no `source`): the version, exact source head, Actions run and artifact IDs, artifact name/digest, prior-installer SHA-256, and a future `expiresAt` ISO timestamp, so a stale downloaded artifact is never treated as current evidence. The hosted run's provenance must repeat the baseline's fields exactly.
 
 The parser refuses a current version equal to the baseline, a transcript whose prior/current versions disagree with the pin and manifest, a prior or current installer whose hash differs, provenance whose copied prior baseline differs, and missing `shortcut-selected` or `shortcut-unselected` prior/upgrade log pairs. It outputs a small JSON provenance record only after these checks.
 

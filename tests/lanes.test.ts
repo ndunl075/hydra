@@ -98,6 +98,23 @@ test('lane states change only along the table, and a restart turns running lanes
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('exitedAt is set when a lane becomes exited, and cleared on resume/restart (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up")', async () => {
+  const restarted = restartedLanes([sample()], Date.parse('2026-09-25T10:00:00.000Z'));
+  assert.equal(restarted.lanes[0]!.exitedAt, '2026-09-25T10:00:00.000Z');
+  assert.throws(() => validateLane(sample({ exitedAt: 'not a date' })), /invalid exited time/);
+  assert.equal(validateLane(sample({ exitedAt: '2026-09-25T10:00:00.000Z' })).exitedAt, '2026-09-25T10:00:00.000Z');
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-lanes-exitedat-'));
+  try {
+    const store = new LaneStore(directory);
+    await store.load();
+    await store.add(sample());
+    const exited = await store.update(id, { state: 'exited', exitCode: 1, exitedAt: '2026-09-25T10:05:00.000Z' });
+    assert.equal(exited.exitedAt, '2026-09-25T10:05:00.000Z');
+    const resumed = await store.update(id, { state: 'running', exitCode: undefined, exitedAt: undefined });
+    assert.equal(resumed.exitedAt, undefined, 'resuming clears exitedAt');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('the first prompt is one line, lists the other lanes, and is capped', () => {
   const others = [
     { name: 'Lane 2', provider: 'codex' as const, goal: 'Rework the cart\nand its tests', files: ['src/cart.ts', 'src/cart.test.ts'] },

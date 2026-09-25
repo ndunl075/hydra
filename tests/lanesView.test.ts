@@ -95,6 +95,7 @@ test('an empty Lanes view (no lanes yet) still renders the toolbar and a hint, n
   const { LanesView } = await import('../webview/LanesView');
   const html = renderToStaticMarkup(React.createElement(LanesView, { lanes: [], terminals: true, onSend: () => {}, onFocused: () => {} }));
   assert.match(html, /No lanes yet\./);
+  assert.match(html, /Learn how/);
 });
 
 test('an SSR render of the Canvas | Lanes switch shows both tabs, the lane count, and hides the inactive pane (both stay mounted)', async () => {

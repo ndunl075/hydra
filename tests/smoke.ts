@@ -196,6 +196,9 @@ export async function run(): Promise<void> {
     assert.equal(setupTabs().length, 0, 'A built-in extension must not auto-open onboarding in an extension test host');
     const startup = await vscode.commands.executeCommand<{ development: boolean }>('hydra.desktop.startupContext');
     assert.equal(startup?.development, true, 'Owned workbench recognizes the separate native test harness');
+    // The walkthrough (docs/Lanes_And_Planner_Plan.md, "A walkthrough"): hydra.learn is registered, and never opens itself in a test host.
+    assert.ok((await vscode.commands.getCommands(true)).includes('hydra.learn'), 'hydra.learn is registered');
+    assert.ok(vscode.extensions.getExtension('nico-dunlap.hydra-agent-manager')?.packageJSON?.contributes?.walkthroughs?.some((walkthrough: { id: string }) => walkthrough.id === 'hydra.workWithHydra'), 'the walkthrough is contributed');
     const setupBefore = await vscode.commands.executeCommand('hydra.getOnboardingState');
     await vscode.commands.executeCommand('hydra.openOnboarding');
     await vscode.commands.executeCommand('hydra.openOnboarding');

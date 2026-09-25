@@ -314,11 +314,11 @@ export function roleLaunch(role: ResolvedRole, options: RoleLaunchOptions): Role
   }
   // Paths on a shim's command line meet cmd.exe; one it would misread is left out rather than mangled.
   const onCommandLine = (file: string | undefined, what: string): string | undefined => {
-    if (file && options.shim && cmdUnsafe.test(file)) { notes.push(`The role's ${what} was left out: its path has characters cmd.exe reads as commands.`); return undefined; }
+    if (file && options.shim && cmdUnsafe.test(file)) { notes.push(`The role's ${what} left out: its path has characters cmd.exe reads as commands.`); return undefined; }
     return file;
   };
-  const pluginDir = provider === 'claude' && role.skills.length ? onCommandLine(role.plugin, 'skills') : undefined;
-  const systemPromptFile = provider === 'claude' && options.target === 'lane' ? onCommandLine(instructionsFile, 'instructions') : undefined;
+  const pluginDir = provider === 'claude' && role.skills.length ? onCommandLine(role.plugin, 'skills were') : undefined;
+  const systemPromptFile = provider === 'claude' && options.target === 'lane' ? onCommandLine(instructionsFile, 'instructions file was') : undefined;
   if (provider === 'claude' && role.skills.length && !role.plugin) notes.push('The role\'s skills were left out: Hydra couldn\'t build their plugin.');
   return {
     ref: role.ref, title: role.role.title, label, changes: role.role.changes, tools: [...role.role.tools],

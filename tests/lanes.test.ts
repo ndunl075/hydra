@@ -252,7 +252,7 @@ test('a lane launches its CLI with the plan\'s arguments and environment', () =>
     const launched = processLaunch('C:\\npm\\claude.cmd', shim.args);
     assert.match(launched.executable, /powershell\.exe$/i);
     assert.match(Buffer.from(launched.args.at(-1)!, 'base64').toString('utf16le'), /^& 'C:\\npm\\claude\.cmd' 'Fix ''Buy'' at 100 pipe tag caret bang'; exit \$LASTEXITCODE$/);
-    // PowerShell reads ‘ ’ ‚ ‛ as quotes too: each is doubled, so "it’s" can't end the string and run the rest.
+    // PowerShell reads U+2018, U+2019, U+201A and U+201B as quotes too: each is doubled, so a typographic apostrophe can't end the string and run the rest.
     const smart = processLaunch('C:\\npm\\codex.cmd', ['it\u2019s; Write-Output x; \u2018\u201a\u201b\'']);
     assert.equal(Buffer.from(smart.args.at(-1)!, 'base64').toString('utf16le'), '& \'C:\\npm\\codex.cmd\' \'it\u2019\u2019s; Write-Output x; \u2018\u2018\u201a\u201a\u201b\u201b\'\'\'; exit $LASTEXITCODE');
   }

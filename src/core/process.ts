@@ -9,13 +9,13 @@ export interface ProbeOutput {
 /**
  * How to start a CLI. A Windows `.cmd`/`.bat` shim is run by PowerShell from an
  * encoded script, with each argument as a single-quoted string, so no argument is
- * ever re-quoted by hand. PowerShell reads the typographic quotes ‘ ’ ‚ ‛ as
- * single quotes too, so every one of them is doubled like `'`: otherwise a prompt
- * or a pack's text with "it’s" could end the string and run the rest as code.
+ * ever re-quoted by hand. PowerShell reads the typographic quotes U+2018, U+2019,
+ * U+201A and U+201B as single quotes too, so each is doubled like an ASCII one:
+ * otherwise a prompt or a pack's text with a typographic apostrophe could end the string and run the rest as code.
  */
 export function processLaunch(executable: string, args: string[]): { executable: string; args: string[] } {
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
-    const quote = (value: string) => `'${value.replace(/['‘’‚‛]/g, '$&$&')}'`;
+    const quote = (value: string) => `'${value.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`;
     const script = `& ${[executable, ...args].map(quote).join(' ')}; exit $LASTEXITCODE`;
     return { executable: path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       args: ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] };

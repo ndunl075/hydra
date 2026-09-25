@@ -12,9 +12,10 @@ async function withStore(run: (store: JobStore, directory: string) => Promise<vo
   finally { await rm(directory, { recursive: true, force: true }); }
 }
 
-test('every state change not in the table is refused, and final states allow none', async () => {
+test('every state change not in the table is refused, and final states allow none but a limit continue', async () => {
   for (const from of jobStates) for (const to of jobStates) assert.equal(canTransition(from, to), jobTransitions[from].includes(to), `${from} -> ${to}`);
-  for (const state of finalJobStates) assert.deepEqual(jobTransitions[state], []);
+  // failed -> queued is the one exit: continuing a head in the other provider after a usage limit.
+  for (const state of finalJobStates) assert.deepEqual(jobTransitions[state], state === 'failed' ? ['queued'] : []);
   await withStore(async store => {
     // Walk every allowed path from queued and try every refused edge on the way.
     const { job } = await store.create('lead', input());

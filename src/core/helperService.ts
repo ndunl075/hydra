@@ -3,10 +3,13 @@ import path from 'node:path';
 import { git } from './git';
 import { createWorktree } from './worktrees';
 import { runCheckCommand } from './checkCommand';
-import { finalJobStates, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
+import { finalJobStates, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
 import type { Provider } from './model';
+import { headLimitReason } from './limitDetection';
+import type { LimitEvent } from './limitEvents';
+import { continuedHistoryReason } from './limitOffer';
 
 /**
  * Hydra helpers, end to end (docs/Official_Extensions_Plan.md, Phases 4 and 6).
@@ -45,6 +48,7 @@ export class HelperService {
   private readonly helperPids = new Set<number>();
   private readonly waiters = new Set<() => void>();
   private readonly merged = new Set<string>();
+  private readonly limitListeners = new Set<(event: LimitEvent) => void>();
   private dispatching = false;
   private dispatchAgain = false;
   private dispatchRun: Promise<void> = Promise.resolve();
@@ -106,6 +110,11 @@ export class HelperService {
     if (changed) this.changed();
   }
   helperProcessIds(): ReadonlySet<number> { return this.helperPids; }
+  /** A head stopped because its provider hit a usage limit. */
+  onLimit(listener: (event: LimitEvent) => void): { dispose(): void } {
+    this.limitListeners.add(listener);
+    return { dispose: () => { this.limitListeners.delete(listener); } };
+  }
   get leadFolder(): string { return this.options.leadFolder; }
 
   async stopAll(reason = 'Stopped with "Stop all heads".'): Promise<number> {
@@ -298,7 +307,12 @@ export class HelperService {
     let token: string | undefined;
     try {
       const executable = await this.options.executable(job.provider);
-      const created = await createWorktree(this.options.leadFolder, job.title, job.id, this.options.worktreeRoot?.(), job.baseCommit);
+      // Continuing after a usage limit (HelperService.continueWith): the job already has
+      // its worktree and branch from the earlier run, so reuse them instead of creating
+      // a second worktree for the same job id (which "git worktree add" would refuse anyway).
+      const created = job.worktree && job.branch && job.baseCommit
+        ? { worktree: job.worktree, branch: job.branch, baseCommit: job.baseCommit }
+        : await createWorktree(this.options.leadFolder, job.title, job.id, this.options.worktreeRoot?.(), job.baseCommit);
       await this.options.store.update(job.id, { worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit });
       token = this.options.endpoint.issue({ role: 'helper', leadKey: this.options.leadKey, jobId: job.id });
       // The time limit counts from here, before the job is visible as running.
@@ -335,6 +349,8 @@ export class HelperService {
     if (!job || !active) return;
     if (finalJobStates.has(job.state)) { await this.stopRun(id); return; }
     if (job.state !== 'running') return;
+    // A usage limit isn't the head's fault and a nudge would only hit it again.
+    if (await this.limitReached(id)) return;
     if (!job.nudged) {
       await this.options.store.update(id, { nudged: true });
       const sent = await active.run.send('You stopped without reporting to Hydra. Commit your work and call hydra_done with a summary, or call hydra_stuck with one clear question. Do it now.');
@@ -346,6 +362,7 @@ export class HelperService {
   private async exited(id: string, code: number | null): Promise<void> {
     const active = this.active.get(id);
     if (!active) return;
+    if (await this.limitReached(id)) { this.active.delete(id); this.changed(); void this.dispatch(); return; }
     active.answer?.(undefined as unknown as string);
     this.active.delete(id);
     this.options.endpoint.revokeJob(id);
@@ -355,6 +372,17 @@ export class HelperService {
     }
     this.changed();
     void this.dispatch();
+  }
+
+  /** If the head's last turn hit a usage limit: fail it with that reason (no nudge, no attempt used) and report it. */
+  private async limitReached(id: string): Promise<boolean> {
+    const job = this.options.store.get(id), limit = this.active.get(id)?.run.limitHit?.();
+    if (!job || !limit || finalJobStates.has(job.state)) return false;
+    await this.finish(id, 'failed', headLimitReason(job.provider, limit), { limitHit: true });
+    const event: LimitEvent = { provider: job.provider, source: 'head', at: new Date(this.now()).toISOString(), jobId: id, message: limit.message, ...(limit.resetsAt ? { resetsAt: limit.resetsAt } : {}), ...(job.worktree ? { cwd: job.worktree } : {}) };
+    this.options.log?.(`[heads] ${id} stopped: ${headLimitReason(job.provider, limit)}`);
+    for (const listener of [...this.limitListeners]) { try { listener(event); } catch { /* the listener's problem */ } }
+    return true;
   }
 
   private async enforceLimits(): Promise<void> {
@@ -369,13 +397,32 @@ export class HelperService {
   }
 
   /** Stop a running helper and settle its job. */
-  private async finish(id: string, to: 'failed' | 'cancelled', reason: string): Promise<void> {
+  private async finish(id: string, to: 'failed' | 'cancelled', reason: string, patch: Partial<Pick<Job, 'limitHit'>> = {}): Promise<void> {
     const active = this.active.get(id);
     const job = this.options.store.get(id);
-    if (job && !finalJobStates.has(job.state)) await this.options.store.transition(id, to, reason);
+    if (job && !finalJobStates.has(job.state)) await this.options.store.transition(id, to, reason, patch);
     active?.answer?.(undefined as unknown as string);
     this.changed();
     await this.stopRun(id);
+  }
+
+  /**
+   * Continue a head with the other provider after its own hit a usage limit
+   * (docs/Hydra_Agent_Plan.md, Phase 3). Same worktree and branch: the brief gets
+   * a "## Handoff" section, attempts and the nudge flag reset, and the job goes
+   * back to queued so dispatch restarts it where it left off.
+   */
+  async continueWith(jobId: string, provider: Provider, handoffMarkdown: string): Promise<Job> {
+    const job = this.options.store.get(jobId);
+    if (!job || job.leadKey !== this.options.leadKey) throw new Error(`No head ${jobId} in this window.`);
+    if (job.state !== 'failed' || !job.limitHit) throw new Error(`Head ${jobId} did not fail from a usage limit.`);
+    const brief = clip(`${job.brief}\n\n## Handoff\n\n${handoffMarkdown.trim()}`, maxBriefLength);
+    const updated = await this.options.store.transition(jobId, 'queued', continuedHistoryReason(job.provider, provider), {
+      provider, model: undefined, brief, attempts: 0, nudged: false, limitHit: false,
+    });
+    this.changed();
+    void this.dispatch();
+    return updated;
   }
 
   private async stopRun(id: string): Promise<void> {

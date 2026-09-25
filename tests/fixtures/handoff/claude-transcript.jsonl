@@ -1,0 +1,14 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-24T10:00:00.000Z","sessionId":"fixture-session"}
+{"parentUuid":null,"type":"user","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>Session started.</system-reminder>"}]}}
+{"parentUuid":"a1","type":"user","message":{"role":"user","content":[{"type":"text","text":"Fix the login flow so expired tokens redirect to /login instead of crashing."}]}}
+{"parentUuid":"a2","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Let me look at the session code first."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/src/auth/session.ts"}}]}}
+{"parentUuid":"a3","type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"export function checkSession() {}"}]}}
+{"parentUuid":"a4","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/repo/src/auth/session.ts","old_string":"a","new_string":"b"}}]}}
+{"parentUuid":"a5","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Write","input":{"file_path":"/repo/src/auth/redirect.ts","content":"export {}"}}]}}
+{"parentUuid":"a6","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"npm test -- auth","description":"Run auth tests"}}]}}
+{"parentUuid":"a7","type":"user","message":{"role":"user","content":[{"tool_use_id":"t4","type":"tool_result","content":"1 failing"}]}}
+{"parentUuid":"a8","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t5","name":"Bash","input":{"command":"curl -H \"Authorization: Bearer sk-abcdef1234567890abcdef\" https://api.example.com/debug","description":"Check upstream"}}]}}
+this is not valid json and should be skipped
+{"parentUuid":"a9","type":"user","message":{"role":"user","content":[{"type":"text","text":"Also handle the case where the refresh token itself is expired."}]}}
+{"parentUuid":"a10","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t6","name":"TodoWrite","input":{"todos":[{"content":"Fix expired-token redirect","status":"completed","activeForm":"Fixing expired-token redirect"},{"content":"Handle expired refresh token","status":"in_progress","activeForm":"Handling expired refresh token"},{"content":"Add regression test","status":"pending","activeForm":"Adding regression test"}]}}]}}
+{"parentUuid":"a11","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I updated session.ts and added a redirect; the refresh-token case still fails one test."}]}}

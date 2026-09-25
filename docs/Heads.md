@@ -73,6 +73,14 @@ any unfinished state → failed or cancelled
   - **Codex:** `codex exec` with the `workspace-write` sandbox and approval `never`. On Windows that sandbox blocks writes to a worktree's `.git` metadata, which is why Hydra does the commit.
 - **Stop everything:** **Hydra: Stop All Heads** in the command palette, **Stop all heads** in **Hydra Settings → Heads**, or **Stop all** on the dashboard.
 
+## When a provider hits its limit
+
+A head that hits its provider's usage limit fails at once, with that as its reason. It doesn't spend a check attempt and it isn't nudged — the limit isn't its fault. The same detection covers a Claude Code or Codex chat in the official extension hitting its own limit.
+
+Either way Hydra shows one notification: which provider hit its limit (and when it resets, if known) and a **Continue in <Other provider>** button (**Set up <Other provider>** instead, if it isn't connected yet), plus **View handoff** and **Wait**. The handoff — the ask, files touched, git state, and what looked unfinished — is assembled mechanically (no model call) and saved under Hydra's global storage, not in the repository.
+
+For a head, **Continue in** switches its provider and restarts it **in the same worktree and branch**, with the handoff appended to its brief, so partial work isn't lost. The lead sees it running again through `hydra_wait_for_heads` like any other head. For a chat, Hydra copies the handoff to the clipboard and opens the other provider's chat (Hydra never types into it); paste the handoff there to continue. Turn the notification off with `hydra.limits.offerHandoff`.
+
 ## Checks
 
 Checks come from the **lead's** folder, never from a head's worktree, so a head can't edit them away. Put them in `.hydra/checks.json`:

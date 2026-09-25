@@ -85,3 +85,7 @@ The bridge uses `claude-vscode.editor.open` from the public Claude Code extensio
 Checks are explicit, never triggered by mode changes, startup, or refresh. They run only `--version`, `--help`, and (for Codex) `app-server --help`, with an eight-second limit per call and a combined 256 KiB stdout/stderr limit. Timeout, cancellation, and excess output terminate the owned probe process tree. No prompt, authentication request, session, or model request is sent.
 
 Recognizing a version or option does not prove authentication, account billing, streaming compatibility, or resume support. Checks reset on Hydra configuration changes or reload. Public help is a metadata check, not an authenticated session test.
+
+## License
+
+Hydra is released under the [MIT License](LICENSE). It is built on Code - OSS by Microsoft (MIT) and bundles vscode-icons (MIT) and codicons (CC BY 4.0); their notices ship with the app.

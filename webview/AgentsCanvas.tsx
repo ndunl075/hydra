@@ -27,7 +27,7 @@ interface LeadGhost { lead: CanvasLead; until: number }
 const leadGraceMs = 1200;
 
 /** Planner (docs/Lanes_And_Planner_Plan.md, section 4): a job-edit popover's own form state. */
-interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
+export interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
 interface JobMenuState { planId: string; job: PlanJob; x: number; y: number }
 
 export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = [], planJobs = {}, defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
@@ -538,7 +538,7 @@ function RunningJobMenu({ state, onOpenLane, onPlan, onClose }: {
 const jobHasStarted = (job: Pick<PlanJob, 'jobId' | 'laneId' | 'result' | 'outcome'>): boolean => !!(job.jobId || job.laneId || job.result || job.outcome);
 
 /** The job-edit popover: title, brief, provider (Auto/Claude/Codex) and, for a job that hasn't started, Run as (Head/Lane). */
-function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; onSave: (title: string, brief: string, provider: Provider | undefined, runAs: PlanJobRunAs) => void; onCancel: () => void }) {
+export function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; onSave: (title: string, brief: string, provider: Provider | undefined, runAs: PlanJobRunAs) => void; onCancel: () => void }) {
   const [title, setTitle] = useState(state.job.title);
   const [brief, setBrief] = useState(state.job.brief);
   const [provider, setProvider] = useState<'' | Provider>(state.job.provider || '');

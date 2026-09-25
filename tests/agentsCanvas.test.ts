@@ -349,3 +349,52 @@ test('an SSR render shows the New plan card, and a draft, planning and failed pl
   assert.match(cyclicHtml, /class="canvas-edge plan-dependency cycle"/);
   assert.match(cyclicHtml, /disabled=""[^>]*>Run plan/, 'Run plan is disabled while the plan has a cycle');
 });
+
+test('an SSR render of the job popover shows Run as, read-only once the job has started', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { JobEditPopover } = await import('../webview/AgentsCanvas');
+
+  const notStarted = planJob('build');
+  const html = renderToStaticMarkup(React.createElement(JobEditPopover, { state: { planId: 'p', job: notStarted, x: 0, y: 0 }, onSave: () => {}, onCancel: () => {} }));
+  assert.match(html, /Run as/);
+  assert.match(html, /Head \(Hydra drives\)/);
+  assert.match(html, /Lane \(you drive\)/);
+  assert.doesNotMatch(html, /already started/);
+
+  const started = planJob('build', { runAs: 'lane', laneId: '222222222222' });
+  const startedHtml = renderToStaticMarkup(React.createElement(JobEditPopover, { state: { planId: 'p', job: started, x: 0, y: 0 }, onSave: () => {}, onCancel: () => {} }));
+  assert.match(startedHtml, /Lane \(you drive\) · already started/);
+  assert.doesNotMatch(startedHtml, /role="radio"/, 'Run as is read-only once the job has started');
+});
+
+test('an SSR render of a running plan shows its progress, a head slot, a lane card and a dashed waiting node', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentsCanvas } = await import('../webview/AgentsCanvas');
+
+  const running = plan('running', [
+    planJob('schema', { jobId: '111111111111' }),
+    planJob('build', { runAs: 'lane', laneId: '222222222222', dependsOn: ['schema'] }),
+    planJob('deploy', { dependsOn: ['build'] }),
+  ]);
+  const buildLane: LaneView = lane('222222222222', 'Build API', { state: 'running' });
+  const views = {
+    [running.id]: [
+      { key: 'schema', runAs: 'head' as const, status: 'active' as const, jobId: '111111111111' },
+      { key: 'build', runAs: 'lane' as const, status: 'active' as const, laneId: '222222222222' },
+      { key: 'deploy', runAs: 'head' as const, status: 'waiting' as const, reason: 'Waiting for Job build' },
+    ],
+  };
+  const html = renderToStaticMarkup(React.createElement(AgentsCanvas, {
+    heads: [head('111111111111', 'running', { lead: { sessionId: `plan-${running.id}` } })],
+    plans: [running], lanes: [buildLane], planJobs: views, onAction: () => {},
+  }));
+  assert.match(html, new RegExp(`Plan . ${running.title}`));
+  assert.match(html, /0 of 3 done/);
+  assert.match(html, /Claude head/, 'the started head keeps its ordinary head card');
+  assert.match(html, /canvas-plan-lane-card/, 'the lane job gets a lane card');
+  assert.match(html, /Working · lane\/222222222222/);
+  assert.match(html, /Waiting for Job build/, 'the not-yet-started job shows its reason');
+  assert.match(html, /Delete plan/);
+});

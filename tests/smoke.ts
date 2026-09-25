@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Handoff, HandoffTask, ProviderDiagnostic } from '../src/core/model';
+import type { Handoff, HandoffTask, LaneView, ProviderDiagnostic } from '../src/core/model';
 import { createPlan, type Plan } from '../src/core/plans';
+import { git } from '../src/core/git';
 import { createWorktree } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
@@ -273,4 +274,46 @@ export async function run(): Promise<void> {
       console.log('PASS: bundled extension host refuses desktop-only quota commands without refreshing state or starting a provider turn.');
     }
   }
+  if (repository && process.env.HYDRA_TEST_FIXTURE) await laneSmoke(repository, process.env.HYDRA_TEST_FIXTURE);
+}
+
+/**
+ * Lanes (docs/Lanes_And_Planner_Plan.md): a lane runs a harmless command in place
+ * of the CLI (HYDRA_TEST_LANE_COMMAND) in a real terminal from the host's node-pty;
+ * its output reaches the replay buffer, and closing it removes the worktree and branch.
+ */
+async function laneSmoke(repository: string, fixture: string): Promise<void> {
+  type LaneState = { terminals: boolean; lanes: LaneView[] };
+  const before = await vscode.commands.executeCommand<LaneState>('hydra.lanes.list');
+  assert.equal(before?.terminals, true, 'node-pty loads from the host application');
+  assert.deepEqual(before.lanes, []);
+  const marker = 'HYDRA-LANE-SMOKE-MARKER';
+  const windows = process.platform === 'win32';
+  const script = path.join(fixture, windows ? 'lane.cmd' : 'lane.sh');
+  // A .cmd shim, like an npm-installed CLI: it runs through PowerShell -EncodedCommand in the pty.
+  await writeFile(script, windows ? `@echo off\r\necho ${marker}\r\nping -n 120 127.0.0.1 > nul\r\n` : `#!/bin/sh\necho ${marker}\nsleep 120\n`, { mode: 0o755 });
+  const exists = (file: string) => access(file).then(() => true, () => false);
+  process.env.HYDRA_TEST_LANE_COMMAND = script;
+  try {
+    const lane = await vscode.commands.executeCommand<LaneView>('hydra.lanes.start', { name: 'Smoke lane', provider: 'claude', goal: 'Print a marker' });
+    assert.ok(lane);
+    assert.equal(lane.running, true);
+    assert.match(lane.branch, /^lane\/smoke-lane-[a-f0-9]{12}$/);
+    assert.equal(await exists(lane.worktree), true);
+    assert.equal((await git(repository, ['for-each-ref', '--format=%(refname:short)', `refs/heads/${lane.branch}`])).trim(), lane.branch);
+    const deadline = Date.now() + 30_000;
+    while (!(await vscode.commands.executeCommand<string>('hydra.lanes.replay', lane.id)).includes(marker)) {
+      if (Date.now() > deadline) throw new Error(`The lane's output never reached the replay buffer: ${JSON.stringify(await vscode.commands.executeCommand<string>('hydra.lanes.replay', lane.id))}`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await vscode.commands.executeCommand('hydra.openLanes', lane.id);
+    await waitFor(managerOpen);
+    assert.deepEqual(await vscode.commands.executeCommand('hydra.lanes.action', lane.id, 'close', { close: 'delete' }), { closed: true, mode: 'delete' });
+    assert.equal(await exists(lane.worktree), false, 'Delete everything removes the worktree');
+    assert.equal((await git(repository, ['for-each-ref', '--format=%(refname:short)', `refs/heads/${lane.branch}`])).trim(), '', 'and the branch');
+    assert.deepEqual((await vscode.commands.executeCommand<LaneState>('hydra.lanes.list'))?.lanes, []);
+    await vscode.commands.executeCommand('hydra.toggleMode');
+    await waitFor(() => !managerOpen());
+  } finally { delete process.env.HYDRA_TEST_LANE_COMMAND; }
+  console.log('PASS: a lane runs a harmless command in a real terminal, its output reaches the replay buffer, and closing it removes the worktree and branch.');
 }

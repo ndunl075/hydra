@@ -224,17 +224,89 @@ test('buildCanvas flags a plan\'s cycle edges and names the cycle on the plan no
   assert.equal(Math.min(...node.jobs.map(item => item.x)), layout.headX, 'a cycle still starts in the first column, with no gap');
 });
 
-test('buildCanvas only draws a lead node for a plan still being drafted; a running or done plan\'s heads group under the ordinary lead', () => {
+test('buildCanvas draws a lead node for a plan still being drafted; a running plan gets its own running group instead', () => {
   const running = plan('running', [planJob('api', { jobId: '111111111111' })]);
   const withRunningHead = buildCanvas([head('111111111111', 'running', { lead: { sessionId: `plan-${running.id}`, label: `Plan · ${running.title}` } })], now, { plans: [running] });
-  assert.deepEqual(withRunningHead.plans, [], 'a running plan has no draft node of its own');
-  assert.deepEqual(withRunningHead.leads.map(lead => lead.label), [`Plan · ${running.title}`], 'its heads group under an ordinary lead instead');
-
-  const done = plan('done', [planJob('api', { jobId: '222222222222' })]);
-  assert.deepEqual(buildCanvas([], now, { plans: [done] }).plans, [], 'a done plan is not drawn either');
+  assert.equal(withRunningHead.plans.length, 1, 'a running plan gets its own group');
+  assert.deepEqual(withRunningHead.leads, [], 'its head does not also group under an ordinary lead');
 
   const planning = plan('planning', []);
   assert.equal(buildCanvas([], now, { plans: [planning] }).plans.length, 1, 'a plan still being drafted is drawn');
+});
+
+test('a done plan leaves the canvas once its heads and lanes are gone, like a chat', () => {
+  const done = plan('done', [planJob('api', { jobId: '222222222222' })]);
+  assert.deepEqual(buildCanvas([], now, { plans: [done] }).plans, [], 'nothing of it is left to show');
+  const stillShowing = buildCanvas([head('222222222222', 'done', { finishedAt: new Date(now - 1000).toISOString() })], now, { plans: [done] });
+  assert.equal(stillShowing.plans.length, 1, 'its head is still fresh on the canvas, so the plan lingers');
+});
+
+// ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 4): the running plan group. ----
+
+test('buildCanvas groups a running mixed plan: a head slot, a lane-card slot and a waiting slot, with edges between them', () => {
+  const running = plan('running', [
+    planJob('schema', { jobId: '111111111111' }),
+    planJob('build', { runAs: 'lane', laneId: '222222222222', dependsOn: ['schema'] }),
+    planJob('deploy', { dependsOn: ['build'] }),
+  ]);
+  const buildLane: LaneView = lane('222222222222', 'Build API', { state: 'running' });
+  const views = {
+    [running.id]: [
+      { key: 'schema', runAs: 'head' as const, status: 'active' as const, jobId: '111111111111' },
+      { key: 'build', runAs: 'lane' as const, status: 'active' as const, laneId: '222222222222' },
+      { key: 'deploy', runAs: 'head' as const, status: 'waiting' as const, reason: 'Waiting for Job build' },
+    ],
+  };
+  const model = buildCanvas([head('111111111111', 'running', { lead: { sessionId: `plan-${running.id}` } })], now, { plans: [running], lanes: [buildLane], planJobs: views });
+  assert.equal(model.plans.length, 1);
+  const node = model.plans[0]!;
+  assert.equal(node.plan.id, running.id);
+  const byKey = Object.fromEntries(node.jobs.map(item => [item.job.key, item]));
+  assert.ok(byKey.schema!.head, 'the head job slot carries its still-on-canvas head');
+  assert.equal(byKey.schema!.head!.id, '111111111111');
+  assert.ok(byKey.build!.lane, 'the lane job slot carries its open lane');
+  assert.equal(byKey.build!.lane!.id, '222222222222');
+  assert.equal(byKey.deploy!.view!.status, 'waiting');
+  assert.ok(byKey.build!.x > byKey.schema!.x, 'build sits after schema');
+  assert.ok(byKey.deploy!.x > byKey.build!.x, 'deploy sits after build');
+  const edge = model.edges.find(item => item.id === `${byKey.schema!.id}>${byKey.build!.id}`);
+  assert.equal(edge?.kind, 'plan-dependency', 'a head-to-lane dependency edge joins the two slots');
+  const edge2 = model.edges.find(item => item.id === `${byKey.build!.id}>${byKey.deploy!.id}`);
+  assert.equal(edge2?.kind, 'plan-dependency');
+  assert.equal(edge2?.waiting, true, 'deploy waits while build is active');
+});
+
+test('a plan lane is not also drawn as a separate lane node', () => {
+  const running = plan('running', [planJob('build', { runAs: 'lane', laneId: '222222222222' })]);
+  const buildLane: LaneView = lane('222222222222', 'Build API', { state: 'running' });
+  const views = { [running.id]: [{ key: 'build', runAs: 'lane' as const, status: 'active' as const, laneId: '222222222222' }] };
+  const model = buildCanvas([], now, { plans: [running], lanes: [buildLane], planJobs: views });
+  assert.equal(model.leads.filter(lead => lead.kind === 'lane').length, 0, 'no separate lane lead for a plan lane');
+  assert.equal(model.plans[0]!.jobs[0]!.lane!.id, '222222222222', 'it is drawn only as the job\'s lane card');
+});
+
+test('heads a plan lane starts sit in the column after its lane card, joined by a lead edge', () => {
+  const running = plan('running', [planJob('build', { runAs: 'lane', laneId: '222222222222' })]);
+  const buildLane: LaneView = lane('222222222222', 'Build API', { state: 'running' });
+  const views = { [running.id]: [{ key: 'build', runAs: 'lane' as const, status: 'active' as const, laneId: '222222222222' }] };
+  const subHead = head('333333333333', 'running', { lead: { sessionId: 'sub', lane: '222222222222' } });
+  const model = buildCanvas([subHead], now, { plans: [running], lanes: [buildLane], planJobs: views });
+  const slot = model.plans[0]!.jobs[0]!;
+  const drawn = model.heads.find(item => item.id === '333333333333');
+  assert.ok(drawn, 'the sub-head is drawn on the canvas');
+  assert.ok(drawn!.x > slot.x, 'it sits after the lane\'s slot');
+  const edge = model.edges.find(item => item.from === slot.id && item.to === '333333333333');
+  assert.equal(edge?.kind, 'plan-lane-head');
+});
+
+test('a head that has left the canvas keeps a small done node in its plan job slot', () => {
+  const running = plan('running', [planJob('api', { jobId: '111111111111' })]);
+  const views = { [running.id]: [{ key: 'api', runAs: 'head' as const, status: 'done' as const, jobId: '111111111111', commit: 'a'.repeat(40) }] };
+  // The head finished long ago, so it is off the canvas (in the tray) and out of the group's grouping loop.
+  const model = buildCanvas([head('111111111111', 'done', { finishedAt: new Date(now - trayWindowMs / 2).toISOString() })], now, { plans: [running], planJobs: views });
+  const slot = model.plans[0]!.jobs[0]!;
+  assert.equal(slot.head, undefined, 'the head card itself is gone');
+  assert.equal(slot.view!.status, 'done', 'the slot still knows the job is done');
 });
 
 test('buildCanvas keeps working with no plans argument at all (existing callers)', () => {

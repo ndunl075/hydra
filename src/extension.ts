@@ -312,7 +312,9 @@ class Manager {
       bridge: this.helperBridge(), logDirectory: path.join(directory, 'logs'),
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
-      lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id) },
+      lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id),
+        // Gates plan, section 3: a lane's heads branch from the lane's HEAD.
+        worktree: id => this.lanes.state().lanes.find(lane => lane.id === id)?.worktree },
       // ---- Gates (docs/Gates_Plan.md) ----
       providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
     });

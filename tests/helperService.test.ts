@@ -13,6 +13,7 @@ import { supportedCliVersion, supportedCliVersionIn } from '../src/core/cliVersi
 import type { HeadLimit } from '../src/core/limitDetection';
 import type { LimitEvent } from '../src/core/limitEvents';
 import type { ReviewerSpec } from '../src/core/gates';
+import { dependencyBrief, maxDependencyBrief } from '../src/core/headStart';
 
 /** A scripted stand-in for a helper process. It talks to Hydra only through the real endpoint, with its own token. */
 type Script = (helper: { spec: HelperRunSpec; call: (tool: string, args?: Record<string, unknown>) => Promise<{ ok: boolean; result?: any; error?: string }>; endTurn: () => void; nextMessage: () => Promise<string>; exit: (code: number) => void; limit: (hit: HeadLimit | undefined) => void; commit: (file: string, text: string) => Promise<void> }) => Promise<void>;
@@ -445,4 +446,107 @@ test('maxAttempts comes from gates.json; a review that can\'t run never fails th
     await until(() => broken.store.get(job_id)?.progress === 'waiting on the lead', 'the head was told');
     assert.equal(broken.store.get(job_id)!.state, 'running'); assert.equal(broken.store.get(job_id)!.attempts, 0);
   } finally { await broken.close(); }
+});
+
+// ---- What a head starts from (docs/Gates_Plan.md, section 3) ----
+
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+
+test('a dependent starts from its dependency\'s result commit, sees its file, and is told what it did', async () => {
+  const f = await fixture({ script: async helper => {
+    if (jobKey(helper.spec.prompt) === 'first') {
+      await helper.commit('src/first.ts', 'export const first = 1;\n');
+      await helper.call('hydra_done', { summary: 'Added first.ts with the parser.' });
+    } else {
+      assert.match(await readFile(path.join(helper.spec.worktree, 'src', 'first.ts'), 'utf8'), /^export const first = 1;\r?\n$/);
+      await helper.commit('src/second.ts', 'export const second = 2;\n');
+      await helper.call('hydra_done', { summary: 'Added second.ts on top.' });
+    }
+    helper.endTurn();
+  } });
+  try {
+    const first = await f.start('first');
+    const second = await f.start('second', { depends_on: [first.job_id] });
+    assert.equal(second.base_commit, undefined, 'its base is known only once it starts');
+    assert.match(second.starts_from, /heads it depends on/);
+    const [one, two] = (await f.wait([first.job_id, second.job_id])).heads;
+    assert.equal(one.state, 'done'); assert.equal(two.state, 'done', two.reason);
+    assert.equal(two.base_commit, one.commit, 'base_commit is where it really started');
+    assert.deepEqual(two.changed_files, ['src/second.ts'], 'its own changes only');
+    const prompt = f.runs.find(run => jobKey(run.prompt) === 'second')!.prompt;
+    assert.match(prompt, new RegExp(`What the heads you depend on did \\(your worktree already has their work\\):\\n- Job first \\(branch ${escape(one.branch)}, commit ${one.commit.slice(0, 12)}\\): Added first\\.ts with the parser\\.\\n  Changed files: src/first\\.ts`));
+    assert.match(prompt, new RegExp(`It starts from commit ${one.commit}, which already has the work of the heads it depends on\\.`));
+    assert.doesNotMatch(f.runs.find(run => jobKey(run.prompt) === 'first')!.prompt, /What the heads you depend on did/);
+  } finally { await f.close(); }
+});
+
+test('several dependencies are merged into one Hydra commit; ones that conflict fail the dependent before it starts, naming the files', async () => {
+  const f = await fixture({ maxConcurrent: 3, script: async helper => {
+    const key = jobKey(helper.spec.prompt)!;
+    if (key === 'clashing') assert.fail('a dependent whose dependencies conflict never starts');
+    if (key === 'both') {
+      for (const file of ['one.ts', 'two.ts']) assert.ok((await readFile(path.join(helper.spec.worktree, 'src', file), 'utf8')).length > 0, file);
+      await helper.commit('src/both.ts', 'both\n');
+    } else if (key.startsWith('clash-')) await helper.commit('src/shared.ts', `${key}\n`);
+    else await helper.commit(`src/${key}.ts`, `${key}\n`);
+    await helper.call('hydra_done', { summary: `Did ${key}.` });
+    helper.endTurn();
+  } });
+  try {
+    const one = await f.start('one'), two = await f.start('two');
+    const both = await f.start('both', { depends_on: [one.job_id, two.job_id] });
+    const clashA = await f.start('clash-a'), clashB = await f.start('clash-b');
+    const clashing = await f.start('clashing', { depends_on: [clashA.job_id, clashB.job_id] });
+    const [a, b, merged, refused] = (await f.wait([one.job_id, two.job_id, both.job_id, clashing.job_id])).heads;
+    assert.equal(merged.state, 'done', merged.reason);
+    const [base, ...parents] = (await git(f.repo, ['rev-list', '--parents', '-n', '1', merged.base_commit])).trim().split(' ');
+    assert.equal(base, merged.base_commit);
+    assert.deepEqual(parents, [a.commit, b.commit], 'one commit, whose parents are both dependencies');
+    assert.match(await git(f.repo, ['log', '-1', '--format=%an%n%s', merged.base_commit]), /^Hydra\nHydra: merge the heads "Job both" depends on/);
+    assert.deepEqual(merged.changed_files, ['src/both.ts']);
+    assert.equal(refused.state, 'failed');
+    assert.equal(refused.reason, 'Could not start: The heads it depends on conflict in src/shared.ts; merge them first.');
+    assert.equal(f.store.get(clashing.job_id)!.worktree, undefined, 'no worktree was made for it');
+    assert.equal(f.runs.some(run => jobKey(run.prompt) === 'clashing'), false);
+  } finally { await f.close(); }
+});
+
+test('a head started from a lane takes the lane\'s HEAD as its base, not the main checkout\'s', async () => {
+  const laneId = 'abcabcabcabc';
+  const f = await fixture({
+    lanes: root => ({ describe: async () => ({}), name: id => id === laneId ? 'Lane one' : undefined, worktree: id => id === laneId ? path.join(root, 'lane') : undefined }),
+    script: async helper => {
+      if (jobKey(helper.spec.prompt) === 'from-lane') assert.match(await readFile(path.join(helper.spec.worktree, 'src', 'lane.ts'), 'utf8'), /^lane work\r?\n$/, 'the lane\'s committed work is there');
+      await helper.commit('src/head.ts', 'head\n');
+      await helper.call('hydra_done', { summary: 'Done.' });
+      helper.endTurn();
+    },
+  });
+  try {
+    const lane = path.join(f.root, 'lane');
+    await git(f.repo, ['worktree', 'add', '-q', '-b', `lane/one-${laneId}`, lane, 'HEAD']);
+    await writeFile(path.join(lane, 'src', 'lane.ts'), 'lane work\n');
+    await git(lane, ['add', '.']); await git(lane, ['commit', '-qm', 'lane work']);
+    await writeFile(path.join(lane, 'src', 'lane.ts'), 'uncommitted lane work\n');
+    const laneHead = (await git(lane, ['rev-parse', 'HEAD'])).trim(), mainHead = (await git(f.repo, ['rev-parse', 'HEAD'])).trim();
+    const token = f.endpoint.issue({ role: 'lead', leadKey: 'window', leadSessionId: 'abcdef012345', provider: 'claude', lane: laneId });
+    const started = (await callHelperEndpoint(f.endpoint.port, token, 'hydra_start_head', { title: 'Job from-lane', brief: 'Build on the lane.', write_scope: ['src/'], idempotency_key: 'from-lane' })).result as { job_id: string; base_commit: string; warning?: string };
+    assert.equal(started.base_commit, laneHead);
+    assert.match(started.warning!, /^Your lane has uncommitted changes\. The head starts from the lane's last commit/);
+    const plain = await f.start('plain');
+    assert.equal(plain.base_commit, mainHead, 'the window\'s own lead still branches from the main checkout');
+    const [fromLane] = (await f.wait([started.job_id, plain.job_id])).heads;
+    assert.equal(fromLane.state, 'done', fromLane.reason); assert.equal(fromLane.base_commit, laneHead);
+    assert.equal(f.store.get(started.job_id)!.lead?.lane, laneId);
+    assert.deepEqual(fromLane.changed_files, ['src/head.ts']);
+  } finally { await f.close(); }
+});
+
+test('the dependency summaries for a dependent\'s brief are capped at 4 KB', () => {
+  const brief = dependencyBrief([
+    { id: 'a'.repeat(12), title: 'Parser', summary: 'Added the parser.', commit: 'c'.repeat(40), branch: 'agent/parser-aaaaaaaaaaaa', changedFiles: ['src/parser.ts', 'tests/parser.test.ts'] },
+    { id: 'b'.repeat(12), title: 'Huge', summary: 'x'.repeat(10_000), commit: 'd'.repeat(40), changedFiles: Array.from({ length: 30 }, (_, index) => `src/f${index}.ts`) },
+  ]);
+  assert.ok(brief.length <= maxDependencyBrief, String(brief.length));
+  assert.match(brief, /^What the heads you depend on did \(your worktree already has their work\):\n- Parser \(branch agent\/parser-aaaaaaaaaaaa, commit cccccccccccc\): Added the parser\.\n  Changed files: src\/parser\.ts, tests\/parser\.test\.ts\n- Huge \(commit dddddddddddd\): x+…$/);
 });

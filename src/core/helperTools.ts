@@ -12,7 +12,7 @@ const jobId = string('A head job id returned by hydra_start_head.', { pattern: '
 export const leadTools: readonly HelperToolDefinition[] = [
   {
     name: 'hydra_start_head',
-    description: 'Start a Hydra head: a separate agent that works on one independent piece of this task in its own git worktree and branch, branched from this folder\'s current HEAD (commit first if the head must see your changes). Use it on your own initiative whenever a task splits into independent pieces with separate files; start several at once for parallel work. Returns a job id immediately; call hydra_wait_for_heads to get results. Merge a finished head\'s branch yourself with git.',
+    description: 'Start a Hydra head: a separate agent that works on one independent piece of this task in its own git worktree and branch, branched from this folder\'s current HEAD (commit first if the head must see your changes); a head with depends_on starts from their results instead. Use it on your own initiative whenever a task splits into independent pieces with separate files; start several at once for parallel work. Returns a job id immediately; call hydra_wait_for_heads to get results. Merge a finished head\'s branch yourself with git.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['title', 'brief', 'write_scope', 'idempotency_key'],
       properties: {
@@ -21,7 +21,7 @@ export const leadTools: readonly HelperToolDefinition[] = [
         write_scope: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32, description: 'Repository-relative paths the head may change, e.g. ["src/parser/", "tests/parser.test.ts"]. Changes outside are refused.' },
         provider: string('Which agent runs the head. Defaults to claude.', { enum: ['claude', 'codex'] }),
         model: string('Optional model for the head.'),
-        depends_on: { type: 'array', items: jobId, description: 'Job ids that must finish first.' },
+        depends_on: { type: 'array', items: jobId, description: 'Job ids that must finish first. The head then starts from their result commits (merged, if several) and is told what they did.' },
         idempotency_key: string('A unique key for this request. Repeating a call with the same key returns the same job instead of starting another.'),
         lead_label: string('Optional short name for this chat, under 60 characters, shown to the user on Hydra\'s Agents canvas (e.g. "Checkout refactor").'),
         limits: { type: 'object', additionalProperties: false, properties: { wall_clock_minutes: { type: 'number' }, max_turns: { type: 'number' }, max_budget_usd: { type: 'number' } }, description: 'Optional caps. Defaults come from Hydra Settings → Heads.' },

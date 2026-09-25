@@ -26,6 +26,12 @@ export interface Lane {
   createdAt: string;
   state: LaneState;
   exitCode?: number; mergedAt?: string;
+  /**
+   * When this lane last became exited (docs/Lanes_And_Planner_Plan.md,
+   * "Canvas tidy-up"): drives the 10-minute "Parked lanes" chip. Set whenever
+   * the lane's state becomes exited; cleared on resume or restart.
+   */
+  exitedAt?: string;
   /** Why Hydra stopped the lane's terminal, when it did (for example "Hydra restarted"). */
   reason?: string;
   /** Provider switches this lane has made (docs/Gates_Plan.md, section 2: "Continue in <Other>" and the manual "Switch to <Other>"). Oldest first. */
@@ -136,6 +142,7 @@ export function validateLane(value: unknown): Lane {
   if (!text(lane.createdAt, 64) || !laneStates.includes(lane.state as LaneState)) throw new Error(`${where} is malformed.`);
   if (lane.exitCode !== undefined && !Number.isInteger(lane.exitCode)) throw new Error(`${where} has an invalid exit code.`);
   if (lane.mergedAt !== undefined && !text(lane.mergedAt, 64)) throw new Error(`${where} has an invalid merge time.`);
+  if (lane.exitedAt !== undefined && (!text(lane.exitedAt, 64) || Number.isNaN(Date.parse(lane.exitedAt)))) throw new Error(`${where} has an invalid exited time.`);
   if (lane.reason !== undefined && !text(lane.reason, 500)) throw new Error(`${where} has an invalid reason.`);
   const switches = validateLaneSwitches(lane.switches, where);
   const lastGates = validateLastGates(lane.lastGates, where);
@@ -143,7 +150,7 @@ export function validateLane(value: unknown): Lane {
     id: lane.id, name, provider: lane.provider, ...(goal ? { goal } : {}),
     repository: lane.repository!, worktree: lane.worktree!, branch: lane.branch, baseCommit: lane.baseCommit, target: lane.target,
     createdAt: lane.createdAt!, state: lane.state!,
-    ...(lane.exitCode !== undefined ? { exitCode: lane.exitCode } : {}), ...(lane.mergedAt ? { mergedAt: lane.mergedAt } : {}), ...(lane.reason ? { reason: lane.reason } : {}),
+    ...(lane.exitCode !== undefined ? { exitCode: lane.exitCode } : {}), ...(lane.mergedAt ? { mergedAt: lane.mergedAt } : {}), ...(lane.exitedAt ? { exitedAt: lane.exitedAt } : {}), ...(lane.reason ? { reason: lane.reason } : {}),
     ...(switches ? { switches } : {}),
     ...(lastGates ? { lastGates } : {}),
   };
@@ -177,13 +184,13 @@ function validateLaneSwitches(value: unknown, where: string): LaneSwitch[] | und
 
 export const restartReason = 'Hydra restarted';
 /** No terminal survives an extension-host restart: running lanes become exited. Their worktrees are untouched. */
-export function restartedLanes(lanes: readonly Lane[]): { lanes: Lane[]; changed: boolean } {
+export function restartedLanes(lanes: readonly Lane[], now: number = Date.now()): { lanes: Lane[]; changed: boolean } {
   let changed = false;
   const next = lanes.map(lane => {
     if (lane.state !== 'running') return lane;
     changed = true;
     const { exitCode: _exitCode, ...rest } = lane;
-    return { ...rest, state: 'exited' as const, reason: restartReason };
+    return { ...rest, state: 'exited' as const, reason: restartReason, exitedAt: new Date(now).toISOString() };
   });
   return { lanes: next, changed };
 }
@@ -243,7 +250,7 @@ export class LaneStore {
   }
 
   /** Change a lane. A state change must be in the transition table; a closed lane can't change. */
-  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'reason' | 'provider' | 'switches' | 'lastGates'>>): Promise<Lane> {
+  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'exitedAt' | 'reason' | 'provider' | 'switches' | 'lastGates'>>): Promise<Lane> {
     return this.serialize(async () => {
       this.assertLoaded();
       const lane = this.lanes.get(id);

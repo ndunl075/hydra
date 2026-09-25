@@ -109,6 +109,10 @@ body.vscode-high-contrast .gate-chip { border-width: 2px; }
 .canvas-dot.state-running, .canvas-dot.state-starting { background: var(--state-run); }
 .canvas-dot.state-checking { background: var(--state-check); }
 .canvas-dot.state-blocked { background: var(--state-ask); }
+.canvas-tray-clear { margin-left: auto; font-size: 11.5px; }
+
+/* Parked lanes (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): an exited lane, quiet for a while, no running heads. */
+.canvas-chip.conflict { border-color: var(--state-fail); }
 
 /* Side list */
 .canvas-list { display: flex; flex-direction: column; min-height: 0; background: var(--rail); }

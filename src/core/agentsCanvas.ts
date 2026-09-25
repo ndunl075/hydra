@@ -20,6 +20,8 @@ import type { Plan, PlanJob } from './plans';
  */
 export const finishedLingerMs = 2 * 60_000;
 export const trayWindowMs = 12 * 3600_000;
+/** How long an exited lane with no running heads sits quietly before it parks (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"). */
+export const laneParkMs = 10 * 60_000;
 export const activeStates: ReadonlySet<string> = new Set(['queued', 'starting', 'running', 'blocked', 'checking']);
 
 /**
@@ -41,7 +43,9 @@ export interface CanvasEdge { id: string; kind: 'lead' | 'dependency' | 'plan-le
 export interface CanvasPlanJob { id: string; planId: string; x: number; y: number; job: PlanJob }
 /** cycleMessage is set (and its edges flagged) when the plan's jobs have a dependency cycle; see planCycle below. */
 export interface CanvasPlanNode { plan: Plan; x: number; y: number; jobs: CanvasPlanJob[]; cycleMessage?: string }
-export interface CanvasModel { leads: CanvasLead[]; heads: CanvasHead[]; edges: CanvasEdge[]; tray: HelperJobView[]; plans: CanvasPlanNode[]; width: number; height: number }
+/** A parked lane's chip (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): exited, quiet for a while, no running heads. */
+export interface CanvasParkedLane { id: string; name: string; conflicts: boolean; exitedAt: string }
+export interface CanvasModel { leads: CanvasLead[]; heads: CanvasHead[]; edges: CanvasEdge[]; tray: HelperJobView[]; plans: CanvasPlanNode[]; parkedLanes: CanvasParkedLane[]; width: number; height: number }
 
 export const layout = { leadX: 40, leadWidth: 190, headX: 330, columnGap: 290, headWidth: 250, rowGap: 172, groupGap: 56, top: 40 };
 
@@ -91,9 +95,9 @@ function planCycleMessage(jobs: readonly PlanJob[], cycle: readonly string[]): s
   return `The plan has a dependency cycle: ${cycle.map(key => titleOf.get(key) || key).join(' → ')}`;
 }
 
-export function buildCanvas(all: readonly HelperJobView[], now: number, extras: { plans?: readonly Plan[]; lanes?: readonly LaneView[] } = {}): CanvasModel {
+export function buildCanvas(all: readonly HelperJobView[], now: number, extras: { plans?: readonly Plan[]; lanes?: readonly LaneView[]; dismissedTray?: ReadonlySet<string> } = {}): CanvasModel {
   const visible = all.filter(head => onCanvas(head, now));
-  const tray = all.filter(head => !onCanvas(head, now) && !head.merged && !isActive(head) && now - finishedAt(head) < trayWindowMs)
+  const tray = all.filter(head => !onCanvas(head, now) && !head.merged && !isActive(head) && now - finishedAt(head) < trayWindowMs && !extras.dismissedTray?.has(head.id))
     .sort((a, b) => finishedAt(b) - finishedAt(a));
   // Group by chat, oldest chat first; within a chat, oldest head first.
   const groups = new Map<string, HelperJobView[]>();
@@ -152,7 +156,15 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
   // ---- lead.lane === lane.id already grouped above (leadKeyOf prefers the lane id), so ----
   // ---- their chat lead is patched into a lane node here; a lane with no heads gets one ----
   // ---- of its own. A red dashed conflict edge joins each conflicting pair, once.       ----
-  const openLanes = (extras.lanes || []).filter(lane => lane.state === 'running' || lane.state === 'exited');
+  // A parked lane (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): exited for at least
+  // laneParkMs, with no running heads. Running lanes, and lanes with running heads, always
+  // stay full nodes even past that window.
+  const hasRunningHeads = (laneId: string): boolean => all.some(head => leadKeyOf(head) === laneId && isActive(head));
+  const isParked = (lane: LaneView): boolean =>
+    lane.state === 'exited' && !!lane.exitedAt && now - Date.parse(lane.exitedAt) >= laneParkMs && !hasRunningHeads(lane.id);
+  const parkedLanes: CanvasParkedLane[] = (extras.lanes || []).filter(isParked)
+    .map(lane => ({ id: lane.id, name: lane.name, conflicts: !!lane.sync?.conflicts.length, exitedAt: lane.exitedAt! }));
+  const openLanes = (extras.lanes || []).filter(lane => (lane.state === 'running' || lane.state === 'exited') && !isParked(lane));
   const laneById = new Map(openLanes.map(lane => [lane.id, lane]));
   const laneStatus = (lane: LaneView): string => {
     if (lane.state === 'exited') return 'Exited';
@@ -223,7 +235,7 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
     top += Math.max(groupHeight, layout.rowGap) + layout.groupGap;
   }
 
-  return { leads, heads, edges, tray, plans, width: widest + 60, height: Math.max(top - layout.groupGap + layout.top, 240) };
+  return { leads, heads, edges, tray, plans, parkedLanes, width: widest + 60, height: Math.max(top - layout.groupGap + layout.top, 240) };
 }
 
 /**

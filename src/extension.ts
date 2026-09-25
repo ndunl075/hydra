@@ -106,6 +106,9 @@ class Manager {
   private discovery?: { port: number; folders: string[]; written: string; queue: Promise<void> };
   // ---- Gates (docs/Gates_Plan.md): each provider's latest usage limit, so a review gate uses the other agent while one is limited ----
   private readonly latestLimits = new Map<Provider, LimitEvent>();
+  // ---- Canvas tidy-up (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): the Finished tray's Clear button, kept across reloads. ----
+  private readonly dismissedTrayKey = 'hydra.tray.dismissed.v1';
+  private dismissedTrayIds = new Set<string>();
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
@@ -127,6 +130,8 @@ class Manager {
       gatesLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
     }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
+    const storedDismissed = context.workspaceState.get<string[]>(this.dismissedTrayKey);
+    if (Array.isArray(storedDismissed)) this.dismissedTrayIds = new Set(storedDismissed.filter(id => typeof id === 'string'));
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -146,6 +151,8 @@ class Manager {
     command('hydra.refreshQuota', () => this.quota.refresh());
     command('hydra.cancelQuota', () => this.quota.cancel());
     command('hydra.openOnboarding', () => this.onboarding.show());
+    // ---- The walkthrough (docs/Lanes_And_Planner_Plan.md, "A walkthrough") ----
+    command('hydra.learn', () => this.openWalkthrough());
     command('hydra.getOnboardingState', () => this.onboarding.snapshot());
     command('hydra.setAppearance', (mode: 'dark' | 'light') => this.settings.setAppearance(mode));
     command('hydra.previewImport', (source: unknown) => { if (typeof source !== 'string') throw new Error('Choose a settings folder.'); return this.settingsImport.preview(source); });
@@ -637,6 +644,7 @@ class Manager {
       mode: this.mode, busy: this.busy || this.disabled, error: this.error,
       helpers: this.headViews(), plans: this.plans?.store.list(), defaultProvider: vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude'),
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
+      dismissedTray: [...this.dismissedTrayIds],
     };
     await this.broadcast({ type: 'snapshot', snapshot });
   }
@@ -651,6 +659,28 @@ class Manager {
   private requirePlans(): { store: PlanStore; planning: Map<string, AbortController> } {
     if (!this.plans) throw new Error('Hydra plans are not ready in this window yet.');
     return this.plans;
+  }
+  // ---- Canvas tidy-up (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up") ----
+  /** The Finished tray's Clear button: hide these heads from the tray, kept across reloads; a new finished head still shows up. */
+  private async trayClear(ids: readonly string[]): Promise<void> {
+    for (const id of ids) this.dismissedTrayIds.add(id);
+    await this.context.workspaceState.update(this.dismissedTrayKey, [...this.dismissedTrayIds]);
+    await this.publish();
+  }
+  /** hydra.learn: opens the "Work with Hydra" walkthrough (docs/Lanes_And_Planner_Plan.md, "A walkthrough"). */
+  private async openWalkthrough(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.action.openWalkthrough', `${this.context.extension.id}#hydra.workWithHydra`, false);
+  }
+  /**
+   * Opens the walkthrough once, the first time the Agents view opens in a window
+   * that has never seen it (tracked in globalState), never in a test/smoke run.
+   */
+  private async showWalkthroughOnce(): Promise<void> {
+    if (this.context.extensionMode !== vscode.ExtensionMode.Production) return;
+    const key = 'hydra.learn.seen.v1';
+    if (this.context.globalState.get(key)) return;
+    await this.context.globalState.update(key, true);
+    await this.openWalkthrough();
   }
   private async newPlan(): Promise<void> {
     const loaded = !!this.panel;
@@ -830,6 +860,7 @@ class Manager {
     } else this.panel.reveal();
     await modeChanged;
     await this.publish();
+    void this.showWalkthroughOnce().catch(error => this.report(error));
   }
   private async openEditor(): Promise<void> {
     this.mode = 'editor';
@@ -862,6 +893,8 @@ class Manager {
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { await this.refresh(); return; }
     if (message.type === 'helperStopAll') { await vscode.commands.executeCommand('hydra.stopAllHelpers'); return; }
+    if (message.type === 'learn') { await vscode.commands.executeCommand('hydra.learn'); return; }
+    if (message.type === 'trayClear') { await this.trayClear(message.ids); return; }
     if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer' || message.type === 'helperEvidence') { await this.helperAction(message.type, message.jobId); return; }
     // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
     if (message.type === 'planCreate') { await this.planCreate(message.title, message.brief); return; }

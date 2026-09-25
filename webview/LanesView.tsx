@@ -240,6 +240,32 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
   </section>;
 }
 
+/** An exited lane's compact row (docs/Lanes_And_Planner_Plan.md, "Lanes view"): name, provider, branch, chips and its actions, instead of a full terminal tile. "Show terminal" expands it into the ordinary tile. */
+function ExitedLaneRow({ lane, laneName, expanded, onToggle, onSend }: {
+  lane: LaneView; laneName: (id: string) => string | undefined; expanded: boolean; onToggle: () => void; onSend: (message: ClientMessage) => void;
+}) {
+  const act = (action: LaneAction) => onSend({ type: 'laneAction', id: lane.id, action });
+  const sync = lane.sync;
+  const conflict = sync?.conflicts[0];
+  return <div className="lane-row" aria-label={`Lane ${lane.name}, exited`}>
+    <span className="lane-dot state-exited" aria-hidden="true" />
+    <b className="lane-name" title={lane.name}>{lane.name}</b>
+    <span className="lane-provider"><ProviderLogo provider={lane.provider} /></span>
+    <code className="lane-branch" title={lane.branch}>{lane.branch}</code>
+    <div className="lane-chips">
+      {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}</Chip>}
+      {lane.exitCode !== undefined && <Chip tone="neutral">Exited (code {lane.exitCode})</Chip>}
+    </div>
+    <div className="lane-row-actions">
+      <button onClick={() => act('resume')}>Resume</button>
+      <button onClick={() => act('restart')}>Start fresh</button>
+      <button disabled={!sync?.changedFiles.length} onClick={() => act('merge')}>Merge</button>
+      <button className="danger" onClick={() => act('close')}>Close lane…</button>
+      <button className="lane-row-toggle" aria-expanded={expanded} onClick={onToggle}>{expanded ? 'Hide terminal' : 'Show terminal'}</button>
+    </div>
+  </div>;
+}
+
 export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, laneLimits, laneSwitchCountdowns, laneGates, onSend, onFocused }: {
   lanes: readonly LaneView[]; terminals: boolean; defaultProvider?: Provider; laneError?: string; focus?: string;
   laneLimits?: Readonly<Record<string, LaneLimitOfferView>>; laneSwitchCountdowns?: Readonly<Record<string, LaneSwitchCountdown>>;
@@ -259,6 +285,11 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
     while (taken.has(`lane ${index}`)) index++;
     return `Lane ${index}`;
   }, [lanes]);
+  // Running lanes first, exited lanes after, as compact rows unless expanded to "Show terminal".
+  const running = lanes.filter(lane => lane.state !== 'exited');
+  const exited = lanes.filter(lane => lane.state === 'exited');
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const toggle = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   return <section className="lanes-view" aria-label="Lanes">
     <div className="lanes-toolbar">
@@ -274,8 +305,11 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
         {showForm && <NewLaneCard initial={{ name: nextName, provider: defaultProvider === 'codex' ? 'codex' : 'claude', goal: '' }} error={laneError}
           onCancel={() => setShowForm(false)}
           onStart={form => { starting.current = lanes.length; onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}) }); }} />}
-        {lanes.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} onSend={onSend} onFocused={onFocused} />)}
-        {!lanes.length && !showForm && <p className="lanes-empty-hint">No lanes yet. Start one to run a real Claude Code or Codex terminal in its own worktree.</p>}
+        {running.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} onSend={onSend} onFocused={onFocused} />)}
+        {exited.map(lane => expanded.has(lane.id)
+          ? <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} onSend={onSend} onFocused={onFocused} />
+          : <ExitedLaneRow key={lane.id} lane={lane} laneName={laneName} expanded={false} onToggle={() => toggle(lane.id)} onSend={onSend} />)}
+        {!lanes.length && !showForm && <p className="lanes-empty-hint">No lanes yet. Start one to run a real Claude Code or Codex terminal in its own worktree. <button className="text-button" onClick={() => onSend({ type: 'learn' })}>Learn how</button></p>}
       </div>}
   </section>;
 }

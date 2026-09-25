@@ -40,6 +40,12 @@
 .lane-chip.tone-good { color: var(--green); border-color: var(--green); }
 .lane-chip.tone-neutral { color: var(--muted); }
 
+/* An exited lane's compact row (docs/Lanes_And_Planner_Plan.md, "Lanes view"), instead of a full terminal tile. */
+.lane-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); flex-wrap: wrap; }
+.lane-row-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.lane-row-actions button { font-size: 11.5px; padding: 4px 9px; }
+.lane-row-toggle { border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); }
+
 /* Gate chips (docs/Gates_Plan.md, "Lanes"): "Gates: ✓ unit · … review". Text carries the state; colour only adds to it. */
 .lane-gate-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 12px 8px; }
 .lane-gate-chips-label { font-size: 10.5px; color: var(--muted); }

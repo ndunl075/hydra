@@ -37,6 +37,8 @@ export interface Snapshot {
   /** The Planner (docs/Lanes_And_Planner_Plan.md, section 4). hydra.defaultProvider, so the New plan card and status text can name it. */
   plans?: Plan[];
   defaultProvider?: Provider;
+  /** Finished-head ids the tray's Clear button has dismissed (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"); a new finished head still shows up. */
+  dismissedTray?: string[];
 }
 export type ClientMessage =
   | LaneClientMessage
@@ -45,6 +47,10 @@ export type ClientMessage =
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer' | 'helperEvidence'; jobId: string }
   | { type: 'helperStopAll' }
+  /** "Learn how" (docs/Lanes_And_Planner_Plan.md, "A walkthrough"): opens hydra.learn from an empty state. */
+  | { type: 'learn' }
+  /** The Finished tray's Clear button: dismiss these heads from the tray (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"). */
+  | { type: 'trayClear'; ids: string[] }
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Kept as its own block: ----
   // ---- Phase 1 (Lanes) adds its own lane messages to this union separately.        ----
   | { type: 'planCreate'; title: string; brief: string }
@@ -71,6 +77,12 @@ export function parseMessage(value: unknown): ClientMessage {
     return { type, jobId };
   }
   if (type === 'helperStopAll') return { type };
+  if (type === 'learn') return { type };
+  if (type === 'trayClear') {
+    const ids = message.ids;
+    if (!Array.isArray(ids) || ids.length > 200 || ids.some(id => typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id))) throw new Error('Invalid tray ids.');
+    return { type, ids };
+  }
   if (type === 'checkProvider') {
     const provider = string('provider');
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');

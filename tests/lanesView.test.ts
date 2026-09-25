@@ -24,8 +24,10 @@ test('an SSR render of the Lanes view shows the toolbar, tiles, their chips, and
   assert.match(html, /3 behind main/);
   assert.match(html, /Merges cleanly/);
   assert.match(html, /Merged/);
-  assert.match(html, /Session ended \(code 1\)/);
-  assert.match(html, /Resume/); assert.match(html, /Start fresh/);
+  // An exited lane with no running heads is a compact row (docs/Lanes_And_Planner_Plan.md, "Lanes view"), not a full terminal tile.
+  assert.match(html, /Exited \(code 1\)/);
+  assert.match(html, /class="lane-row"/);
+  assert.match(html, /Resume/); assert.match(html, /Start fresh/); assert.match(html, /Show terminal/);
   assert.match(html, /files? changed/);
   assert.match(html, /class="lane-tile"/);
 });

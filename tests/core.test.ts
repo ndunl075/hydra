@@ -121,6 +121,28 @@ test('webview messages reject unknown actions, malformed providers, and invalid 
   assert.deepEqual(parseMessage({ type: 'checkProvider', provider: 'codex' }), { type: 'checkProvider', provider: 'codex' });
   assert.deepEqual(parseMessage({ type: 'copyHandoffPrompt' }), { type: 'copyHandoffPrompt' });
 });
+test('Planner webview messages are validated (docs/Lanes_And_Planner_Plan.md, section 4)', () => {
+  const id = 'abcdefabcdef', key = 'api', other = 'ui';
+  assert.deepEqual(parseMessage({ type: 'planCreate', title: 'A plan', brief: 'Do the thing' }), { type: 'planCreate', title: 'A plan', brief: 'Do the thing' });
+  assert.deepEqual(parseMessage({ type: 'planCreateEmpty', title: 'A plan' }), { type: 'planCreateEmpty', title: 'A plan' });
+  for (const type of ['planRetry', 'planCancel', 'planDelete', 'planAddJob', 'planRun', 'planStartEmpty'] as const) {
+    assert.deepEqual(parseMessage({ type, id }), { type, id });
+    assert.throws(() => parseMessage({ type, id: '../../etc' }), /Invalid plan ID/);
+  }
+  assert.deepEqual(parseMessage({ type: 'planSaveJob', id, key, title: 'API', brief: 'Build it', provider: 'codex' }), { type: 'planSaveJob', id, key, title: 'API', brief: 'Build it', provider: 'codex' });
+  assert.deepEqual(parseMessage({ type: 'planSaveJob', id, key, title: 'API', brief: 'Build it' }), { type: 'planSaveJob', id, key, title: 'API', brief: 'Build it', provider: undefined });
+  assert.throws(() => parseMessage({ type: 'planSaveJob', id, key, title: 'API', brief: 'Build it', provider: 'gpt' }), /Unknown provider/);
+  assert.throws(() => parseMessage({ type: 'planSaveJob', id, key: 'Bad Key!', title: 'API', brief: 'Build it' }), /Invalid job key/);
+  assert.deepEqual(parseMessage({ type: 'planDeleteJob', id, key }), { type: 'planDeleteJob', id, key });
+  assert.deepEqual(parseMessage({ type: 'planDependsOn', id, key }), { type: 'planDependsOn', id, key });
+  assert.deepEqual(parseMessage({ type: 'planAddDependency', id, key, dependsOn: other }), { type: 'planAddDependency', id, key, dependsOn: other });
+  assert.deepEqual(parseMessage({ type: 'planRemoveDependency', id, key, dependsOn: other }), { type: 'planRemoveDependency', id, key, dependsOn: other });
+  assert.throws(() => parseMessage({ type: 'planAddDependency', id, key, dependsOn: key }), /cannot depend on itself/);
+  assert.throws(() => parseMessage({ type: 'planAddDependency', id, key, dependsOn: '../../etc' }), /Invalid job key/);
+  assert.throws(() => parseMessage({ type: 'planCreate', title: 'x'.repeat(201), brief: 'ok' }), /Invalid title/);
+  assert.throws(() => parseMessage({ type: 'planSaveJob', id, key, title: 'x'.repeat(81), brief: 'ok' }), /Invalid title/);
+  assert.throws(() => parseMessage({ type: 'planSaveJob', id, key, title: 'ok', brief: 'x'.repeat(4001) }), /Invalid brief/);
+});
 test('repository ownership is exclusive and can be reacquired after release', async () => {
   const { root, repository } = await fixture();
   try {

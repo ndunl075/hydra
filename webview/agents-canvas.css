@@ -136,3 +136,44 @@ body.vscode-high-contrast .canvas-node-card, body.vscode-high-contrast-light .ca
 }
 .canvas-viewport:active .canvas-plane { transition: none; }
 .canvas-button.danger { color: var(--state-fail); }
+
+/* Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. */
+.canvas-newplan { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--rail); }
+.canvas-newplan label, .canvas-job-popover label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.canvas-newplan label:first-child { min-width: 160px; }
+.canvas-newplan label:nth-child(2) { flex: 1; min-width: 220px; }
+.canvas-newplan input, .canvas-newplan textarea, .canvas-job-popover input, .canvas-job-popover textarea, .canvas-job-popover select {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; resize: vertical;
+}
+.canvas-newplan-actions { display: flex; gap: 8px; }
+.canvas-newplan-actions button, .canvas-newplan .canvas-newplan-actions { flex: none; }
+.canvas-newplan button, .canvas-job-popover button { height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.canvas-newplan button.primary, .canvas-job-popover button.primary { border-color: var(--canvas-flow); color: var(--canvas-flow); }
+.canvas-newplan button.text-button, .canvas-job-popover button.text-button { border-color: transparent; color: var(--muted); }
+.canvas-newplan button:disabled, .canvas-job-popover button:disabled { opacity: .5; cursor: default; }
+
+/* The plan lead node: like a chat lead, but wider (room for its actions) and dashed while it's still a draft. */
+.canvas-plan-lead { position: absolute; left: 0; top: 0; width: 190px; display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px dashed var(--border); border-left: 3px solid var(--canvas-wait); border-radius: 10px; background: var(--surface); transition: transform .5s cubic-bezier(.2,.8,.2,1); animation: canvas-in .45s cubic-bezier(.2,.8,.2,1); }
+.canvas-plan-lead.state-failed { border-left-color: var(--state-fail); }
+.canvas-plan-lead.state-draft { border-left-color: var(--canvas-flow); }
+.canvas-plan-lead-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.canvas-plan-lead-head b { min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.canvas-plan-status { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.canvas-plan-status.error { color: var(--state-fail); }
+.canvas-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.canvas-plan-actions button { height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }
+.canvas-plan-actions button.primary { border-color: var(--canvas-flow); color: var(--canvas-flow); }
+.canvas-plan-actions button.danger { color: var(--state-fail); }
+.canvas-plan-actions button:disabled { opacity: .5; cursor: default; }
+
+/* A draft job: dashed, since nothing has run yet. */
+.canvas-node.canvas-plan-job .canvas-node-card { border-style: dashed; }
+.canvas-plan-handle { position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1; cursor: grab; touch-action: none; }
+.canvas-plan-handle:hover, .canvas-plan-handle:focus-visible { color: var(--text); border-color: var(--text); }
+
+/* A removable dependency edge (between two draft jobs): a wide invisible hit-area, and red while it's part of a cycle. */
+.canvas-edge .hit { stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
+.canvas-edge[role="button"] { outline: none; }
+.canvas-edge[role="button"]:focus-visible .base, .canvas-edge[role="button"]:hover .base { stroke: var(--text); opacity: 1; }
+.canvas-edge.cycle .base { stroke: var(--state-fail); stroke-dasharray: 4 5; opacity: 1; }
+.canvas-edge.cycle .flow { stroke: var(--state-fail); }

@@ -88,6 +88,10 @@
         "title": "Hydra: Open Agents"
       },
       {
+        "command": "hydra.newPlan",
+        "title": "Hydra: New Plan"
+      },
+      {
         "command": "hydra.stopAllHelpers",
         "title": "Hydra: Stop All Heads"
       }

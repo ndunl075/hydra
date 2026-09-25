@@ -1,3 +1,5 @@
+import type { Plan } from './plans';
+
 export type Provider = 'claude' | 'codex';
 export interface ProviderInfo { provider: Provider; executable?: string; available: boolean }
 export interface ProviderDiagnostic {
@@ -29,13 +31,25 @@ export interface Snapshot {
   mode: 'editor' | 'agents'; busy: boolean; error?: string;
   helpers?: HelperJobView[];
   handoff?: Handoff; officialExtensions?: OfficialExtensionInfo[];
+  /** The Planner (docs/Lanes_And_Planner_Plan.md, section 4). hydra.defaultProvider, so the New plan card and status text can name it. */
+  plans?: Plan[];
+  defaultProvider?: Provider;
 }
 export type ClientMessage =
   | { type: 'ready' | 'editor' | 'agents' | 'refresh' | 'settings' }
   | { type: 'checkProvider'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
   | { type: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer'; jobId: string }
-  | { type: 'helperStopAll' };
+  | { type: 'helperStopAll' }
+  // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Kept as its own block: ----
+  // ---- Phase 1 (Lanes) adds its own lane messages to this union separately.        ----
+  | { type: 'planCreate'; title: string; brief: string }
+  | { type: 'planCreateEmpty'; title: string }
+  | { type: 'planRetry' | 'planCancel' | 'planDelete' | 'planAddJob' | 'planRun' | 'planStartEmpty'; id: string }
+  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider }
+  | { type: 'planDeleteJob'; id: string; key: string }
+  | { type: 'planDependsOn'; id: string; key: string }
+  | { type: 'planAddDependency' | 'planRemoveDependency'; id: string; key: string; dependsOn: string };
 
 export function parseMessage(value: unknown): ClientMessage {
   if (!value || typeof value !== 'object') throw new Error('Invalid message.');
@@ -57,5 +71,24 @@ export function parseMessage(value: unknown): ClientMessage {
     return { type, provider };
   }
   if (['ready', 'editor', 'agents', 'refresh', 'settings', 'openOfficial', 'showOfficial', 'copyHandoffPrompt'].includes(type)) return { type } as ClientMessage;
+  // ---- Planner ----
+  const planId = (): string => { const id = string('id', 20); if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid plan ID.'); return id; };
+  const jobKey = (): string => { const key = string('key', 30); if (!/^[a-z0-9-]{1,24}$/.test(key)) throw new Error('Invalid job key.'); return key; };
+  const provider = (): Provider | undefined => {
+    if (message.provider === undefined) return undefined;
+    const value = string('provider'); if (value !== 'claude' && value !== 'codex') throw new Error('Unknown provider.'); return value;
+  };
+  if (type === 'planCreate') return { type, title: string('title', 200), brief: string('brief', 8000) };
+  if (type === 'planCreateEmpty') return { type, title: string('title', 200) };
+  if (type === 'planRetry' || type === 'planCancel' || type === 'planDelete' || type === 'planAddJob' || type === 'planRun' || type === 'planStartEmpty') return { type, id: planId() };
+  if (type === 'planSaveJob') return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider() };
+  if (type === 'planDeleteJob') return { type, id: planId(), key: jobKey() };
+  if (type === 'planDependsOn') return { type, id: planId(), key: jobKey() };
+  if (type === 'planAddDependency' || type === 'planRemoveDependency') {
+    const id = planId(), key = jobKey(), dependsOn = string('dependsOn', 30);
+    if (!/^[a-z0-9-]{1,24}$/.test(dependsOn)) throw new Error('Invalid job key.');
+    if (dependsOn === key) throw new Error('A job cannot depend on itself.');
+    return { type, id, key, dependsOn };
+  }
   throw new Error('Unknown command.');
 }

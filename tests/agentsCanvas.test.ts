@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { buildCanvas, elapsedLabel, finishedLingerMs, layout, onCanvas, trayWindowMs } from '../src/core/agentsCanvas';
 import type { HelperJobView } from '../src/core/model';
+import { createPlan, type Plan, type PlanJob } from '../src/core/plans';
 
 const now = Date.parse('2026-09-24T12:00:00.000Z');
 const at = (msAgo: number) => new Date(now - msAgo).toISOString();
 const head = (id: string, state: string, extra: Partial<HelperJobView> = {}): HelperJobView => ({
   id, title: `Head ${id}`, state, provider: 'claude', createdAt: at(60_000), changedFiles: 0, checks: [], dependsOn: [], ...extra,
 });
+const planJob = (key: string, extra: Partial<PlanJob> = {}): PlanJob => ({ key, title: `Job ${key}`, brief: `Do ${key}.`, dependsOn: [], ...extra });
+const plan = (state: Plan['state'], jobs: PlanJob[] = [], extra: Partial<Plan> = {}): Plan => ({ ...createPlan({ title: 'Checkout refactor', brief: 'Refactor checkout.' }), state, jobs, ...extra });
 
 test('the canvas shows working heads and fresh results; merged heads leave; old results move to the tray', () => {
   assert.equal(onCanvas(head('a', 'running'), now), true);
@@ -97,4 +100,88 @@ test('the Agents view offers only head actions: diff, log, answer, cancel and st
   assert.match(css, /\.canvas-node:focus-visible/);
   // The task-era panels are gone from the Agents view.
   for (const retired of ['task-rail', 'Resources and setup', 'Managed CLI', 'profile slots', 'Create task']) assert.ok(!page.includes(retired), retired);
+});
+
+// ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
+
+test('buildCanvas draws a draft plan as a lead node with dashed jobs, laid out by dependency depth', () => {
+  const draft = plan('draft', [planJob('api'), planJob('ui'), planJob('tests', { dependsOn: ['api', 'ui'] })]);
+  const model = buildCanvas([], now, { plans: [draft] });
+  assert.equal(model.plans.length, 1);
+  const node = model.plans[0]!;
+  assert.equal(node.plan.id, draft.id);
+  assert.equal(node.cycleMessage, undefined);
+  const pos = Object.fromEntries(node.jobs.map(item => [item.job.key, item]));
+  assert.equal(pos.api!.x, layout.headX); assert.equal(pos.ui!.x, layout.headX);
+  assert.equal(pos.tests!.x, layout.headX + layout.columnGap, 'tests waits for api and ui, so it sits one column right');
+  assert.notEqual(pos.api!.y, pos.ui!.y, 'independent jobs in the same column never overlap');
+  const edgeIds = model.edges.map(edge => edge.id);
+  assert.ok(edgeIds.includes(`plan-lead:${draft.id}>${pos.api!.id}`));
+  assert.ok(edgeIds.includes(`${pos.api!.id}>${pos.tests!.id}`));
+  assert.equal(model.edges.find(edge => edge.id === `${pos.api!.id}>${pos.tests!.id}`)!.kind, 'plan-dependency');
+});
+
+test('buildCanvas flags a plan\'s cycle edges and names the cycle on the plan node', () => {
+  const cyclic = plan('draft', [planJob('a', { dependsOn: ['b'] }), planJob('b', { dependsOn: ['a'] })]);
+  const model = buildCanvas([], now, { plans: [cyclic] });
+  const node = model.plans[0]!;
+  assert.equal(node.cycleMessage, 'The plan has a dependency cycle: Job a → Job b → Job a');
+  const cycleEdges = model.edges.filter(edge => edge.kind === 'plan-dependency');
+  assert.equal(cycleEdges.length, 2);
+  assert.ok(cycleEdges.every(edge => edge.cycle === true));
+  assert.equal(Math.min(...node.jobs.map(item => item.x)), layout.headX, 'a cycle still starts in the first column, with no gap');
+});
+
+test('buildCanvas only draws a lead node for a plan still being drafted; a running or done plan\'s heads group under the ordinary lead', () => {
+  const running = plan('running', [planJob('api', { jobId: '111111111111' })]);
+  const withRunningHead = buildCanvas([head('111111111111', 'running', { lead: { sessionId: `plan-${running.id}`, label: `Plan · ${running.title}` } })], now, { plans: [running] });
+  assert.deepEqual(withRunningHead.plans, [], 'a running plan has no draft node of its own');
+  assert.deepEqual(withRunningHead.leads.map(lead => lead.label), [`Plan · ${running.title}`], 'its heads group under an ordinary lead instead');
+
+  const done = plan('done', [planJob('api', { jobId: '222222222222' })]);
+  assert.deepEqual(buildCanvas([], now, { plans: [done] }).plans, [], 'a done plan is not drawn either');
+
+  const planning = plan('planning', []);
+  assert.equal(buildCanvas([], now, { plans: [planning] }).plans.length, 1, 'a plan still being drafted is drawn');
+});
+
+test('buildCanvas keeps working with no plans argument at all (existing callers)', () => {
+  assert.deepEqual(buildCanvas([], now).plans, []);
+});
+
+test('an SSR render shows the New plan card, and a draft, planning and failed plan each in their own state', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentsCanvas } = await import('../webview/AgentsCanvas');
+
+  const toolbar = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], onAction: () => {} }));
+  assert.match(toolbar, /New plan/);
+
+  const draft = plan('draft', [planJob('api', { provider: 'codex' }), planJob('ui', { dependsOn: ['api'] })]);
+  const draftHtml = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], plans: [draft], onAction: () => {} }));
+  assert.match(draftHtml, new RegExp(`Plan . ${draft.title}`));
+  assert.match(draftHtml, /\+ Job/);
+  assert.match(draftHtml, /Run plan/);
+  assert.match(draftHtml, /Delete plan/);
+  assert.match(draftHtml, /Draft job/);
+  assert.match(draftHtml, /Job api/);
+  assert.match(draftHtml, /2 jobs/);
+  assert.match(draftHtml, /canvas-edge plan-lead/, 'the plan node is joined to its first job');
+
+  const planning = plan('planning', []);
+  const planningHtml = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], plans: [planning], defaultProvider: 'codex', onAction: () => {} }));
+  assert.match(planningHtml, /Planning with Codex…/);
+  assert.match(planningHtml, />Cancel</);
+
+  const failed = plan('failed', [], { error: 'Codex exited with code 1.' });
+  const failedHtml = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], plans: [failed], onAction: () => {} }));
+  assert.match(failedHtml, /Codex exited with code 1\./);
+  assert.match(failedHtml, />Retry</);
+  assert.match(failedHtml, /Start empty/);
+
+  const cyclic = plan('draft', [planJob('a', { dependsOn: ['b'] }), planJob('b', { dependsOn: ['a'] })]);
+  const cyclicHtml = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], plans: [cyclic], onAction: () => {} }));
+  assert.match(cyclicHtml, /The plan has a dependency cycle: Job a → Job b → Job a/);
+  assert.match(cyclicHtml, /class="canvas-edge plan-dependency cycle"/);
+  assert.match(cyclicHtml, /disabled=""[^>]*>Run plan/, 'Run plan is disabled while the plan has a cycle');
 });

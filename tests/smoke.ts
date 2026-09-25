@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Handoff, HandoffTask, ProviderDiagnostic } from '../src/core/model';
+import { createPlan, type Plan } from '../src/core/plans';
 import { createWorktree } from '../src/core/worktrees';
 import { createHandoffWorkspace, officialProviders } from '../src/core/handoff';
 import type { ProfileResources } from '../src/core/profileImport';
@@ -155,6 +156,19 @@ export async function run(): Promise<void> {
       console.log('PASS: hydra.setChatLocation writes the global hydra.chatLocation preference.');
     } finally { await hydraConfig.update('chatLocation', previousChatLocation, vscode.ConfigurationTarget.Global); }
   } finally { terminal.dispose(); }
+  {
+    // Planner (docs/Lanes_And_Planner_Plan.md, section 4): a plan with a dependency
+    // cycle is refused, with the cycle named, before anything is started.
+    const cyclic: Plan = { ...createPlan({ title: 'Cyclic plan' }), jobs: [
+      { key: 'api', title: 'API', brief: 'Build the API.', dependsOn: ['ui'] },
+      { key: 'ui', title: 'UI', brief: 'Build the UI.', dependsOn: ['api'] },
+    ] };
+    const saved = await vscode.commands.executeCommand<Plan>('hydra.plans.save', cyclic);
+    assert.equal(saved.id, cyclic.id, 'a plan with a cycle still saves: drawing one is allowed');
+    await assert.rejects(async () => vscode.commands.executeCommand('hydra.plans.run', cyclic.id), /dependency cycle: API.*UI.*API/s);
+    assert.deepEqual((await vscode.commands.executeCommand<Plan[]>('hydra.plans.list')).find(plan => plan.id === cyclic.id)?.state, 'draft', 'a refused run leaves the plan as it was');
+    console.log('PASS: hydra.plans.run refuses a plan with a dependency cycle, naming it, and starts nothing.');
+  }
   if (process.env.HYDRA_TEST_DESKTOP) {
     const accountsBefore = await vscode.commands.executeCommand<Record<string,{status:string}>>('hydra.getAccountSetupState');
     assert.equal(accountsBefore?.claude?.status,'unchecked'); assert.equal(accountsBefore?.codex?.status,'unchecked');

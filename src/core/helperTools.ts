@@ -12,7 +12,7 @@ const jobId = string('A head job id returned by hydra_start_head.', { pattern: '
 export const leadTools: readonly HelperToolDefinition[] = [
   {
     name: 'hydra_start_head',
-    description: 'Start a Hydra head: a separate agent that works on one independent piece of this task in its own git worktree and branch, branched from this folder\'s current HEAD (commit first if the head must see your changes). Use it on your own initiative whenever a task splits into independent pieces with separate files; start several at once for parallel work. Returns a job id immediately; call hydra_wait_for_heads to get results. Merge a finished head\'s branch yourself with git.',
+    description: 'Start a Hydra head: a separate agent that works on one independent piece of this task in its own git worktree and branch, branched from this folder\'s current HEAD (commit first if the head must see your changes); a head with depends_on starts from their results instead. Use it on your own initiative whenever a task splits into independent pieces with separate files; start several at once for parallel work. Returns a job id immediately; call hydra_wait_for_heads to get results. Merge a finished head\'s branch yourself with git.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['title', 'brief', 'write_scope', 'idempotency_key'],
       properties: {
@@ -21,7 +21,7 @@ export const leadTools: readonly HelperToolDefinition[] = [
         write_scope: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32, description: 'Repository-relative paths the head may change, e.g. ["src/parser/", "tests/parser.test.ts"]. Changes outside are refused.' },
         provider: string('Which agent runs the head. Defaults to claude.', { enum: ['claude', 'codex'] }),
         model: string('Optional model for the head.'),
-        depends_on: { type: 'array', items: jobId, description: 'Job ids that must finish first.' },
+        depends_on: { type: 'array', items: jobId, description: 'Job ids that must finish first. The head then starts from their result commits (merged, if several) and is told what they did.' },
         idempotency_key: string('A unique key for this request. Repeating a call with the same key returns the same job instead of starting another.'),
         lead_label: string('Optional short name for this chat, under 60 characters, shown to the user on Hydra\'s Agents canvas (e.g. "Checkout refactor").'),
         limits: { type: 'object', additionalProperties: false, properties: { wall_clock_minutes: { type: 'number' }, max_turns: { type: 'number' }, max_budget_usd: { type: 'number' } }, description: 'Optional caps. Defaults come from Hydra Settings → Heads.' },
@@ -33,7 +33,7 @@ export const leadTools: readonly HelperToolDefinition[] = [
     description: 'Wait until the given heads finish (done, failed, cancelled) or ask a question (blocked), then return their results. Returns early with current states after max_wait_s. Safe to call again.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['job_ids'], properties: { job_ids: { type: 'array', items: jobId, minItems: 1, maxItems: 16 }, max_wait_s: { type: 'number', description: 'Longest wait in seconds, 1–3000. Default 1800.' } } },
   },
-  { name: 'hydra_get_head', description: 'Get one head\'s state, summary, branch, commit, changed files and check results.', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id'], properties: { job_id: jobId } } },
+  { name: 'hydra_get_head', description: 'Get one head\'s state, summary, branch, base commit, commit, changed files and gate results (commands, review findings, screenshots).', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id'], properties: { job_id: jobId } } },
   { name: 'hydra_list_heads', description: 'List this window\'s heads and their states.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
   { name: 'hydra_reply_to_head', description: 'Answer a head that is blocked on a question. Hydra delivers the message and the head continues.', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id', 'message'], properties: { job_id: jobId, message: string('The answer, under 8000 characters.') } } },
   { name: 'hydra_cancel_head', description: 'Stop a head and mark it cancelled. Its branch is kept.', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id'], properties: { job_id: jobId, reason: string('Why, for the record.') } } },
@@ -45,7 +45,7 @@ export const leadTools: readonly HelperToolDefinition[] = [
 ];
 
 export const helperTools: readonly HelperToolDefinition[] = [
-  { name: 'hydra_done', description: 'Report that your work is finished. Hydra commits any uncommitted changes for you, then checks the changes are inside your write scope and runs the project checks; if they fail you will be told what to fix.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: string('What you changed and why, and anything the lead must know. Under 8000 characters.') } } },
+  { name: 'hydra_done', description: 'Report that your work is finished. Hydra commits any uncommitted changes for you, then checks the changes are inside your write scope and runs the project\'s gates (its checks, and possibly a review by another agent and screenshots); if they fail you will be told what to fix.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: string('What you changed and why, and anything the lead must know. Under 8000 characters.') } } },
   { name: 'hydra_stuck', description: 'Report that you cannot continue without a decision or information from the lead. Ask one clear question. You will receive the answer as your next message.', inputSchema: { type: 'object', additionalProperties: false, required: ['reason'], properties: { reason: string('What is blocking you.'), question: string('The question for the lead.') } } },
   { name: 'hydra_progress', description: 'Optionally report a short progress note shown in Hydra\'s head dashboard.', inputSchema: { type: 'object', additionalProperties: false, required: ['note'], properties: { note: string('Under 500 characters.') } } },
 ];

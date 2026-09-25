@@ -17,9 +17,9 @@ export const defaultDedupeMs = 10 * 60_000;
 /** How long a limit is assumed to still be active when the provider gave no reset time. */
 export const defaultLimitWindowMs = 60 * 60_000;
 
-/** A key identifying "the same chat/head" for dedupe: provider + source + session/job. */
+/** A key identifying "the same chat/head/lane" for dedupe: provider + source + session/job/lane. */
 export function limitEventKey(event: LimitEvent): string {
-  const identity = event.source === 'head' ? (event.jobId ?? '') : (event.sessionId ?? '');
+  const identity = event.source === 'head' ? (event.jobId ?? '') : event.source === 'lane' ? (event.laneId ?? '') : (event.sessionId ?? '');
   return `${event.provider}|${event.source}|${identity}`;
 }
 
@@ -81,6 +81,22 @@ export function buildOffer(event: LimitEvent, now: Date, otherAlsoLimited: boole
 export function continuedHistoryReason(fromProvider: Provider, toProvider: Provider): string {
   return `Continued in ${shortLabel[toProvider]} after ${shortLabel[fromProvider]}'s usage limit.`;
 }
+
+// ---- Lanes (docs/Gates_Plan.md, section 2): the tile banner, not a notification ----
+
+export type LaneOfferButtonId = 'continueOther' | 'viewHandoff' | 'wait';
+/** "Claude Code hit its usage limit (resets 3:40 PM)." — the buttons say what to do about it. */
+export function laneOfferMessage(event: LimitEvent, now: Date): string {
+  const mine = providerLabel[event.provider];
+  const resets = formatResetTime(event.resetsAt, now);
+  return `${mine} hit its usage limit${resets ? ` (resets ${resets})` : ''}.`;
+}
+/** Only Wait when the other provider is also limited (otherStillLimited); otherwise all three. */
+export function laneOfferButtons(otherAlsoLimited: boolean): LaneOfferButtonId[] {
+  return otherAlsoLimited ? ['wait'] : ['continueOther', 'viewHandoff', 'wait'];
+}
+/** `hydra.lanes.onLimit: "switch"`: how long the tile counts down before switching, with Cancel. */
+export const laneSwitchCountdownSeconds = 10;
 
 /**
  * Tracks the latest event per dedupe key (to ignore repeats) and per provider (to

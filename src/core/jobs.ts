@@ -52,7 +52,68 @@ export function resolveHeadDefaults(input: HeadDefaultsInput): JobLimits {
     maxBudgetUsd: clampDefault(input.budgetUsd, 5, 0.5, 100),
   };
 }
-export interface JobCheckResult { id: string; required: boolean; passed: boolean; exitCode: number | null; durationMs: number; outputTail: string }
+/** How many times a head may report done before it fails, unless .hydra/gates.json says otherwise. */
+export const defaultMaxAttempts = 3;
+/** Gates (docs/Gates_Plan.md): what kind of gate a result is from, and how it ended. */
+export type GateKind = 'command' | 'screenshots' | 'review';
+export type GateState = 'passed' | 'failed' | 'notRun';
+export type FindingSeverity = 'blocker' | 'major' | 'minor';
+export interface GateFinding { file?: string; line?: number; severity: FindingSeverity; note: string }
+/**
+ * One gate's result: a command, the screenshots or a review. Results recorded
+ * before gates existed have only the first six fields; read those through
+ * gateKind and gateState. `passed` stays true only for a gate that passed.
+ */
+export interface JobCheckResult {
+  id: string; required: boolean; passed: boolean; exitCode: number | null; durationMs: number; outputTail: string;
+  kind?: GateKind; state?: GateState;
+  /** Files that show what happened: the command's log, the reviewer's reply, the screenshots. */
+  evidence?: string[];
+  /** A review's findings. */
+  findings?: GateFinding[];
+  /** One line on the outcome: the review's summary, what the screenshots showed, or why the gate didn't run. */
+  summary?: string;
+  /** Who reviewed, for a review gate. */
+  reviewer?: Provider;
+}
+export const gateKind = (check: JobCheckResult): GateKind => check.kind ?? 'command';
+export const gateState = (check: JobCheckResult): GateState => check.state ?? (check.passed ? 'passed' : 'failed');
+/** A gate that stops the work being accepted: required and failed. A gate that didn't run never blocks. */
+export const gateBlocks = (check: JobCheckResult): boolean => check.required && gateState(check) === 'failed';
+
+/**
+ * One gate's result as the dashboard shows it (docs/Gates_Plan.md, "Seeing
+ * results"): enough to draw a chip and to open View evidence without
+ * refetching the whole JobCheckResult. src/core/model.ts's HelperJobView
+ * re-exports this type; it lives here so toHeadCheckView (below) and its unit
+ * test never need model.ts.
+ */
+export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[] }
+/** A stored JobCheckResult, as extension.ts's headViews sends it to the dashboard. Pure, so the mapping is unit tested directly. */
+export function toHeadCheckView(check: JobCheckResult): HeadCheckView {
+  return {
+    id: check.id, passed: check.passed, kind: gateKind(check), state: gateState(check), required: check.required,
+    ...(check.summary ? { summary: check.summary } : {}),
+    ...(check.findings?.length ? { findings: check.findings } : {}),
+    ...(check.evidence?.length ? { evidence: check.evidence } : {}),
+  };
+}
+
+/**
+ * A gate chip (docs/Gates_Plan.md, "Seeing results"): "✓ unit · ✓ review · ✗
+ * ui", plus a not-run style with the reason on hover. Text as well as colour,
+ * never colour alone — `tone` only ever adds colour on top of `label`'s icon.
+ * Pure so both the Agents canvas and the Lanes tiles (and their SSR tests) use
+ * the same reading of a result.
+ */
+export interface GateChipView { id: string; icon: '✓' | '✗' | '–'; label: string; tone: 'good' | 'bad' | 'neutral'; title: string }
+export function gateChip(check: Pick<JobCheckResult, 'id' | 'kind' | 'state' | 'passed' | 'summary' | 'required'>): GateChipView {
+  const state = gateState(check as JobCheckResult);
+  const icon = state === 'passed' ? '✓' : state === 'notRun' ? '–' : '✗';
+  const tone: GateChipView['tone'] = state === 'passed' ? 'good' : state === 'notRun' ? 'neutral' : 'bad';
+  const title = state === 'notRun' ? (check.summary ? `Not run: ${check.summary}` : 'Not run') : (check.summary || (state === 'failed' ? 'Failed' : 'Passed'));
+  return { id: check.id, icon, label: `${icon} ${check.id}`, tone, title };
+}
 export interface JobResult { summary: string; commit: string; changedFiles: string[]; checks: JobCheckResult[] }
 export interface JobEvent { at: string; from: JobState | null; to: JobState; reason?: string }
 
@@ -205,7 +266,7 @@ export class JobStore {
       const job: Job = {
         version: 1, id, leadKey, ...(lead ? { lead: { ...lead, ...(input.leadLabel ? { label: input.leadLabel } : {}) } } : {}),
         idempotencyKey: input.idempotencyKey, title: input.title, brief: input.brief, writeScope: input.writeScope,
-        provider: input.provider, model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: 3, nudged: false,
+        provider: input.provider, model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: defaultMaxAttempts, nudged: false,
         replies: [], createdAt: at, updatedAt: at, history: [{ at, from: null, to: 'queued' }],
       };
       this.jobs.set(id, job);
@@ -230,7 +291,7 @@ export class JobStore {
   }
 
   /** Change fields that don't change state (progress, replies, worktree). Refused once a job is final. */
-  async update(id: string, patch: Partial<Pick<Job, 'progress' | 'replies' | 'worktree' | 'baseCommit' | 'branch' | 'question' | 'nudged' | 'attempts'>>): Promise<Job> {
+  async update(id: string, patch: Partial<Pick<Job, 'progress' | 'replies' | 'worktree' | 'baseCommit' | 'branch' | 'question' | 'nudged' | 'attempts' | 'maxAttempts'>>): Promise<Job> {
     return this.serialize(async () => {
       this.assertLoaded();
       const job = this.jobs.get(id);

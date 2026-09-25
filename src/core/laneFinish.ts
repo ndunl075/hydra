@@ -1,4 +1,4 @@
-import { lstat, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
+import { lstat, readdir, realpath, rm, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { git, gitRun } from './git';
 import { isInside } from './worktrees';
@@ -220,6 +220,19 @@ async function removeWorktree(lane: FinishLane, force: boolean): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     const result = await gitRun(lane.repository, args);
     if (result.code === 0) return;
+    // "Not a working tree": a close racing another close found it already gone (done, not a
+    // failure), or an earlier attempt unregistered it and then failed on a file still held open.
+    // The path was checked to be this lane's worktree and its links are gone, so a retry removes
+    // what's left (rm unlinks links, never follows them). A first attempt never deletes an
+    // existing folder git doesn't know.
+    if (/is not a working tree/i.test(result.stderr)) {
+      const left = await lstat(lane.worktree).then(() => true, () => false);
+      if (!left || attempt > 0) {
+        if (left) await rm(lane.worktree, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+        await gitRun(lane.repository, ['worktree', 'prune']);
+        return;
+      }
+    }
     // A process that just exited can hold files for a moment on Windows.
     if (attempt >= 3 || !/permission denied|unable to|busy|being used/i.test(result.stderr)) throw new Error(`git couldn't remove the worktree: ${result.stderr.trim().split('\n').slice(0, 4).join(' ')}`);
     await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));

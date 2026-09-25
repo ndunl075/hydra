@@ -21,8 +21,10 @@ export interface LimitWatcherOptions {
   directory: string;
   /** Claude's projects folder (CLAUDE_CONFIG_DIR or ~/.claude, plus "projects"): transcripts elsewhere are dropped. */
   claudeProjectsDir: string;
-  /** Whether this window's workspace contains a folder. */
+  /** Whether this window's workspace (or an open lane's worktree) contains a folder. */
   owns: (cwd: string) => boolean;
+  /** Whether one of this window's open lanes has this id (docs/Gates_Plan.md, section 2). A lane event with no match falls through to `owns(cwd)`. */
+  ownsLane?: (laneId: string) => boolean;
   now?: () => number;
   graceMs?: number;
   scanMs?: number;
@@ -97,7 +99,9 @@ export class LimitWatcher {
       if (!parses(text) && now - info.mtimeMs < 5000) { waiting = true; continue; }
       const event = parseLimitEventFile(text, { now, claudeProjectsDir: this.options.claudeProjectsDir });
       if (!event) { await discard(file); continue; }
-      const mine = !!event.cwd && this.owns(event.cwd);
+      // A lane event with a laneId one of this window's lanes claims it at once,
+      // same as a cwd inside one of this window's folders (including lane worktrees).
+      const mine = (!!event.laneId && this.ownsLane(event.laneId)) || (!!event.cwd && this.owns(event.cwd));
       if (!mine && now - written < grace) { waiting = true; continue; }
       if (await this.claim(file)) this.emit(event);
     }
@@ -115,6 +119,7 @@ export class LimitWatcher {
     } finally { await discard(lock); }
   }
   private owns(cwd: string): boolean { try { return this.options.owns(cwd); } catch { return false; } }
+  private ownsLane(laneId: string): boolean { try { return this.options.ownsLane?.(laneId) ?? false; } catch { return false; } }
   private emit(event: LimitEvent): void {
     const now = this.now(), dedupe = this.options.dedupeMs ?? 120_000;
     for (const [key, at] of this.recent) if (now - at > dedupe) this.recent.delete(key);

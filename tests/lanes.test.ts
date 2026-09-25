@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { LaneStore, canLaneTransition, isLaneBranch, isSafeBranchName, laneBranch, laneSlug, laneStates, laneTransitions, lanePreamble, lanePreambleMax, parseLaneInput, restartedLanes, validateLane, type Lane } from '../src/core/lanes';
+import { LaneStore, canLaneTransition, isLaneBranch, isSafeBranchName, laneBranch, laneContinuePrompt, laneSlug, laneStates, laneTransitions, lanePreamble, lanePreambleMax, parseLaneInput, restartedLanes, validateLane, type Lane } from '../src/core/lanes';
 import { LaneTerminal, loadNodePty, ptyCandidates } from '../src/core/lanePty';
 import { FakePty } from './lanePtyFake';
 import { laneLaunch, parseTestCommand, shimSafe } from '../src/core/laneService';
@@ -47,6 +47,27 @@ test('lane input and stored records are validated field by field', () => {
   assert.throws(() => validateLane(sample({ baseCommit: 'HEAD' })), /base commit/);
   assert.throws(() => validateLane(sample({ state: 'paused' as never })), /malformed/);
   assert.throws(() => validateLane(sample({ repository: 'relative' })), /invalid path/);
+  // Provider switches (docs/Gates_Plan.md, section 2).
+  const switches = [{ from: 'claude' as const, to: 'codex' as const, at: '2026-09-25T10:00:00.000Z', reason: 'limit' as const }];
+  assert.deepEqual(validateLane(sample({ switches })).switches, switches);
+  assert.equal(validateLane(sample({ switches: undefined })).switches, undefined);
+  for (const bad of [[{ from: 'claude', to: 'claude', at: '2026-09-25T10:00:00.000Z', reason: 'limit' }], [{ from: 'gpt', to: 'codex', at: '2026-09-25T10:00:00.000Z', reason: 'limit' }], [{ from: 'claude', to: 'codex', at: 'not a date', reason: 'limit' }], [{ from: 'claude', to: 'codex', at: '2026-09-25T10:00:00.000Z', reason: 'because' }], 'nope']) {
+    assert.throws(() => validateLane(sample({ switches: bad as never })), /switch/, JSON.stringify(bad));
+  }
+  assert.equal(validateLane(sample({ switches: Array.from({ length: 80 }, () => switches[0]!) })).switches!.length, 50, 'only the newest 50 are kept');
+});
+
+test('laneContinuePrompt is one line, names the provider that hit its limit, and carries the flattened handoff', () => {
+  const lane = { name: 'Lane 1', branch: `lane/lane-1-${id}`, goal: 'Fix the checkout' };
+  const text = laneContinuePrompt(lane, 'claude', [], 'Continue this task in /repo.\n\n## What\'s left\n\n- Ship it');
+  assert.doesNotMatch(text, /[\r\n]/);
+  assert.match(text, /^You are working in Hydra lane "Lane 1" on branch lane\/lane-1-[a-f0-9]{12}\./);
+  assert.match(text, /You are continuing in this lane after Claude Code hit its usage limit\./);
+  assert.match(text, /Handoff: Continue this task in \/repo\. ## What's left - Ship it$/);
+  const long = laneContinuePrompt(lane, 'codex', [], 'x'.repeat(10_000));
+  assert.ok(long.length <= lanePreambleMax * 2, `${long.length}`);
+  assert.doesNotMatch(long, /[\r\n]/);
+  assert.match(long, /Codex hit its usage limit/);
 });
 
 test('lane states change only along the table, and a restart turns running lanes into exited ones', async () => {
@@ -162,9 +183,15 @@ test('parseMessage validates every lane message', () => {
   assert.throws(() => parseMessage({ type: 'laneInput', id: '../../etc', data: 'x' }), /lane ID/);
   assert.deepEqual(parseMessage({ type: 'laneResize', id, cols: 20, rows: 200 }), { type: 'laneResize', id, cols: 20, rows: 200 });
   for (const [cols, rows] of [[19, 30], [501, 30], [80, 4], [80, 201], [80.5, 30], ['80', 30]]) assert.throws(() => parseMessage({ type: 'laneResize', id, cols, rows }), /Invalid (cols|rows)/);
-  for (const action of ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh']) assert.deepEqual(parseMessage({ type: 'laneAction', id, action }), { type: 'laneAction', id, action });
+  for (const action of ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh', 'switchProvider']) assert.deepEqual(parseMessage({ type: 'laneAction', id, action }), { type: 'laneAction', id, action });
   assert.throws(() => parseMessage({ type: 'laneAction', id, action: 'push --force' }), /Unknown lane action/);
   assert.throws(() => parseMessage({ type: 'laneAction', id: 'x', action: 'merge' }), /lane ID/);
+  // The usage-limit banner (docs/Gates_Plan.md, section 2).
+  for (const action of ['continueOther', 'viewHandoff', 'wait']) assert.deepEqual(parseMessage({ type: 'laneLimitAction', id, action }), { type: 'laneLimitAction', id, action });
+  assert.throws(() => parseMessage({ type: 'laneLimitAction', id, action: 'setupOther' }), /Unknown lane limit action/);
+  assert.throws(() => parseMessage({ type: 'laneLimitAction', id: 'x', action: 'wait' }), /lane ID/);
+  assert.deepEqual(parseMessage({ type: 'laneCancelSwitch', id }), { type: 'laneCancelSwitch', id });
+  assert.throws(() => parseMessage({ type: 'laneCancelSwitch', id: 'nope' }), /lane ID/);
   assert.deepEqual(parseMessage({ type: 'view', view: 'lanes', focus: id }), { type: 'view', view: 'lanes', focus: id });
   assert.deepEqual(parseMessage({ type: 'view', view: 'canvas' }), { type: 'view', view: 'canvas' });
   assert.throws(() => parseMessage({ type: 'view', view: 'plans' }), /Unknown view/);

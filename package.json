@@ -314,6 +314,16 @@
           "type": "boolean",
           "default": true,
           "description": "When Claude Code or Codex hits its usage limit, offer to continue in the other provider with a handoff."
+        },
+        "hydra.lanes.onLimit": {
+          "type": "string",
+          "enum": ["ask", "switch"],
+          "enumDescriptions": [
+            "Show a banner on the lane's tile with Continue in the other provider, View handoff and Wait.",
+            "Count down 10 seconds on the lane's tile (Cancel stops it), then switch to the other provider automatically."
+          ],
+          "default": "ask",
+          "description": "When a lane's provider hits its usage limit, whether to ask before continuing in the other provider or switch automatically."
         }
       }
     }

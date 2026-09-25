@@ -12,10 +12,17 @@ import type { ProviderQuota } from './extensionQuota';
  */
 export class ClaudeChatLimits implements vscode.Disposable {
   private readonly watcher: LimitWatcher;
-  constructor(directory: string, claudeProjectsDir: string, emit: (event: LimitEvent) => void) {
+  /**
+   * `laneWorktrees` lists this window's open lanes (id and worktree), read fresh on
+   * each event: a lane's own Claude session is tagged with its laneId (claimed at
+   * once, `ownsLane`), and its worktree also counts as an owned folder for a chat
+   * event with no lane tag (`owns`), same as a workspace folder.
+   */
+  constructor(directory: string, claudeProjectsDir: string, emit: (event: LimitEvent) => void, laneWorktrees: () => readonly { id: string; worktree: string }[] = () => []) {
     this.watcher = new LimitWatcher({
       directory, claudeProjectsDir,
-      owns: cwd => workspaceOwns((vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath))(cwd),
+      owns: cwd => workspaceOwns([...(vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath), ...laneWorktrees().map(lane => lane.worktree)])(cwd),
+      ownsLane: laneId => laneWorktrees().some(lane => lane.id === laneId),
     });
     this.watcher.onLimit(emit);
   }

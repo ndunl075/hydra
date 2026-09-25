@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isLaneId } from './lanes';
 import type { LimitEvent } from './limitEvents';
 import type { QuotaSnapshot } from './quota';
 
@@ -44,6 +45,17 @@ export function normaliseStopFailure(payload: unknown, now = new Date()): LimitE
   return { provider: 'claude', source: 'chat', at: now.toISOString(), ...(resetsAt ? { resetsAt } : {}), ...(message ? { message } : {}), ...(id ? { sessionId: id } : {}), ...(cwd ? { cwd } : {}), ...(transcriptPath ? { transcriptPath } : {}) };
 }
 
+/**
+ * The hook's own environment carries HYDRA_LANE_ID when Claude runs inside a Hydra
+ * lane (laneService.ts sets it on the lane's process; the hook inherits it, as any
+ * child of that process does). Tag the event as `source: 'lane'` when it validates
+ * as a 12-hex lane id; otherwise leave the event as a plain chat event.
+ */
+export function applyLaneId(event: LimitEvent, env: Record<string, string | undefined>): LimitEvent {
+  const laneId = env.HYDRA_LANE_ID;
+  return isLaneId(laneId) ? { ...event, source: 'lane', laneId } : event;
+}
+
 /** Whether `file` is inside `directory` (case-insensitive on Windows). */
 export function isInside(file: string, directory: string): boolean {
   const pathApi = process.platform === 'win32' ? path.win32 : path;
@@ -62,7 +74,7 @@ export function parseLimitEventFile(text: string, options: { now: number; claude
   if (text.length > maxEventFileBytes) return undefined;
   let data: Record<string, unknown>;
   try { const parsed = JSON.parse(text) as unknown; if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined; data = parsed as Record<string, unknown>; } catch { return undefined; }
-  if (data.provider !== 'claude' || data.source !== 'chat') return undefined;
+  if (data.provider !== 'claude' || (data.source !== 'chat' && data.source !== 'lane')) return undefined;
   const at = isoTime(data.at);
   if (!at) return undefined;
   const time = Date.parse(at);
@@ -70,7 +82,9 @@ export function parseLimitEventFile(text: string, options: { now: number; claude
   const resetsAt = isoTime(data.resetsAt), message = cleanMessage(data.message), id = sessionId(data.sessionId), cwd = absolute(data.cwd);
   const transcript = absolute(data.transcriptPath);
   const transcriptPath = transcript && transcript.endsWith('.jsonl') && isInside(transcript, options.claudeProjectsDir) ? transcript : undefined;
-  return { provider: 'claude', source: 'chat', at, ...(resetsAt ? { resetsAt } : {}), ...(message ? { message } : {}), ...(id ? { sessionId: id } : {}), ...(cwd ? { cwd } : {}), ...(transcriptPath ? { transcriptPath } : {}) };
+  // A malformed laneId is ignored (not rejected): the event still counts, just as a plain chat one.
+  const laneId = data.source === 'lane' && isLaneId(data.laneId) ? data.laneId : undefined;
+  return { provider: 'claude', source: laneId ? 'lane' : 'chat', at, ...(resetsAt ? { resetsAt } : {}), ...(message ? { message } : {}), ...(id ? { sessionId: id } : {}), ...(cwd ? { cwd } : {}), ...(transcriptPath ? { transcriptPath } : {}), ...(laneId ? { laneId } : {}) };
 }
 
 // ---- Heads: the CLIs' own output ----

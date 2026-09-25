@@ -81,15 +81,42 @@ Either way Hydra shows one notification: which provider hit its limit (and when 
 
 For a head, **Continue in** switches its provider and restarts it **in the same worktree and branch**, with the handoff appended to its brief, so partial work isn't lost. The lead sees it running again through `hydra_wait_for_heads` like any other head. For a chat, Hydra copies the handoff to the clipboard and opens the other provider's chat (Hydra never types into it); paste the handoff there to continue. Turn the notification off with `hydra.limits.offerHandoff`.
 
-## Checks
+## Gates
 
-Checks come from the **lead's** folder, never from a head's worktree, so a head can't edit them away. Put them in `.hydra/checks.json`:
+No agent grades its own work. When a head calls `hydra_done`, its changes pass the scope check and then this project's **gates** before they're accepted ([Gates_Plan.md](Gates_Plan.md)).
+
+**Where gates come from:** the **lead's** folder, never a head's worktree, so a head can't edit them away. Put them in `.hydra/gates.json`, or edit them in **Hydra Settings → Gates**:
 
 ```json
-{ "checks": [ { "id": "unit", "command": ["npm", "test"], "timeoutSeconds": 600, "required": true } ] }
+{
+  "maxAttempts": 3,
+  "lanes": "onMerge",
+  "gates": [
+    { "id": "unit", "type": "command", "command": ["npm", "test"], "timeoutSeconds": 600 },
+    { "id": "ui", "type": "screenshots", "start": ["npm", "run", "dev", "--", "--port", "{port}"], "url": "http://localhost:{port}/", "widths": [390, 768, 1280], "required": false },
+    { "id": "review", "type": "review", "reviewer": "other" }
+  ]
+}
 ```
 
-With no checks file, a head is accepted after the scope check.
+**The three kinds:**
+- **command:** runs in the head's worktree and must exit 0.
+- **screenshots:** Hydra starts your app on a free port (it replaces `{port}` and sets `PORT`), then captures each width in a headless Edge or Chrome. The gate fails on a page that never gets ready, HTTP errors, console errors or an empty page.
+- **review:** a second agent reviews the brief and the diff read-only. By default it's the other agent: Codex reviews Claude's work, and the other way round. Only blocker or major findings fail it.
+
+**How results are handled:**
+- **Order:** gates run as command, then screenshots, then review. Once a required gate fails, the rest are skipped.
+- **Not blocking:** `required: false` gates are reported but never block.
+- **Not run:** a reviewer or browser that can't run (not installed, rate-limited, timed out) marks its gate **not run**. That never fails the head.
+- **Failures:** they go back to the head with the output and findings, up to `maxAttempts`.
+
+**Seeing the results:** gate chips (**✓ unit · ✓ ui · ✗ review**) sit on the head's card. **View evidence** in its menu opens the output, findings (linked to file:line) and screenshots.
+
+**Compatibility:** an older `.hydra/checks.json` still works, read as command gates. With neither file, a head is accepted after the scope check.
+
+**What a head starts from:**
+- **Dependencies:** a head with `depends_on` starts from the finished work of the heads it waited on, merged into one commit when there are several. Its brief includes their summaries. If they conflict, it fails before starting and names the files.
+- **Lanes:** a head started from a lane starts from the lane's latest commit.
 
 ## The Agents view
 
@@ -142,6 +169,14 @@ Heads are Hydra's agents. **Lanes** are yours: each lane is a real `claude` or `
   - A merged lane closes quietly.
   - Otherwise, choose **Keep branch** (uncommitted work is committed as "WIP") or **Delete everything**.
   - Hydra only ever removes its own lane worktrees, and removes any links inside first, so it never deletes through a junction.
+- **Gates on Merge:** with `"lanes": "onMerge"` (the default), **Merge** runs this project's gates on the lane first.
+  - If they pass, the confirmation says so.
+  - If they fail, you choose between **Send to lane** (the default), **Merge anyway** or **Cancel**. **Send to lane** types the failures into the lane's input without pressing Enter.
+  - **⋯ → Run gates** runs them at any time, and **⋯ → View evidence** shows the results.
+- **Usage limits:** when the agent in a lane hits its limit, the tile shows it, with **Continue in Codex** (or Claude), **View handoff** and **Wait**, and a notification names the lane.
+  - **Continue** restarts the same lane with the other agent, in the same worktree, with a handoff. Uncommitted work is untouched.
+  - **⋯ → Switch to…** does the same whenever you like.
+  - With `hydra.lanes.onLimit: "switch"`, the lane switches by itself after a 10-second countdown you can cancel.
 - **Restarting Hydra** ends the lanes' terminal sessions but keeps their worktrees. **Resume** continues the conversation (`claude --continue`, `codex resume --last`); **Start fresh** begins a new one.
 - **On the canvas:** every open lane is a node, heads it started grow from it, and lanes that would conflict are joined by a red dashed line. Click a lane to jump to its terminal.
 

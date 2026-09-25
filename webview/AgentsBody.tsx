@@ -1,8 +1,9 @@
 import React from 'react';
-import type { ClientMessage, HelperJobView, LaneView, Provider } from '../src/core/model';
+import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneView, Provider } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
+import type { JobCheckResult } from '../src/core/jobs';
 import { AgentsCanvas, type HeadAction } from './AgentsCanvas';
-import { LanesView } from './LanesView';
+import { LanesView, type LaneSwitchCountdown } from './LanesView';
 
 export type AgentsViewName = 'canvas' | 'lanes';
 
@@ -15,7 +16,7 @@ export type AgentsViewName = 'canvas' | 'lanes';
  */
 export function AgentsBody({
   view, onViewChange, heads, plans, lanes, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
-  onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
+  laneLimits, laneSwitchCountdowns, laneGates, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
 }: {
   view: AgentsViewName;
   onViewChange: (view: AgentsViewName) => void;
@@ -27,6 +28,11 @@ export function AgentsBody({
   laneError?: string;
   laneFocus?: string;
   onLaneFocused: () => void;
+  /** Usage-limit banners and switch countdowns (docs/Gates_Plan.md, section 2), by lane id. */
+  laneLimits?: Readonly<Record<string, LaneLimitOfferView>>;
+  laneSwitchCountdowns?: Readonly<Record<string, LaneSwitchCountdown>>;
+  /** A gates run in progress on a lane, by lane id (docs/Gates_Plan.md, "Lanes"). */
+  laneGates?: Readonly<Record<string, { done: JobCheckResult[]; running?: string }>>;
   onAction: (action: HeadAction, jobId: string) => void;
   onPlan?: (message: ClientMessage) => void;
   onStopAll?: () => void;
@@ -44,7 +50,8 @@ export function AgentsBody({
       <AgentsCanvas heads={heads} plans={plans} lanes={lanes} defaultProvider={defaultProvider} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
     </div>
     <div className="agents-view-pane" hidden={view !== 'lanes'}>
-      <LanesView lanes={lanes || []} terminals={terminals} defaultProvider={defaultProvider} laneError={laneError} focus={laneFocus} onSend={onSend} onFocused={onLaneFocused} />
+      <LanesView lanes={lanes || []} terminals={terminals} defaultProvider={defaultProvider} laneError={laneError} focus={laneFocus} onSend={onSend} onFocused={onLaneFocused}
+        laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} laneGates={laneGates} />
     </div>
   </div>;
 }

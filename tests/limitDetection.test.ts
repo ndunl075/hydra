@@ -7,10 +7,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { addClaudeLimitHook, claudeSupportsLimitHook, isHydraLimitGroup, limitHookGroup, limitHookState, readClaudeLimitHooks, removeClaudeLimitHook, type LimitHookGroup } from '../src/core/claudeLimitHook';
 import { addClaudeAllowRule, claudeWrittenLimitHook, connectClaude, disconnectClaude, helperWrittenEntries, providerPaths, removeClaudeAllowRule, setClaudeLimitHook } from '../src/core/helperRegistration';
-import { claudeHeadLimit, codexHeadLimit, codexLimitState, codexPollDelay, CodexLimitTracker, headLimitReason, normaliseStopFailure, parseLimitEventFile } from '../src/core/limitDetection';
+import { applyLaneId, claudeHeadLimit, codexHeadLimit, codexLimitState, codexPollDelay, CodexLimitTracker, headLimitReason, normaliseStopFailure, parseLimitEventFile } from '../src/core/limitDetection';
 import { LimitWatcher, workspaceOwns } from '../src/core/limitWatcher';
 import { publicCodexQuota, type QuotaSnapshot } from '../src/core/quota';
-import type { LimitEvent } from '../src/core/limitEvents';
+import { codexLaneFanout, type LimitEvent } from '../src/core/limitEvents';
 
 const hydra = 'C:\\Program Files\\Hydra\\Hydra.exe';
 const group = limitHookGroup({ executable: hydra, script: 'C:\\Program Files\\Hydra\\resources\\app\\extensions\\hydra\\dist\\hydra-limit-hook.cjs', eventsDir: "C:\\Users\\O'Brien\\AppData\\Roaming\\Hydra\\User\\globalStorage\\hydra\\limit-events", platform: 'win32', systemRoot: 'C:\\Windows' });
@@ -134,6 +134,13 @@ test('the hook payload is normalised into a LimitEvent, and garbage is refused',
   assert.ok(odd.message!.startsWith('a b') && odd.message!.length <= 2001);
 });
 
+test('applyLaneId tags an event from HYDRA_LANE_ID, ignoring a malformed id', () => {
+  const event = normaliseStopFailure(stopFailure, new Date('2026-09-24T12:00:00.000Z'))!;
+  const tagged = applyLaneId(event, { HYDRA_LANE_ID: 'abcdef012345' });
+  assert.deepEqual(tagged, { ...event, source: 'lane', laneId: 'abcdef012345' });
+  for (const bad of [undefined, '', 'ABCDEF012345', 'not-hex', 'abcdef0123450']) assert.deepEqual(applyLaneId(event, { HYDRA_LANE_ID: bad }), event);
+});
+
 test('event files are validated like untrusted input', () => {
   const now = Date.parse('2026-09-24T12:00:00.000Z'), projects = 'C:\\Users\\n\\.claude\\projects';
   const event = normaliseStopFailure(stopFailure, new Date(now))!;
@@ -148,13 +155,20 @@ test('event files are validated like untrusted input', () => {
   assert.equal(parse('not json'), undefined); assert.equal(parse('[]'), undefined);
   assert.equal(parse(JSON.stringify({ ...event, message: 'x'.repeat(70_000) })), undefined, 'oversized');
   assert.equal(parse({ ...event, resetsAt: 'soon' })?.resetsAt, undefined);
+  // Lanes (docs/Gates_Plan.md, section 2): a valid laneId keeps source "lane"; a malformed one is ignored, not rejected.
+  const lane = parse({ ...event, source: 'lane', laneId: 'abcdef012345' });
+  assert.equal(lane?.source, 'lane'); assert.equal(lane?.laneId, 'abcdef012345');
+  for (const bad of ['ABCDEF012345', 'nope', '', undefined]) {
+    const fallback = parse({ ...event, source: 'lane', laneId: bad });
+    assert.equal(fallback?.source, 'chat', JSON.stringify(bad)); assert.equal(fallback?.laneId, undefined);
+  }
 });
 
 test('the built hook script writes one event file and never fails', { skip: !existsSync('dist/hydra-limit-hook.cjs') && 'build first' }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'hydra hook \'s events-'));
   try {
     const events = path.join(directory, 'limit-events');
-    const run = (input: string, args = [events]) => spawnSync(process.execPath, ['dist/hydra-limit-hook.cjs', ...args], { input, timeout: 10_000 });
+    const run = (input: string, args = [events], env: Record<string, string | undefined> = {}) => spawnSync(process.execPath, ['dist/hydra-limit-hook.cjs', ...args], { input, timeout: 10_000, env: { ...process.env, ...env } });
     assert.equal(run(JSON.stringify(stopFailure)).status, 0);
     const names = await readdir(events);
     assert.equal(names.length, 1); assert.match(names[0]!, /^\d{13}-[0-9a-f]{16}\.json$/);
@@ -162,6 +176,19 @@ test('the built hook script writes one event file and never fails', { skip: !exi
     for (const input of ['', 'garbage', JSON.stringify({ ...stopFailure, error: 'overloaded' }), 'x'.repeat(400_000)]) assert.equal(run(input).status, 0);
     assert.equal(run(JSON.stringify(stopFailure), []).status, 0, 'no folder given');
     assert.equal((await readdir(events)).length, 1, 'nothing else was written');
+    // Run inside a Hydra lane (docs/Gates_Plan.md, section 2): HYDRA_LANE_ID in the hook's own
+    // environment, inherited the way a lane's child process inherits it, tags the event.
+    const laneEvents = path.join(directory, 'lane-events');
+    assert.equal(run(JSON.stringify(stopFailure), [laneEvents], { HYDRA_LANE_ID: 'abcdef012345' }).status, 0);
+    const laneNames = await readdir(laneEvents);
+    assert.equal(laneNames.length, 1);
+    const laneRecorded = JSON.parse(await readFile(path.join(laneEvents, laneNames[0]!), 'utf8')) as LimitEvent;
+    assert.equal(laneRecorded.source, 'lane'); assert.equal(laneRecorded.laneId, 'abcdef012345');
+    // A malformed HYDRA_LANE_ID (not this window's own concern to validate further) is ignored: a plain chat event.
+    const plainEvents = path.join(directory, 'plain-events');
+    assert.equal(run(JSON.stringify(stopFailure), [plainEvents], { HYDRA_LANE_ID: 'not-a-lane-id' }).status, 0);
+    const plainRecorded = JSON.parse(await readFile(path.join(plainEvents, (await readdir(plainEvents))[0]!), 'utf8')) as LimitEvent;
+    assert.equal(plainRecorded.source, 'chat'); assert.equal(plainRecorded.laneId, undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -215,6 +242,47 @@ test('the watcher claims events for its own folders, lets other windows go first
     while (!seenA.some(event => event.sessionId === 's5') && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
     assert.ok(seenA.some(event => event.sessionId === 's5'), 'fs.watch noticed the file');
   } finally { windowA.dispose(); windowB.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('the watcher claims a lane event by laneId at once, even outside any owned folder, and still falls back to cwd', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hydra-limits-lanes-'));
+  const events = path.join(root, 'events'), projects = path.join(root, 'claude', 'projects');
+  let now = Date.now();
+  const drop = async (event: Partial<LimitEvent>) => {
+    const name = `${now}-${Math.random().toString(16).slice(2, 10).padEnd(8, '0')}${Math.random().toString(16).slice(2, 10).padEnd(8, '0')}.json`;
+    await writeFile(path.join(events, name), JSON.stringify({ provider: 'claude', source: 'lane', at: new Date(now).toISOString(), ...event }));
+  };
+  const laneA = 'aaaaaaaaaaaa', laneB = 'bbbbbbbbbbbb';
+  const windowA = new LimitWatcher({ directory: events, claudeProjectsDir: projects, owns: workspaceOwns([path.join(root, 'repo-a')]), ownsLane: id => id === laneA, now: () => now, graceMs: 1000, scanMs: 60_000 });
+  const windowB = new LimitWatcher({ directory: events, claudeProjectsDir: projects, owns: workspaceOwns([path.join(root, 'repo-b')]), ownsLane: id => id === laneB, now: () => now, graceMs: 1000, scanMs: 60_000 });
+  const seenA: LimitEvent[] = [], seenB: LimitEvent[] = [];
+  windowA.onLimit(event => seenA.push(event)); windowB.onLimit(event => seenB.push(event));
+  try {
+    await mkdir(events, { recursive: true });
+    await windowA.start(); await windowB.start();
+    // laneId claims it at once for window A, even though the cwd (a lane worktree neither
+    // window's "owns" folders list) would otherwise need the grace period.
+    await drop({ laneId: laneA, cwd: path.join(root, 'somewhere-else', 'lane-aaaaaaaaaaaa') });
+    await windowB.scan(); assert.equal(seenB.length, 0, 'B does not own this lane, so it waits');
+    await windowA.scan(); assert.equal(seenA.length, 1); assert.equal(seenA[0]!.laneId, laneA);
+    // A lane event whose laneId nobody here owns, but whose cwd is one of window B's folders, still claims by cwd.
+    await drop({ laneId: 'cccccccccccc', cwd: path.join(root, 'repo-b', 'src') });
+    await windowA.scan(); assert.equal(seenA.length, 1, 'A owns neither the lane nor the folder');
+    await windowB.scan(); assert.equal(seenB.length, 1); assert.equal(seenB[0]!.laneId, 'cccccccccccc');
+  } finally { windowA.dispose(); windowB.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('codexLaneFanout turns the account-limit event into one lane event per running Codex lane, with its worktree as cwd', () => {
+  const account: LimitEvent = { provider: 'codex', source: 'chat', at: '2026-09-24T10:00:00.000Z', resetsAt: '2026-09-24T12:00:00.000Z', message: 'Codex reports a reached limit.' };
+  const lanes = [{ id: 'aaaaaaaaaaaa', worktree: 'C:\\repo.worktrees\\lane-aaaaaaaaaaaa' }, { id: 'bbbbbbbbbbbb', worktree: 'C:\\repo.worktrees\\lane-bbbbbbbbbbbb' }];
+  const fanned = codexLaneFanout(account, lanes);
+  assert.deepEqual(fanned, [
+    { ...account, source: 'lane', laneId: 'aaaaaaaaaaaa', cwd: lanes[0]!.worktree },
+    { ...account, source: 'lane', laneId: 'bbbbbbbbbbbb', cwd: lanes[1]!.worktree },
+  ]);
+  assert.deepEqual(codexLaneFanout(account, []), [], 'no running Codex lanes: nothing fanned out');
+  assert.deepEqual(codexLaneFanout({ ...account, provider: 'claude' }, lanes), [], 'never fans out a Claude event; each Claude lane tags its own');
+  assert.deepEqual(codexLaneFanout({ ...account, source: 'head', jobId: 'x' }, lanes), [], 'only the account chat event fans out, not a head\'s own');
 });
 
 const quota = (reached: string | null, used: number, resetsAt = 1790000000): QuotaSnapshot => publicCodexQuota({

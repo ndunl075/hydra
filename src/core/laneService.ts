@@ -4,10 +4,15 @@ import { gitRun } from './git';
 import { processLaunch } from './process';
 import { createWorktree, defaultWorktreeRoot } from './worktrees';
 import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalsUnavailable, type PtyModule } from './lanePty';
-import { LaneSync, syncIntervalMs } from './laneSync';
-import { checkMerge, closeLaneWorktree, commitLane, laneFullyMerged, mergeLane, pushLane, updateLane, type CloseMode, type MergeCheck } from './laneFinish';
-import { isLaneId, isSafeBranchName, laneBranch, laneFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LanePreambleOther, type LaneStore } from './lanes';
+import { LaneSync, branchTip, syncIntervalMs } from './laneSync';
+import { checkMerge, closeLaneWorktree, commitLane, laneDirty, laneFullyMerged, mergeLane, pushLane, updateLane, type CloseMode, type MergeCheck } from './laneFinish';
+import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LanePreambleOther, type LaneStore, type LaneSwitchReason } from './lanes';
+import { otherProvider } from './limitEvents';
+import { buildHandoff, defaultHandoffDeps, type HandoffDeps } from './limitHandoff';
+import { freshDirectory, runGates as runGatesCore, type GateContext, type GatesOutcome } from './gates';
+import type { JobCheckResult } from './jobs';
 import type { HelperServerSpec } from './helperRegistration';
+import type { LimitEvent } from './limitEvents';
 import type { LaneSyncView, LaneView, Provider } from './model';
 
 /**
@@ -139,6 +144,17 @@ export interface LaneServiceOptions {
   env?: () => NodeJS.ProcessEnv;
   syncIntervalMs?: number;
   now?: () => Date;
+  /** For building the "Continue in <Other>" / manual-switch handoff. Defaults to the real filesystem and git. */
+  handoffDeps?: HandoffDeps;
+  // ---- Gates (docs/Gates_Plan.md, "Lanes"): Run gates, and Merge when gates.json says "onMerge" ----
+  /** The provider CLI, version-checked, for a review gate. Undefined: gates are refused with a plain reason. */
+  gatesExecutable?: (provider: Provider) => Promise<string>;
+  /** A provider that is at its usage limit now; a review then uses the other one. */
+  gatesLimited?: (provider: Provider) => boolean;
+  /** Where lane gate runs keep their logs and screenshots, one fresh subfolder per run. */
+  gatesLogDirectory?: string;
+  /** Test seam: replaces runGates entirely (fake results, no real process/browser work). */
+  gatesRuntime?: GateContext['runtime'];
 }
 
 export const maxOpenLanes = 24;
@@ -154,6 +170,8 @@ export class LaneService {
   private syncNext?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
   private disposed = false;
+  /** A gates run in progress per lane (docs/Gates_Plan.md, "Cancel"): closing the lane or starting a new run cancels it. */
+  private readonly gateRuns = new Map<string, AbortController>();
   constructor(private readonly options: LaneServiceOptions) { this.syncer = new LaneSync(options.now); }
 
   get terminalsAvailable(): boolean { return !!this.options.pty; }
@@ -226,6 +244,33 @@ export class LaneService {
     });
   }
 
+  /**
+   * "Continue in <Other>" after a usage limit, or the manual "Switch to <Other>"
+   * (docs/Gates_Plan.md, section 2): build the handoff, end the lane's session,
+   * switch `lane.provider` and record the switch, then relaunch the other CLI in
+   * the same worktree and branch, with the lane preamble plus the handoff as its
+   * first prompt. Uncommitted work is untouched — the switch never touches git.
+   */
+  async switchProvider(id: unknown, reason: LaneSwitchReason, event?: LimitEvent): Promise<Lane> {
+    return this.exclusive(id, async lane => {
+      const to = otherProvider(lane.provider);
+      const limitEvent: LimitEvent = event ?? { provider: lane.provider, source: 'lane', laneId: lane.id, at: this.now().toISOString(), cwd: lane.worktree };
+      const handoff = await buildHandoff({ event: limitEvent }, this.options.handoffDeps ?? defaultHandoffDeps(this.options.env?.() ?? process.env));
+      await this.terminals.get(lane.id)?.kill();
+      const switches = [...(lane.switches ?? []), { from: lane.provider, to, at: this.now().toISOString(), reason }];
+      const updated = await this.options.store.update(lane.id, { provider: to, switches, state: 'running', exitCode: undefined, reason: undefined });
+      const prompt = laneContinuePrompt(updated, lane.provider, this.others(lane.id), handoff.markdown);
+      try { await this.launch(updated, false, undefined, prompt); }
+      catch (error) {
+        await this.options.store.update(lane.id, { state: 'exited', reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
+        this.changed();
+        throw error;
+      }
+      this.changed(); this.schedule();
+      return this.options.store.get(lane.id)!;
+    });
+  }
+
   /** Keys typed in the lane's tile. Ignored when its terminal isn't running. */
   input(id: unknown, data: string): boolean {
     const terminal = isLaneId(id) ? this.terminals.get(id) : undefined;
@@ -275,6 +320,51 @@ export class LaneService {
     return this.exclusive(id, async lane => { const result = await updateLane(lane); this.afterGit(); return result; });
   }
   async push(id: unknown): Promise<{ branch: string; compareUrl?: string }> { return this.exclusive(id, lane => pushLane(lane)); }
+
+  /**
+   * Run this project's gates against the lane's worktree (docs/Gates_Plan.md,
+   * "Lanes"): "⋯ → Run gates" at any time, or Merge when gates.json says
+   * "onMerge". The lane need not be committed — gates run on whatever is on
+   * disk now, since a command or review gate reads the worktree directly; the
+   * caller (extensionLanes.ts) tells the user when that's uncommitted work, not
+   * this method. Runs outside `exclusive` so input/diff/etc. stay usable while
+   * it works; a new call or `cancelGates` aborts a run already in progress.
+   */
+  async runGates(id: unknown, onProgress?: (progress: { done: JobCheckResult[]; running?: string }) => void): Promise<GatesOutcome> {
+    const lane = this.openLane(id);
+    if (!this.options.gatesExecutable) throw new Error('Gates need Hydra heads to be ready in this window yet.');
+    this.cancelGates(lane.id);
+    const controller = new AbortController();
+    this.gateRuns.set(lane.id, controller);
+    try {
+      const tip = await branchTip(lane.repository, lane.target);
+      const head = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
+      const merged = tip ? (await gitRun(lane.repository, ['merge-base', tip, head])).stdout.trim() : '';
+      const base = /^[a-f0-9]{40,64}$/.test(merged) ? merged : lane.baseCommit;
+      const logDirectory = await freshDirectory(this.options.gatesLogDirectory ?? path.join(this.options.configDirectory, '..', 'gates'), `${lane.id}-${Date.now()}`);
+      const outcome = await runGatesCore(lane.repository, lane.worktree, base, {
+        author: lane.provider, title: lane.name, brief: lane.goal, logDirectory,
+        executable: this.options.gatesExecutable,
+        ...(this.options.gatesLimited ? { limited: this.options.gatesLimited } : {}),
+        signal: controller.signal, ...(onProgress ? { onProgress } : {}), ...(this.options.log ? { log: this.options.log } : {}),
+        ...(this.options.gatesRuntime ? { runtime: this.options.gatesRuntime } : {}),
+      });
+      if (controller.signal.aborted) throw new Error('The gates run was cancelled.');
+      await this.options.store.update(lane.id, { lastGates: { source: outcome.source, at: this.now().toISOString(), results: outcome.results } });
+      this.changed();
+      return outcome;
+    } finally {
+      if (this.gateRuns.get(lane.id) === controller) this.gateRuns.delete(lane.id);
+    }
+  }
+  /** Cancel a gates run in progress on this lane, if any: closing the lane, or a fresh Run gates/Merge. */
+  cancelGates(id: unknown): void {
+    const key = typeof id === 'string' ? id : '';
+    const controller = this.gateRuns.get(key);
+    if (!controller) return;
+    controller.abort();
+    this.gateRuns.delete(key);
+  }
   /** How a lane closes: quietly when it is merged (or has nothing to lose), else the user chooses keep or delete. */
   async closeKind(id: unknown): Promise<'merged' | 'unmerged'> {
     const lane = this.openLane(id);
@@ -285,6 +375,7 @@ export class LaneService {
     if (mode !== 'merged' && mode !== 'keep' && mode !== 'delete') throw new Error('Choose how to close the lane.');
     return this.exclusive(id, async lane => {
       if (mode === 'merged' && lane.state !== 'merged' && !await laneFullyMerged(lane)) throw new Error(`Lane ${lane.name} isn't merged. Choose Keep branch or Delete everything.`);
+      this.cancelGates(lane.id);
       await this.terminals.get(lane.id)?.kill();
       const result = await closeLaneWorktree(lane, mode, this.roots(lane), this.lanes().map(open => open.worktree));
       await rm(this.mcpConfigFile(lane.id), { force: true }).catch(() => undefined);
@@ -331,18 +422,20 @@ export class LaneService {
   async dispose(): Promise<void> {
     this.disposed = true;
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    for (const controller of this.gateRuns.values()) controller.abort();
+    this.gateRuns.clear();
     await Promise.all([...this.terminals.values()].map(terminal => terminal.kill().catch(() => undefined)));
   }
 
   // ---- internals ----
 
-  private async launch(lane: Lane, resume: boolean, executable?: string): Promise<void> {
+  private async launch(lane: Lane, resume: boolean, executable?: string, promptOverride?: string): Promise<void> {
     const pty = this.options.pty;
     if (!pty) throw new Error(terminalsUnavailable);
     const testCommand = this.options.testCommand?.();
     executable ??= testCommand ? '' : await this.options.executable(lane.provider);
     const connected = testCommand ? true : await this.options.connected(lane.provider).catch(() => false);
-    const prompt = !resume && lane.goal ? lanePreamble(lane, this.others(lane.id)) : undefined;
+    const prompt = promptOverride ?? (!resume && lane.goal ? lanePreamble(lane, this.others(lane.id)) : undefined);
     const spec = laneLaunch({ lane, executable, resume, prompt, connected, bridge: this.options.bridge(lane.provider), mcpConfigFile: this.mcpConfigFile(lane.id), helpersDir: this.options.helpersDir, testCommand, env: this.options.env?.() ?? process.env });
     if (spec.mcpConfig) {
       await mkdir(this.options.configDirectory, { recursive: true });

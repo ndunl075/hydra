@@ -30,6 +30,16 @@ test('an SSR render of the Lanes view shows the toolbar, tiles, their chips, and
   assert.match(html, /class="lane-tile"/);
 });
 
+test('an SSR render shows "Continued from <X> (limit)" after a limit switch, and "Switched from <X>" after a manual one', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { LanesView } = await import('../webview/LanesView');
+  const limited = lane('111111111111', 'Lane 1', { provider: 'codex', switches: [{ from: 'claude', to: 'codex', at: new Date().toISOString(), reason: 'limit' }] });
+  assert.match(renderToStaticMarkup(React.createElement(LanesView, { lanes: [limited], terminals: true, onSend: () => {}, onFocused: () => {} })), /Continued from Claude Code \(limit\)/);
+  const manual = lane('222222222222', 'Lane 2', { provider: 'codex', switches: [{ from: 'claude', to: 'codex', at: new Date().toISOString(), reason: 'manual' }] });
+  assert.match(renderToStaticMarkup(React.createElement(LanesView, { lanes: [manual], terminals: true, onSend: () => {}, onFocused: () => {} })), /Switched from Claude Code/);
+});
+
 test('an SSR render shows the "Terminals aren\'t available" state instead of a grid when terminals is false', async () => {
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -47,6 +57,34 @@ test('an SSR render of the New lane form shows the name, agent choice and goal, 
   assert.match(html, /Name/); assert.match(html, /Claude Code/); assert.match(html, /Codex/); assert.match(html, /Goal, optional/);
   assert.match(html, /Start lane/);
   assert.match(html, /Claude Code CLI not found\./);
+});
+
+test('an SSR render shows the usage-limit banner and, separately, the onLimit:"switch" countdown', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { LanesView } = await import('../webview/LanesView');
+  const withOffer = renderToStaticMarkup(React.createElement(LanesView, {
+    lanes: [lane('111111111111', 'Lane 1')], terminals: true, onSend: () => {}, onFocused: () => {},
+    laneLimits: { '111111111111': { provider: 'claude', message: 'Claude Code hit its usage limit (resets 3:40 PM).', buttons: ['continueOther', 'viewHandoff', 'wait'] } },
+  }));
+  assert.match(withOffer, /class="lane-limit-banner"/);
+  assert.match(withOffer, /Claude Code hit its usage limit \(resets 3:40 PM\)\./);
+  assert.match(withOffer, /Continue in Codex/);
+  assert.match(withOffer, /View handoff/);
+  assert.match(withOffer, />Wait</);
+
+  const waitOnly = renderToStaticMarkup(React.createElement(LanesView, {
+    lanes: [lane('111111111111', 'Lane 1')], terminals: true, onSend: () => {}, onFocused: () => {},
+    laneLimits: { '111111111111': { provider: 'claude', message: 'Claude Code hit its usage limit.', buttons: ['wait'] } },
+  }));
+  assert.doesNotMatch(waitOnly, /Continue in Codex/);
+
+  const countingDown = renderToStaticMarkup(React.createElement(LanesView, {
+    lanes: [lane('111111111111', 'Lane 1')], terminals: true, onSend: () => {}, onFocused: () => {},
+    laneSwitchCountdowns: { '111111111111': { to: 'codex', deadline: Date.now() + 10_000 } },
+  }));
+  assert.match(countingDown, /Switching to Codex in \d+s…/);
+  assert.match(countingDown, />Cancel</);
 });
 
 test('an empty Lanes view (no lanes yet) still renders the toolbar and a hint, not an empty grid crash', async () => {

@@ -359,6 +359,58 @@ test('the lane service starts, streams, resumes, coordinates and closes lanes ov
   } finally { await service.dispose(); await f.close(); }
 });
 
+test('switchProvider (docs/Gates_Plan.md, section 2) ends the session, relaunches the other CLI in the same worktree with a handoff, and records the switch; uncommitted work survives', async () => {
+  const f = await fixture();
+  const pty = fakePtyModule();
+  const store = new LaneStore(path.join(f.root, 'storage'));
+  await store.load();
+  const killed: number[] = [];
+  const service = new LaneService({
+    store, repository: f.repo, worktreeRoot: () => undefined, pty,
+    executable: async provider => path.join(f.root, 'bin', `${provider}.exe`),
+    connected: async () => true,
+    bridge: provider => ({ command: 'hydra.exe', args: ['hydra-mcp.cjs'], env: { ELECTRON_RUN_AS_NODE: '1', HYDRA_LEAD_PROVIDER: provider } }),
+    helpersDir: path.join(f.root, 'helpers'), configDirectory: path.join(f.root, 'storage', 'lanes'),
+    onChange: () => {}, onData: () => {}, killTree: async pid => { killed.push(pid); }, syncIntervalMs: 60_000,
+    env: () => ({ PATH: 'x' }),
+  });
+  try {
+    const lane = await service.create({ name: 'Switch me', provider: 'claude', goal: 'Fix the checkout' });
+    const first = pty.spawned[0]!;
+    // Committed history, plus uncommitted and untracked work that must survive the switch untouched.
+    await f.commit(lane.worktree, 'src/done.ts', 'done\n');
+    await f.write(lane.worktree, 'src/a.ts', 'export const a = "uncommitted";\n');
+    await f.write(lane.worktree, 'src/untracked.ts', 'new\n');
+    const statusBefore = await git(lane.worktree, ['status', '--porcelain=v1', '--untracked-files=all']);
+    const headBefore = (await git(lane.worktree, ['rev-parse', 'HEAD'])).trim();
+
+    // A manual switch (⋯ -> Switch to Codex): no LimitEvent given, the service builds its own.
+    const switched = await service.switchProvider(lane.id, 'manual');
+    assert.equal(switched.provider, 'codex');
+    assert.equal(killed.includes(first.pid), true, 'the previous session is ended');
+    assert.equal(switched.worktree, lane.worktree); assert.equal(switched.branch, lane.branch, 'same worktree and branch');
+    assert.equal(await git(lane.worktree, ['status', '--porcelain=v1', '--untracked-files=all']), statusBefore, 'uncommitted and untracked work is untouched');
+    assert.equal((await git(lane.worktree, ['rev-parse', 'HEAD'])).trim(), headBefore, 'the switch never commits');
+    assert.deepEqual(switched.switches!.map(s => [s.from, s.to, s.reason]), [['claude', 'codex', 'manual']]);
+    assert.equal(store.get(lane.id)!.provider, 'codex');
+
+    const relaunched = pty.spawned[1]!;
+    assert.equal(relaunched.file, path.join(f.root, 'bin', 'codex.exe'), 'the other CLI, in the same worktree');
+    assert.equal(relaunched.options!.cwd, lane.worktree);
+    const prompt = relaunched.args.at(-1)!;
+    assert.match(prompt, /You are working in Hydra lane "Switch me"/);
+    assert.match(prompt, /continuing in this lane after Claude Code hit its usage limit/);
+    assert.match(prompt, /Handoff:/);
+
+    // A limit-triggered switch back, with the caller's own LimitEvent (as the extension passes it).
+    const event = { provider: 'codex' as const, source: 'lane' as const, laneId: lane.id, at: new Date().toISOString(), resetsAt: '2026-09-24T15:00:00.000Z', cwd: lane.worktree };
+    const backAgain = await service.switchProvider(lane.id, 'limit', event);
+    assert.equal(backAgain.provider, 'claude');
+    assert.deepEqual(backAgain.switches!.map(s => [s.from, s.to, s.reason]), [['claude', 'codex', 'manual'], ['codex', 'claude', 'limit']]);
+    assert.equal(pty.spawned[2]!.file, path.join(f.root, 'bin', 'claude.exe'));
+  } finally { await service.dispose(); await f.close(); }
+});
+
 test('heads started from a lane record it, and hydra_lanes answers leads only', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'hydra-lane-heads-'));
   const store = new JobStore(path.join(root, 'jobs')); await store.load();

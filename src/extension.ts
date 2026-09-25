@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { OwnershipLock } from './core/ownership';
 import { git, repositoryRoot } from './core/worktrees';
@@ -32,12 +32,18 @@ import { officialExtensionInfo, openOfficialExtension } from './extensionBridge'
 import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { registerLimitOffer } from './extensionLimitOffer';
+import { codexLaneFanout } from './core/limitEvents';
+import { LimitOfferTracker } from './core/limitOffer';
 import { LanesController, isLaneMessage } from './extensionLanes';
 import { HydraTreeProvider } from './extensionTree';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
 import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
 import { planBrief } from './core/planner';
+// ---- Gates (docs/Gates_Plan.md). Their own block. ----
+import { otherStillLimited } from './core/limitOffer';
+import { toHeadCheckView } from './core/jobs';
+import { buildEvidenceMarkdown } from './core/evidence';
 
 let manager: Manager | undefined;
 /** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
@@ -88,6 +94,8 @@ class Manager {
    * subscribes with `limitEvents.event(listener)`.
    */
   readonly limitEvents = new vscode.EventEmitter<LimitEvent>();
+  /** Shared by the chat/head notification and every lane's tile banner, so "the other provider is limited too" sees all three (docs/Gates_Plan.md, section 2). */
+  private readonly limitOfferTracker = new LimitOfferTracker();
   // ---- Lanes (docs/Lanes_And_Planner_Plan.md): state; the methods are in the Lanes block below ----
   private readonly lanes: LanesController;
   /** The Hydra activity-bar panel (section 3): one TreeView over lanes, heads and plans. */
@@ -96,6 +104,8 @@ class Manager {
   private readyPanel?: vscode.WebviewPanel;
   /** The window's discovery record lists its folders plus open lanes' worktrees. */
   private discovery?: { port: number; folders: string[]; written: string; queue: Promise<void> };
+  // ---- Gates (docs/Gates_Plan.md): each provider's latest usage limit, so a review gate uses the other agent while one is limited ----
+  private readonly latestLimits = new Map<Provider, LimitEvent>();
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
@@ -113,7 +123,9 @@ class Manager {
       openAgents: () => this.openAgents(), webviewReady: () => !!this.panel && this.readyPanel === this.panel,
       helperServerSpec: provider => this.helperServerSpec(provider), runningHeads: id => this.laneHeads(id),
       changed: () => this.laneFoldersChanged(),
-    });
+      gatesExecutable: provider => this.helperExecutable(provider),
+      gatesLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
+    }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
   }
   async initialize(): Promise<void> {
@@ -173,15 +185,22 @@ class Manager {
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
     this.lanes.registerCommands(command);
+    // ---- Gates (docs/Gates_Plan.md): View evidence, a read-only Markdown document built fresh each time it's opened. ----
+    command('hydra.openEvidence', (kind: unknown, id: unknown) => {
+      if ((kind !== 'head' && kind !== 'lane') || typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw new Error('openEvidence takes "head" or "lane" and a 12-hex id.');
+      return this.openEvidence(kind, id);
+    });
     // ---- The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3) ----
     this.context.subscriptions.push(vscode.window.createTreeView('hydra.overview', { treeDataProvider: this.tree }));
     command('hydra.overview.mergeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'merge', true));
     command('hydra.overview.closeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'close', true));
     // Not in the palette: fires a made-up limit event, for the handoff UI and smoke tests.
-    command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat') => {
-      if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat" or "head".');
+    // A lane id (its own 12-hex id, source becomes "lane") simulates the limit for that lane's tile.
+    command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat', laneId?: unknown) => {
+      if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head' && source !== 'lane')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat", "head" or "lane".');
+      if (source === 'lane' && (typeof laneId !== 'string' || !this.lanes.exists(laneId))) throw new Error('simulateLimit with source "lane" needs the id of a lane open in this window.');
       const folder = vscode.workspace.workspaceFolders?.[0];
-      const event: LimitEvent = { provider, source, at: new Date().toISOString(), message: 'Simulated usage limit (hydra.debug.simulateLimit).', ...(folder ? { cwd: folder.uri.fsPath } : {}) };
+      const event: LimitEvent = { provider, source, at: new Date().toISOString(), message: 'Simulated usage limit (hydra.debug.simulateLimit).', ...(folder ? { cwd: folder.uri.fsPath } : {}), ...(source === 'lane' ? { laneId: laneId as string } : {}) };
       this.limitEvents.fire(event);
       return event;
     });
@@ -228,7 +247,10 @@ class Manager {
         await this.helpers.service.continueWith(jobId, provider, markdown);
       },
       log: line => this.output.appendLine(line),
+      tracker: this.limitOfferTracker,
     }));
+    // Lanes (docs/Gates_Plan.md, section 2): a lane's own tile banner, never a notification.
+    this.context.subscriptions.push(this.limitEvents.event(event => { void this.lanes.onLimitEvent(event).catch(error => this.output.appendLine(`[lanes] limit offer: ${this.describe(error)}`)); }));
     await this.publish();
   }
   private get limitEventsDirectory(): string { return path.join(this.context.globalStorageUri.fsPath, 'limit-events'); }
@@ -247,12 +269,20 @@ class Manager {
   private startLimitDetection(): void {
     if (this.handoff || !vscode.workspace.isTrusted || vscode.env.remoteName) return;
     const fire = (event: LimitEvent) => this.limitEvents.fire(event);
-    const claude = new ClaudeChatLimits(this.limitEventsDirectory, providerPaths().claudeProjects, fire);
+    // Lanes (docs/Gates_Plan.md, section 2): Claude's hook already tags its own lane's
+    // events with HYDRA_LANE_ID; its worktree also counts as an owned folder like any
+    // workspace folder. Codex has no per-session hook, so its account-limit event is
+    // fanned out here to one lane event per running Codex lane.
+    const claude = new ClaudeChatLimits(this.limitEventsDirectory, providerPaths().claudeProjects, fire, () => this.lanes.laneWorktreeEntries());
     this.context.subscriptions.push(claude);
     void claude.start().catch(error => this.output.appendLine(`[limits] Claude chat limits not watched: ${this.describe(error)}`));
+    const fireCodex = (event: LimitEvent) => {
+      fire(event);
+      for (const laneEvent of codexLaneFanout(event, this.lanes.runningLanes('codex'))) fire(laneEvent);
+    };
     this.context.subscriptions.push(new CodexChatLimits(this.quota, async () =>
       this.settingsImport.available && vscode.workspace.isTrusted && !!vscode.extensions.getExtension('openai.chatgpt') && (await codexStatus(providerPaths().codexConfig, this.helperServerSpec('codex'))).connected,
-    fire, line => this.output.appendLine(line)));
+    fireCodex, line => this.output.appendLine(line)));
   }
   /** How a CLI starts Hydra's stdio bridge: this editor's executable as Node, running dist/hydra-mcp.cjs. */
   helperBridge(provider?: ConnectableProvider): { command: string; args: string[]; env: Record<string, string> } {
@@ -308,9 +338,14 @@ class Manager {
       bridge: this.helperBridge(), logDirectory: path.join(directory, 'logs'),
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
-      lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id) },
+      lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id),
+        // Gates plan, section 3: a lane's heads branch from the lane's HEAD.
+        worktree: id => this.lanes.state().lanes.find(lane => lane.id === id)?.worktree },
+      // ---- Gates (docs/Gates_Plan.md) ----
+      providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
+    this.context.subscriptions.push(this.limitEvents.event(event => { this.latestLimits.set(event.provider, event); }));
     await service.recover();
     await this.lanes.start(leadFolder, this.storageDirectory).catch(error => this.output.appendLine(`[lanes] not started: ${this.describe(error)}`));
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders: [...folders, ...this.lanes.openWorktrees()] });
@@ -439,12 +474,13 @@ class Manager {
     await setClaudeLimitHook(paths, group);
     this.output.appendLine(`[limits] ${state === 'stale' ? 'updated' : 'added'} the Claude usage-limit hook`);
   }
-  /** Dashboard actions: review a helper's changes as a diff, open its log, or cancel it. */
-  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer', jobId: string): Promise<void> {
+  /** Dashboard actions: review a helper's changes as a diff, open its log, view its gate evidence, or cancel it. */
+  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer' | 'helperEvidence', jobId: string): Promise<void> {
     const helpers = this.helpers;
     const job = helpers?.store.get(jobId);
     if (!helpers || !job) throw new Error('That head is not in this window.');
     if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason: 'Cancelled from the Agents view.' }, new AbortController().signal); return; }
+    if (action === 'helperEvidence') { await this.openEvidence('head', jobId); return; }
     if (action === 'helperAnswer') {
       // The head is waiting on the lead; you can answer in its place from the Agents view.
       if (job.state !== 'blocked') throw new Error('That head is not waiting for an answer.');
@@ -463,6 +499,29 @@ class Manager {
     const diff = await git(job.worktree, ['diff', '--stat', '--patch', '--no-color', job.baseCommit, head, '--']);
     const document = await vscode.workspace.openTextDocument({ language: 'diff', content: `# ${job.title} (Hydra head ${job.id})\n# ${job.branch} ${job.baseCommit.slice(0, 12)}..${head.slice(0, 12)}\n# Merge it yourself with git when you're happy: git merge ${job.branch}\n\n${diff || '(no changes)'}` });
     await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+  }
+  /**
+   * View evidence: the Markdown is written next to the evidence (in the run's log root) and
+   * previewed from there, because the preview follows links and shows images relative to the
+   * document but refuses `file:` links.
+   */
+  private async openEvidence(kind: 'head' | 'lane', id: string): Promise<void> {
+    let base: string, markdown: string;
+    if (kind === 'head') {
+      const job = this.helpers?.store.get(id);
+      if (!job?.result?.checks.length) throw new Error('This head has no gate results yet.');
+      base = path.join(this.storageDirectory, 'helpers', 'logs');
+      markdown = buildEvidenceMarkdown({ title: job.title, worktree: job.worktree ?? this.helpers!.service.leadFolder, logDirectories: [base], baseDirectory: base, results: job.result.checks });
+    } else {
+      const evidence = this.lanes.laneEvidence(id), root = this.lanes.laneGatesLogRoot();
+      if (!evidence || !root) throw new Error('This lane has no gate results yet.');
+      base = root;
+      markdown = buildEvidenceMarkdown({ title: evidence.title, worktree: evidence.worktree, logDirectories: [root], baseDirectory: root, results: evidence.results });
+    }
+    await mkdir(base, { recursive: true });
+    const file = path.join(base, `${id}-evidence.md`);
+    await writeFile(file, markdown, 'utf8');
+    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(file));
   }
   private async stopHelpers(): Promise<void> {
     const plans = this.plans; this.plans = undefined;
@@ -539,7 +598,7 @@ class Manager {
       id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
       progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
       branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
-      checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
+      checks: job.result?.checks.map(toHeadCheckView) ?? [],
       repository: service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
       lead: job.lead, merged: service.isMerged(job.id), startedAt: job.startedAt, writeScope: job.writeScope,
     })).reverse();
@@ -803,7 +862,7 @@ class Manager {
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { await this.refresh(); return; }
     if (message.type === 'helperStopAll') { await vscode.commands.executeCommand('hydra.stopAllHelpers'); return; }
-    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer') { await this.helperAction(message.type, message.jobId); return; }
+    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer' || message.type === 'helperEvidence') { await this.helperAction(message.type, message.jobId); return; }
     // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
     if (message.type === 'planCreate') { await this.planCreate(message.title, message.brief); return; }
     if (message.type === 'planCreateEmpty') { await this.planCreateEmpty(message.title); return; }

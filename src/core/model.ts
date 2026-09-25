@@ -1,5 +1,7 @@
 import type { Lane } from './lanes';
 import type { Plan } from './plans';
+import type { HeadCheckView, JobCheckResult } from './jobs';
+export type { HeadCheckView } from './jobs';
 
 export type Provider = 'claude' | 'codex';
 export interface ProviderInfo { provider: Provider; executable?: string; available: boolean }
@@ -16,7 +18,7 @@ export interface OfficialExtensionInfo { provider: Provider; extensionId: string
 export interface HelperJobView {
   id: string; title: string; state: string; provider: Provider; createdAt: string; finishedAt?: string;
   progress?: string; question?: string; reason?: string; branch?: string; commit?: string; summary?: string;
-  changedFiles: number; checks: { id: string; passed: boolean }[];
+  changedFiles: number; checks: HeadCheckView[];
   /** The repository the lead works in, where the helper's worktree was branched. */
   repository?: string;
   worktree?: string;
@@ -41,7 +43,7 @@ export type ClientMessage =
   | { type: 'ready' | 'editor' | 'agents' | 'refresh' | 'settings' }
   | { type: 'checkProvider'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
-  | { type: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer'; jobId: string }
+  | { type: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer' | 'helperEvidence'; jobId: string }
   | { type: 'helperStopAll' }
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Kept as its own block: ----
   // ---- Phase 1 (Lanes) adds its own lane messages to this union separately.        ----
@@ -64,7 +66,7 @@ export function parseMessage(value: unknown): ClientMessage {
   const type = string('type');
   const lane = parseLaneMessage(message, type);
   if (lane) return lane;
-  if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel' || type === 'helperAnswer') {
+  if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel' || type === 'helperAnswer' || type === 'helperEvidence') {
     const jobId = string('jobId'); if (!/^[a-f0-9]{12}$/.test(jobId)) throw new Error('Invalid head job ID.');
     return { type, jobId };
   }
@@ -112,9 +114,13 @@ export interface LaneSyncView {
 }
 /** A lane as the webview shows it: the record, its last sync, and whether its terminal is alive. */
 export type LaneView = Lane & { sync?: LaneSyncView; running: boolean };
-export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh';
-export const laneActions: readonly LaneAction[] = ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh'];
+export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh' | 'switchProvider' | 'runGates' | 'evidence';
+export const laneActions: readonly LaneAction[] = ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh', 'switchProvider', 'runGates', 'evidence'];
 export type AgentsView = 'canvas' | 'lanes';
+
+/** The lane tile's usage-limit banner (docs/Gates_Plan.md, section 2). Buttons match src/core/limitOffer.ts's LaneOfferButtonId. */
+export type LaneOfferButtonId = 'continueOther' | 'viewHandoff' | 'wait';
+export interface LaneLimitOfferView { provider: Provider; message: string; buttons: LaneOfferButtonId[] }
 
 /** Webview to extension. */
 export type LaneClientMessage =
@@ -124,6 +130,10 @@ export type LaneClientMessage =
   | { type: 'laneInput'; id: string; data: string }
   | { type: 'laneResize'; id: string; cols: number; rows: number }
   | { type: 'laneAction'; id: string; action: LaneAction }
+  /** A button on the lane's usage-limit banner. */
+  | { type: 'laneLimitAction'; id: string; action: LaneOfferButtonId }
+  /** Cancel an in-progress `hydra.lanes.onLimit: "switch"` countdown. */
+  | { type: 'laneCancelSwitch'; id: string }
   /** Remember the view; focus a lane or head. */
   | { type: 'view'; view: AgentsView; focus?: string };
 
@@ -134,7 +144,20 @@ export type LaneServerMessage =
   | { type: 'laneReplay'; id: string; data: string }
   /** For the New lane form. */
   | { type: 'laneError'; message: string }
-  | { type: 'show'; view: AgentsView; focus?: string };
+  | { type: 'show'; view: AgentsView; focus?: string }
+  /** The lane's usage-limit banner; `offer` undefined clears it. */
+  | { type: 'laneLimit'; id: string; offer?: LaneLimitOfferView }
+  /** `hydra.lanes.onLimit: "switch"`: the tile counts down to `deadline` (epoch ms), then switches to `to`. */
+  | { type: 'laneSwitchCountdown'; id: string; to: Provider; deadline: number }
+  /** The countdown ended (cancelled, or the switch happened — a fresh `lanes`/`laneLimit` message follows). */
+  | { type: 'laneSwitchCancelled'; id: string }
+  /**
+   * Gates running on a lane (docs/Gates_Plan.md, "Lanes"): as each gate starts
+   * and finishes, for the tile header's "Gates: unit ✓ · review …". `running`
+   * undefined means the run just finished; the lane's own `lastGates` (in the
+   * next `lanes` message) then has the final chips.
+   */
+  | { type: 'laneGates'; id: string; done: JobCheckResult[]; running?: string };
 
 export const laneInputMaxBytes = 64 * 1024;
 const utf8Length = (text: string) => text.length <= laneInputMaxBytes / 4 ? text.length : new TextEncoder().encode(text).byteLength;
@@ -171,6 +194,12 @@ export function parseLaneMessage(message: Record<string, unknown>, type: string)
       if (typeof action !== 'string' || !laneActions.includes(action as LaneAction)) throw new Error('Unknown lane action.');
       return { type, id: laneId('id', 'lane ID'), action: action as LaneAction };
     }
+    case 'laneLimitAction': {
+      const action = message.action;
+      if (action !== 'continueOther' && action !== 'viewHandoff' && action !== 'wait') throw new Error('Unknown lane limit action.');
+      return { type, id: laneId('id', 'lane ID'), action };
+    }
+    case 'laneCancelSwitch': return { type, id: laneId('id', 'lane ID') };
     case 'view': {
       const view = message.view;
       if (view !== 'canvas' && view !== 'lanes') throw new Error('Unknown view.');

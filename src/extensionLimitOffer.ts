@@ -31,12 +31,18 @@ export interface LimitOfferDeps {
   handoffDeps?: HandoffDeps;
   now?: () => Date;
   log?: (line: string) => void;
+  /**
+   * Shared with the lane banner (extensionLanes.ts LanesController), so
+   * "otherStillLimited" reflects every chat, head and lane in this window, not
+   * just chats. Defaults to a fresh, unshared tracker.
+   */
+  tracker?: LimitOfferTracker;
 }
 
 const maxSavedHandoffs = 20;
 
 export function registerLimitOffer(deps: LimitOfferDeps): vscode.Disposable {
-  const tracker = new LimitOfferTracker();
+  const tracker = deps.tracker ?? new LimitOfferTracker();
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => undefined);
   const subscription = deps.limitEvents(event => {
@@ -44,6 +50,8 @@ export function registerLimitOffer(deps: LimitOfferDeps): vscode.Disposable {
   });
 
   async function handle(event: LimitEvent): Promise<void> {
+    // Lane events are shown on the lane's tile (LanesController.onLimitEvent), never as a notification.
+    if (event.source === 'lane') return;
     if (!deps.offerEnabled()) return;
     const considered = tracker.consider(event, now());
     if (!considered) return; // a repeat of the same chat/head within the dedupe window
@@ -82,13 +90,13 @@ async function continueInOther(event: LimitEvent, other: Provider, markdown: str
   void vscode.window.showInformationMessage(`Handoff copied. Paste it into the new ${providerLabel[other]} chat to continue.`);
 }
 
-async function openHandoffPreview(file: string): Promise<void> {
+export async function openHandoffPreview(file: string): Promise<void> {
   const uri = vscode.Uri.file(file);
   try { await vscode.commands.executeCommand('markdown.showPreview', uri); }
   catch { const doc = await vscode.workspace.openTextDocument(uri); await vscode.window.showTextDocument(doc, { preview: true }); }
 }
 
-async function saveHandoff(storageDir: string, event: LimitEvent, markdown: string): Promise<string> {
+export async function saveHandoff(storageDir: string, event: LimitEvent, markdown: string): Promise<string> {
   const dir = path.join(storageDir, 'handoffs');
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, handoffFileName(event));

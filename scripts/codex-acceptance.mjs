@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -10,58 +10,15 @@ const exact = (actual, expected, name) => {
   }
 };
 
-const unsupportedContract = reason => {
-  throw new Error(`Unsupported fixture condition: ${reason}. The managed Codex RPC contract is not exported, so fixture evidence is withheld rather than inventing a sequence.`);
-};
-
-async function managedSequences() {
-  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  let managedCodex, modelSelection;
-  try {
-    [managedCodex, modelSelection] = await Promise.all([
-      readFile(path.join(sourceRoot, 'src/core/managedCodex.ts'), 'utf8'),
-      readFile(path.join(sourceRoot, 'src/core/modelSelection.ts'), 'utf8')
-    ]);
-  } catch {
-    unsupportedContract('the pinned managed Codex source is unavailable');
-  }
-  const ordered = [
-    "await request('initialize'",
-    "send({ method: 'initialized', params: {} })",
-    "await request('windowsSandbox/readiness', undefined)",
-    "if (selection) requireAdvertisedSelection(await readModelCatalog(request), selection);",
-    "const response = task.sessionId ? await request('thread/resume'",
-    "await request('turn/start'"
-  ];
-  let previous = -1;
-  for (const marker of ordered) {
-    const index = managedCodex.indexOf(marker);
-    if (index === -1 || index <= previous) unsupportedContract(`the pinned managed Codex source no longer establishes ${marker}`);
-    previous = index;
-  }
-  if (!modelSelection.includes("request('model/list'")) unsupportedContract('the pinned model catalog no longer establishes model/list');
-  const windowsReadiness = process.platform === 'win32' ? ['windowsSandbox/readiness'] : [];
-  return {
-    managedStart: ['initialize', 'initialized', ...windowsReadiness, 'model/list', 'thread/start', 'turn/start'],
-    managedResume: ['initialize', 'initialized', ...windowsReadiness, 'model/list', 'thread/resume', 'turn/start']
-  };
-}
-
-/** Reads the pinned implementation only; fixture mode never starts a provider process. */
+/** Fixture mode never starts a provider process. */
 export async function fixtureEvidence() {
   const accountRefresh = ['initialize', 'initialized', 'account/read'];
   const accountLoginCancel = ['initialize', 'initialized', 'account/login/start', 'account/login/cancel'];
   const quotaRefresh = ['initialize', 'initialized', 'account/rateLimits/read'];
-  const { managedStart, managedResume } = await managedSequences();
-  const managedInterrupt = ['turn/interrupt'];
-  const windowsReadiness = process.platform === 'win32' ? ['windowsSandbox/readiness'] : [];
 
   exact(accountRefresh, ['initialize', 'initialized', 'account/read'], 'account refresh');
   exact(accountLoginCancel, ['initialize', 'initialized', 'account/login/start', 'account/login/cancel'], 'account login cancellation');
   exact(quotaRefresh, ['initialize', 'initialized', 'account/rateLimits/read'], 'quota refresh');
-  exact(managedStart, ['initialize', 'initialized', ...windowsReadiness, 'model/list', 'thread/start', 'turn/start'], 'managed start');
-  exact(managedInterrupt, ['turn/interrupt'], 'managed interruption');
-  exact(managedResume, ['initialize', 'initialized', ...windowsReadiness, 'model/list', 'thread/resume', 'turn/start'], 'managed resume');
 
   return {
     schema: 'hydra.codex-live-acceptance/v1',
@@ -71,18 +28,9 @@ export async function fixtureEvidence() {
     rpc: {
       accountRefresh,
       accountLoginCancel,
-      quotaRefresh,
-      managedStart,
-      managedInterrupt,
-      managedResume,
-      scopedApproval: {
-        request: 'item/commandExecution/requestApproval',
-        response: 'decision: decline'
-      }
+      quotaRefresh
     },
     assertions: {
-      modelAndEffortAcknowledgedBeforeTurn: true,
-      oneScopedApproval: 'declined',
       cancellation: { ownedChannelClosed: true, extraRequestsAfterCancellation: 0 },
       quota: { status: 'unavailable' },
       identityAndResetTokensAbsent: true

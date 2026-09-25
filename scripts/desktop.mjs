@@ -408,8 +408,9 @@ const hydraSidebarIconCss = `
 .monaco-workbench .part.sidebar .pane-header > .twisty-container.codicon::before { font-size: 11px !important; -webkit-text-stroke: 0.4px currentColor; }
 .monaco-workbench .part.sidebar .monaco-tl-twistie.codicon { color: var(--vscode-foreground); }
 .monaco-workbench .part.sidebar .monaco-tl-twistie.codicon::before { font-size: 11px; -webkit-text-stroke: 0.4px currentColor; }
-/* Hydra: no maximize button on the chat side bar; the Claude Code and Codex panels stay the size you set. */
-.monaco-workbench .part.auxiliarybar .title-actions .action-item:has(.codicon-auxiliarybar-maximize) { display: none !important; }
+/* Hydra: no maximize button on the chat side bar; the Claude Code and Codex panels stay the size you set.
+   It lives in the side bar's global actions toolbar, not its title actions. */
+.monaco-workbench .part.auxiliarybar .action-item:has(> .codicon-auxiliarybar-maximize) { display: none !important; }
 /* Hydra: the view icons at the top of the sidebar (Explorer, Search...) sit centred
    on Cursor's 32px pitch, and the overflow button is a chevron rather than "...". */
 .monaco-workbench .part.sidebar.pane-composite-part > .title > .composite-bar-container { flex: 1 1 auto; display: flex; justify-content: center; }

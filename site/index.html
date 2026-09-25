@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hydra: know what your agents did before you merge</title>
+<meta name="description" content="Hydra is an IDE that runs Claude Code and Codex tasks in parallel, each in its own git worktree, and lets you review every change in native diffs before anything lands on your branch.">
+<link rel="icon" href="hydra-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #111111;
+    --fg-2: #5f5f5f;
+    --fg-3: #8a8a8a;
+    --rule: #e6e6e6;
+    --green: #4fc62b;
+    --green-deep: #2ea043;
+    --green-soft: #d9f5cf;
+    --red: #d64545;
+    --card: #ffffff;
+    --card-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+    --sans: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: "Courier Prime", "Courier New", Courier, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 18px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1840px; margin: 0 auto; padding: 0 48px; }
+  @media (max-width: 720px) { .wrap { padding: 0 16px; } }
+
+  /* ---------- header ---------- */
+  .topbar { position: sticky; top: 0; z-index: 30; background: var(--bg); }
+  .top { height: 80px; display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 14px; font-size: 24px; text-decoration: none; }
+  .brand img { width: 34px; height: 34px; }
+  .menu { display: flex; gap: 28px; font-size: 16px; }
+  .menu a { text-decoration: none; color: var(--fg-2); }
+  .menu a:hover { color: var(--fg); }
+  @media (max-width: 720px) { .menu { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero {
+    position: relative; overflow: hidden; border-radius: 4px;
+    padding: 330px 48px 72px; min-height: 860px;
+    background: #f4f8f1;
+  }
+  @media (max-width: 720px) { .hero { padding: 200px 16px 48px; min-height: 0; } }
+  .aurora { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  .aurora span {
+    position: absolute; border-radius: 50%; filter: blur(70px); opacity: .9;
+    mix-blend-mode: multiply; will-change: transform;
+  }
+  .aurora .a1 { width: 70vw; height: 60vw; left: 25%; top: -30%; background: radial-gradient(closest-side, #7fd85a 0%, rgba(127,216,90,0) 70%); animation: drift1 14s ease-in-out infinite alternate; }
+  .aurora .a2 { width: 60vw; height: 50vw; left: 55%; top: 10%; background: radial-gradient(closest-side, #1e6b3a 0%, rgba(30,107,58,0) 70%); animation: drift2 18s ease-in-out infinite alternate; }
+  .aurora .a3 { width: 90vw; height: 30vw; left: -10%; top: 55%; background: radial-gradient(closest-side, #8ff04d 0%, rgba(143,240,77,0) 70%); animation: drift3 11s ease-in-out infinite alternate; }
+  .aurora .a4 { width: 40vw; height: 40vw; left: 5%; top: -10%; background: radial-gradient(closest-side, #cfe6c4 0%, rgba(207,230,196,0) 70%); animation: drift2 20s ease-in-out infinite alternate-reverse; }
+  .aurora .beam {
+    position: absolute; left: 30%; top: -20%; width: 120%; height: 120%;
+    background: repeating-linear-gradient(115deg, rgba(255,255,255,0) 0 60px, rgba(255,255,255,.35) 60px 90px, rgba(255,255,255,0) 90px 180px);
+    filter: blur(24px); opacity: .6; animation: beam 24s linear infinite;
+  }
+  @keyframes drift1 { from { transform: translate(0,0) scale(1); } to { transform: translate(-8%, 10%) scale(1.15); } }
+  @keyframes drift2 { from { transform: translate(0,0) rotate(0deg); } to { transform: translate(10%, -6%) rotate(12deg); } }
+  @keyframes drift3 { from { transform: translateX(0) scaleY(1); } to { transform: translateX(12%) scaleY(1.3); } }
+  @keyframes beam { from { transform: translateX(-10%) rotate(0deg); } to { transform: translateX(10%) rotate(3deg); } }
+  @media (prefers-reduced-motion: reduce) { .aurora span, .aurora .beam, .anim, .anim * { animation: none !important; } }
+
+  .hero > .in { position: relative; z-index: 1; }
+  .eyebrow { font-family: var(--mono); font-size: 16px; letter-spacing: .08em; text-transform: uppercase; display: flex; align-items: center; gap: 12px; color: var(--fg); }
+  .eyebrow .arrow { color: var(--green); font-size: 20px; }
+  .hero h1 {
+    font-weight: 400; letter-spacing: -0.035em; line-height: 1.05; margin: 34px 0 60px;
+    font-size: clamp(2.6rem, 5.6vw, 6rem); max-width: 1700px;
+  }
+  .cta { display: flex; flex-wrap: wrap; gap: 24px; align-items: center; margin-bottom: 44px; }
+  .btn { display: inline-flex; align-items: center; height: 62px; padding: 0 44px; border-radius: 999px; font-size: 22px; text-decoration: none; border: 1px solid var(--fg); white-space: nowrap; }
+  .btn.solid { background: var(--fg); color: #fff; }
+  .btn.ghost { background: transparent; color: var(--fg); border-color: rgba(0,0,0,.35); }
+  .cmd { display: inline-flex; align-items: center; gap: 12px; height: 62px; padding: 0 30px; border-radius: 999px; border: 1px solid rgba(0,0,0,.35); font-family: var(--mono); font-size: 20px; }
+  .cmd .d { color: var(--green-deep); }
+  .cmd button { border: 0; background: none; cursor: pointer; padding: 4px; color: var(--fg); display: inline-flex; }
+  @media (max-width: 720px) { .btn, .cmd { height: 52px; font-size: 17px; padding: 0 22px; } .cmd { font-size: 14px; max-width: 100%; overflow: hidden; } }
+  .hero-sub { font-size: 23px; color: var(--fg-2); line-height: 1.55; margin: 0; }
+  @media (max-width: 720px) { .hero-sub { font-size: 18px; } }
+  .hero-sub .mark { width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin: 0 .08em; fill: var(--fg); }
+  .hero-sub .mark.claude { fill: #d97757; }
+
+  /* ---------- feature grid ---------- */
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 64px; padding: 110px 0 40px; }
+  .grid2 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 64px; padding: 40px 0 120px; }
+  @media (max-width: 1100px) { .grid3, .grid2 { grid-template-columns: 1fr; gap: 56px; } }
+  .feat p.lead { font-size: 28px; line-height: 1.3; margin: 0 0 60px; color: var(--fg-2); }
+  .feat p.lead b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 720px) { .feat p.lead { font-size: 22px; margin-bottom: 30px; } }
+  .card {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: var(--card-shadow); padding: 30px 30px; height: 450px; position: relative; overflow: hidden;
+    font-size: 17px; color: var(--fg-2);
+  }
+  .card .hd { display: flex; justify-content: space-between; align-items: center; color: var(--fg-3); font-size: 16px; margin-bottom: 14px; }
+  .card .in { border: 1px solid var(--rule); border-radius: 6px; height: calc(100% - 40px); padding: 18px; position: relative; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--rule); font-size: 14px; color: var(--fg-3); background: #fafafa; }
+  .pill.red { border-color: #f1c0c0; background: #fff3f3; color: var(--red); }
+  .pill.green { border-color: #bfe9b1; background: #eefae9; color: var(--green-deep); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #cfcfcf; }
+  .dot.g { background: var(--green); }
+  .dot.r { background: var(--red); }
+  .dot.y { background: #e0b53c; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .row:last-child { border-bottom: 0; }
+  .card .mono { font-family: var(--mono); }
+
+  /* card 1: task lifecycle */
+  .c1 .name { position: absolute; left: 18px; bottom: 76px; font-size: 18px; color: var(--fg); }
+  .c1 .ttl { position: absolute; left: 18px; bottom: 50px; color: var(--fg-3); font-size: 15px; }
+  .c1 .tags { position: absolute; left: 18px; bottom: 12px; display: flex; gap: 6px; }
+  .c1 .bar { position: absolute; left: 18px; right: 18px; top: 18px; height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
+  .c1 .bar i { display: block; height: 100%; width: 0; background: var(--green); animation: fill 6s linear infinite; }
+  @keyframes fill { 0% { width: 0; } 90% { width: 100%; } 100% { width: 100%; } }
+  .c1 .live { animation: blinkTxt 6s linear infinite; }
+  @keyframes blinkTxt { 0%, 85% { opacity: 1; } 86%, 100% { opacity: .3; } }
+
+  /* card 2: approvals */
+  .c2 .in { padding-top: 130px; }
+  .c2 .who { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .c2 .who .id { font-family: var(--mono); color: var(--fg-3); font-size: 15px; }
+  .c2 .stack > div { opacity: 0; transform: translateY(6px); animation: rise 7s ease-in-out infinite; }
+  .c2 .stack > div:nth-child(2) { animation-delay: 1.2s; }
+  .c2 .stack > div:nth-child(3) { animation-delay: 2.4s; }
+  @keyframes rise { 0% { opacity: 0; transform: translateY(6px); } 12%, 80% { opacity: 1; transform: none; } 92%, 100% { opacity: 0; } }
+
+  /* card 3: review */
+  .c3 .in { padding-top: 150px; }
+  .c3 .ev { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .c3 .ev .x { color: var(--red); font-size: 16px; }
+  .c3 .ev .k { font-family: var(--mono); color: var(--fg-3); }
+  .c3 .ev { opacity: 0; animation: rise 8s ease-in-out infinite; }
+  .c3 .ev:nth-child(2) { animation-delay: 1s; }
+  .c3 .ev:nth-child(3) { animation-delay: 2s; }
+  .c3 .ghost { position: absolute; right: 18px; top: 8px; color: #ddd; font-size: 13px; }
+
+  /* card 4: queue */
+  .c4 .in { padding-top: 130px; }
+  .c4 .ln { display: flex; gap: 22px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--rule); font-family: var(--mono); font-size: 15px; }
+  .c4 .ln .n { color: var(--fg-3); width: 16px; }
+  .c4 .ln:last-child { border-bottom: 0; }
+  .c4 .ln { opacity: 0; animation: rise 9s ease-in-out infinite; }
+  .c4 .ln:nth-child(2) { animation-delay: .9s; } .c4 .ln:nth-child(3) { animation-delay: 1.8s; }
+
+  /* card 5: commit plan */
+  .c5 .in { padding-top: 150px; }
+  .c5 .cols { display: flex; justify-content: space-between; font-size: 13px; color: var(--fg-3); letter-spacing: .04em; text-transform: uppercase; margin-bottom: 14px; }
+  .c5 .cols .on { color: var(--green-deep); animation: hop 6s steps(1) infinite; }
+  .c5 .find { display: flex; align-items: center; gap: 10px; }
+
+  /* ---------- statement ---------- */
+  .statement { padding: 120px 0 40px; }
+  .statement h2 { font-weight: 400; letter-spacing: -0.03em; line-height: 1.08; font-size: clamp(2rem, 4.2vw, 4.4rem); margin: 0 0 60px; }
+  .statement h2 span { display: block; color: var(--fg-3); }
+  .statement p { font-size: 26px; line-height: 1.45; color: var(--fg-2); max-width: 1140px; margin: 0 0 50px; }
+  @media (max-width: 720px) { .statement p { font-size: 19px; } }
+  .steps { list-style: none; padding: 0; margin: 0 0 56px; }
+  .steps li { display: flex; gap: 22px; align-items: center; font-size: 26px; padding: 12px 0; color: var(--fg-3); transition: color .4s; }
+  .steps li .ar { color: var(--green); font-size: 22px; }
+  .steps li.on { color: var(--fg); }
+  @media (max-width: 720px) { .steps li { font-size: 19px; } }
+  .ctl { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 48px; }
+  .ctl button { font-family: var(--mono); font-size: 18px; background: #fff; border: 1px solid #c9c9c9; padding: 18px 26px; cursor: pointer; display: inline-flex; gap: 12px; align-items: center; color: var(--fg); }
+  .ctl button:hover { border-color: var(--fg); }
+  .log {
+    border: 1px solid var(--rule); background: #f4f3ef; border-radius: 2px; padding: 52px 0 52px 230px;
+    font-family: var(--mono); font-size: 32px; line-height: 1.32; overflow: hidden; white-space: nowrap; height: 260px;
+    color: #4a5d47;
+  }
+  .log div { display: flex; gap: 0; }
+  .log b { font-weight: 700; color: #2b6b2f; }
+  .log .cur { color: #245d28; }
+  @media (max-width: 1100px) { .log { padding-left: 40px; font-size: 20px; height: 180px; } }
+  @media (max-width: 720px) { .log { padding-left: 16px; font-size: 14px; height: 140px; padding-top: 24px; } }
+
+  /* ---------- tabs ---------- */
+  .tabs {
+    position: sticky; top: 80px; z-index: 20; background: var(--bg);
+    border-bottom: 1px solid var(--rule); display: flex; gap: 40px; overflow-x: auto; scrollbar-width: none;
+    margin-top: 120px;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { display: flex; gap: 10px; align-items: baseline; padding: 30px 12px 26px 0; text-decoration: none; color: var(--fg-3); font-size: 20px; white-space: nowrap; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tabs a .n { font-family: var(--mono); font-size: 15px; }
+  .tabs a.on { color: var(--fg); border-bottom-color: var(--fg); }
+
+  .sec { padding: 90px 0 30px; scroll-margin-top: 170px; }
+  .sec .eb { display: flex; align-items: center; gap: 30px; font-family: var(--mono); letter-spacing: .18em; font-size: 16px; text-transform: uppercase; margin-bottom: 90px; }
+  .sec .eb .ic { width: 54px; height: 54px; border: 1px solid var(--fg); display: grid; place-items: center; }
+  .sec .eb .ic svg { width: 28px; height: 28px; }
+  .sec h2 { font-weight: 400; letter-spacing: -0.03em; line-height: 1.08; font-size: clamp(2rem, 4.2vw, 4.4rem); margin: 0 0 80px; max-width: 1220px; }
+  .sec h2 span { color: var(--fg-3); }
+  .sec h2.indent { text-indent: 8.5%; }
+  @media (max-width: 720px) { .sec h2.indent { text-indent: 0; } .sec .eb { margin-bottom: 40px; } .sec h2 { margin-bottom: 40px; } }
+
+  .panel {
+    position: relative; border-radius: 2px; padding: 60px 70px; overflow: hidden;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(79,198,43,.55) 1.2px, transparent 1.6px) 0 0 / 12px 12px,
+      linear-gradient(120deg, #e8f5df 0%, #ffffff 35%, #ffffff 60%, #eaf7e0 100%);
+  }
+  .panel::before { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at 45% 50%, #ffffff 0%, #ffffff 30%, rgba(255,255,255,0) 75%); pointer-events: none; }
+  .panel > * { position: relative; }
+  @media (max-width: 720px) { .panel { padding: 24px 16px; } }
+  .panel .lab { font-family: var(--mono); letter-spacing: .2em; font-size: 15px; text-transform: uppercase; margin-bottom: 6px; }
+  .panel h3 { font-weight: 400; font-size: 36px; margin: 0 0 44px; letter-spacing: -0.02em; }
+  .phases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 40px; }
+  @media (max-width: 720px) { .phases { grid-template-columns: repeat(2, 1fr); } }
+  .phases div { font-size: 20px; color: var(--fg-2); }
+  .phases div i { display: block; height: 4px; background: #d9d9d9; border-radius: 2px; margin-bottom: 18px; overflow: hidden; position: relative; }
+  .phases div i::after { content: ""; position: absolute; inset: 0; background: #3a3a3a; transform-origin: left; transform: scaleX(0); animation: phase 12s linear infinite; }
+  .phases div:nth-child(2) i::after { animation-delay: 3s; } .phases div:nth-child(3) i::after { animation-delay: 6s; } .phases div:nth-child(4) i::after { animation-delay: 9s; }
+  @keyframes phase { 0% { transform: scaleX(0); } 25%, 100% { transform: scaleX(1); } }
+  .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-bottom: 44px; }
+  @media (max-width: 1100px) { .trio { grid-template-columns: 1fr; } }
+  .box { background: #fff; border: 1px solid var(--rule); border-radius: 10px; box-shadow: var(--card-shadow); padding: 28px 24px; min-height: 410px; }
+  .box .t { display: flex; justify-content: space-between; align-items: baseline; font-size: 21px; margin-bottom: 18px; }
+  .box .t small { font-size: 16px; color: var(--fg-3); }
+  .box .t small.red { color: var(--red); }
+  .box p { margin: 0 0 22px; font-size: 19px; color: var(--fg-2); }
+  .box .r { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--rule); font-size: 21px; }
+  .box .r:last-child { border-bottom: 0; }
+  .box .r .sub { display: block; color: var(--fg-3); font-size: 18px; margin-top: 4px; }
+  .box .r.red { color: var(--red); }
+  .box .r .st { color: var(--fg-2); font-size: 18px; }
+  .box .r.gone { animation: fadeRow 12s ease-in-out infinite; }
+  .box .r.gone:nth-child(2) { animation-delay: .5s; } .box .r.gone:nth-child(3) { animation-delay: 1s; } .box .r.gone:nth-child(4) { animation-delay: 1.5s; }
+  @keyframes fadeRow { 0%, 60% { opacity: 1; } 75%, 90% { opacity: .35; } 100% { opacity: 1; } }
+  .panel .foot h4 { margin: 0 0 6px; font-weight: 400; font-size: 23px; }
+  .panel .foot p { margin: 0; font-size: 20px; color: var(--fg-2); }
+
+  .illus { display: flex; gap: 22px; align-items: flex-start; margin: 30px 0 60px; font-size: 20px; color: var(--fg-2); max-width: 1140px; }
+  .illus .tag { font-family: var(--mono); letter-spacing: .18em; font-size: 14px; border: 1px solid #bbb; padding: 6px 10px; white-space: nowrap; color: var(--fg-2); }
+  .props { display: grid; gap: 40px; padding-bottom: 60px; }
+  .props .p svg { width: 26px; height: 26px; margin-bottom: 18px; }
+  .props .p h4 { margin: 0 0 12px; font-size: 24px; font-weight: 600; }
+  .props .p p { margin: 0; font-size: 24px; color: var(--fg-2); }
+  @media (max-width: 720px) { .props .p h4, .props .p p { font-size: 19px; } }
+  .sec + .sec { border-top: 1px solid var(--rule); }
+
+  /* safety-style cards */
+  .cards3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; margin-bottom: 40px; }
+  @media (max-width: 1100px) { .cards3 { grid-template-columns: 1fr; } }
+  .scard { background: #fff; border: 1px solid var(--rule); border-radius: 22px; box-shadow: var(--card-shadow); padding: 46px 46px 0; height: 560px; overflow: hidden; position: relative; }
+  .scard h4 { margin: 0 0 10px; font-size: 25px; font-weight: 600; }
+  .scard p { margin: 0 0 26px; font-size: 22px; color: var(--fg-2); }
+  .chat { border: 1px solid var(--rule); border-radius: 8px; padding: 14px; font-size: 16px; }
+  .chat .m { display: flex; gap: 12px; padding: 8px 0; }
+  .chat .av { width: 34px; height: 34px; border-radius: 50%; background: #e7e7e7; display: grid; place-items: center; font-size: 14px; color: var(--fg-2); flex: none; }
+  .chat .av.d { background: #123b26; color: #fff; }
+  .chat .m .who { font-weight: 600; }
+  .chat .m .when { color: var(--fg-3); font-size: 14px; margin-left: 8px; }
+  .chat .m.dim { opacity: .35; }
+  .chat .m.pop { animation: rise 7s ease-in-out infinite; opacity: 0; }
+  .bars { display: flex; align-items: flex-end; gap: 10px; height: 200px; padding-top: 10px; }
+  .bars i { flex: 1; background: linear-gradient(#5fd63a, #2ea043); border-radius: 6px 6px 0 0; transform-origin: bottom; animation: bar 4s ease-in-out infinite alternate; }
+  @keyframes bar { from { transform: scaleY(.55); } to { transform: scaleY(1); } }
+  .ledger { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+  .ledger .l { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--rule); color: var(--fg-3); }
+  .ledger .l:last-child { border-bottom: 0; }
+  .ledger .l .k { font-family: var(--mono); letter-spacing: .06em; font-size: 12px; padding: 2px 8px; border-radius: 4px; background: #f2f2f2; }
+  .ledger .l .k.pass { background: #e4f6dc; color: var(--green-deep); }
+  .ledger .l .k.wait { background: #fff4d6; color: #8a6d00; }
+  .ledger .l { animation: rise 8s ease-in-out infinite; opacity: 0; }
+  .ledger .l:nth-child(2) { animation-delay: .6s; } .ledger .l:nth-child(3) { animation-delay: 1.2s; } .ledger .l:nth-child(4) { animation-delay: 1.8s; } .ledger .l:nth-child(5) { animation-delay: 2.4s; }
+
+  /* editor mock */
+  .editor { background: #fff; border: 1px solid var(--rule); border-radius: 14px; box-shadow: var(--card-shadow); overflow: hidden; }
+  .editor .bar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 18px 28px; border-bottom: 1px solid var(--rule); font-size: 20px; color: var(--fg-2); }
+  .editor .bar .lights { display: flex; gap: 10px; }
+  .editor .bar .lights i { width: 18px; height: 18px; border-radius: 50%; display: block; }
+  .editor .body { display: grid; grid-template-columns: 270px 1fr; min-height: 420px; }
+  @media (max-width: 720px) { .editor .body { grid-template-columns: 1fr; } .editor .tree { display: none; } }
+  .editor .tree { border-right: 1px solid var(--rule); padding: 18px 0; font-size: 19px; color: var(--fg-2); }
+  .editor .tree div { padding: 7px 18px; display: flex; gap: 10px; align-items: center; }
+  .editor .tree .i1 { padding-left: 36px; } .editor .tree .i2 { padding-left: 54px; } .editor .tree .i3 { padding-left: 72px; } .editor .tree .i4 { padding-left: 100px; }
+  .editor .tree .sel { background: #e3f4dc; color: var(--fg); }
+  .editor .tabbar { border-bottom: 1px solid var(--rule); display: flex; }
+  .editor .tabbar div { padding: 12px 20px; border-right: 1px solid var(--rule); font-size: 19px; display: flex; gap: 10px; align-items: center; }
+  .editor pre { margin: 0; padding: 22px 26px; font-family: var(--mono); font-size: 21px; line-height: 1.55; color: var(--fg); white-space: pre; overflow-x: auto; }
+  .editor pre .ln { display: inline-block; width: 32px; color: var(--fg-3); }
+  .editor pre .cm { color: #3d7a3a; }
+  .editor pre .kw { color: #204a9a; }
+  .editor pre .str { color: #b0362b; }
+  .editor pre .fn { color: #7a3d92; }
+  .editor pre .add { background: #e6f7dd; display: block; margin: 0 -26px; padding: 0 26px; }
+  .editor pre .del { background: #fdebe9; display: block; margin: 0 -26px; padding: 0 26px; text-decoration: line-through; color: var(--fg-3); }
+  @media (max-width: 720px) { .editor pre { font-size: 14px; } }
+  .fico { width: 18px; height: 18px; border-radius: 3px; background: #2ea043; display: inline-block; flex: none; }
+  .folder { width: 18px; height: 14px; border-radius: 2px; background: #d6a94a; display: inline-block; flex: none; }
+
+  /* map mock */
+  .map { position: relative; height: 380px; }
+  .map svg { width: 100%; height: 100%; }
+  .map .flow { stroke-dasharray: 6 8; animation: dash 1.2s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -28; } }
+
+  footer { border-top: 1px solid var(--rule); padding: 60px 0 80px; color: var(--fg-2); font-size: 17px; }
+  footer .cols { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 40px; }
+  @media (max-width: 720px) { footer .cols { grid-template-columns: 1fr; } }
+  footer a { text-decoration: none; display: block; margin-bottom: 10px; }
+  footer a:hover { color: var(--fg); }
+  footer .brand { font-size: 20px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap top">
+    <a class="brand" href="./"><img src="hydra-logo.png" alt=""> Hydra</a>
+    <nav class="menu">
+      <a href="#features">Features</a>
+      <a href="#deep">How it works</a>
+      <a href="https://github.com/ndunl075/hydra/blob/main/README.md">Docs</a>
+      <a href="https://github.com/ndunl075/hydra">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap" style="padding-left:8px;padding-right:8px">
+  <section class="hero">
+    <div class="aurora" aria-hidden="true"><span class="a4"></span><span class="a1"></span><span class="a2"></span><span class="a3"></span><div class="beam"></div></div>
+    <div class="in">
+      <div class="eyebrow"><span class="arrow">→</span> Parallel agent orchestration</div>
+      <h1>Know what your agents did before you merge,<br>each in a disposable worktree.</h1>
+      <div class="cta">
+        <a class="btn solid" href="https://github.com/ndunl075/hydra/blob/main/docs/Standalone_Build.md">Build Hydra.exe</a>
+        <a class="btn ghost" href="https://github.com/ndunl075/hydra">View the source</a>
+        <span class="cmd"><span class="d">$</span> <span id="cmdtext">git clone https://github.com/ndunl075/hydra</span>
+          <button type="button" id="copy" aria-label="Copy command"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+        </span>
+      </div>
+      <p class="hero-sub">The IDE is open source and builds today as a standalone Windows app, with no account.<br>Provider sign-in stays in the official <svg class="mark claude" viewBox="0 0 24 24" role="img" aria-label="Claude Code"><title>Claude Code</title><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg> and <svg class="mark codex" viewBox="0 0 24 24" role="img" aria-label="Codex"><title>Codex</title><path d="M13.795 23.856q-1.188 0-2.256-.448a6.1 6.1 0 0 1-1.9-1.247 5.8 5.8 0 0 1-1.875.306 5.8 5.8 0 0 1-2.944-.777 6.1 6.1 0 0 1-2.184-2.12q-.807-1.34-.808-2.99 0-.682.19-1.482a6.3 6.3 0 0 1-1.472-2.002 5.76 5.76 0 0 1 .024-4.85q.546-1.177 1.52-2.024a5.5 5.5 0 0 1 2.303-1.2A5.55 5.55 0 0 1 5.485 2.62 6.06 6.06 0 0 1 7.575.925 5.85 5.85 0 0 1 10.21.313q1.187 0 2.255.447a6.1 6.1 0 0 1 1.9 1.248 5.8 5.8 0 0 1 1.875-.306q1.59 0 2.944.776a5.9 5.9 0 0 1 2.16 2.12q.832 1.34.832 2.99 0 .682-.19 1.483a6.2 6.2 0 0 1 1.472 2.024q.522 1.13.522 2.378 0 1.272-.546 2.449a6.1 6.1 0 0 1-1.543 2.048 5.45 5.45 0 0 1-2.28 1.177 5.4 5.4 0 0 1-1.115 2.402 5.8 5.8 0 0 1-2.066 1.695 5.85 5.85 0 0 1-2.635.612M7.93 20.913q1.188 0 2.066-.495l4.463-2.542a.52.52 0 0 0 .238-.448v-2.024L8.95 18.676a.97.97 0 0 1-1.044 0L3.419 16.11a.7.7 0 0 1-.024.165v.282q0 1.201.57 2.213.594.99 1.639 1.554 1.044.59 2.326.589m.238-3.838q.143.07.26.07a.46.46 0 0 0 .238-.07l1.781-1.012-5.722-3.296q-.522-.306-.522-.918v-5.11a4.27 4.27 0 0 0-1.9 1.602 4.13 4.13 0 0 0-.712 2.354q0 1.155.594 2.213.593 1.06 1.543 1.601zm5.627 5.227q1.258 0 2.279-.565a4.25 4.25 0 0 0 1.614-1.554q.594-.99.594-2.213v-5.085q0-.283-.237-.424l-1.805-1.036v6.568q0 .613-.522.919l-4.487 2.566q1.163.825 2.564.824m.902-8.617v-3.202l-2.683-1.507-2.707 1.507v3.202l2.707 1.507zm-6.933-7.51q0-.612.522-.918l4.488-2.567a4.34 4.34 0 0 0-2.564-.824q-1.26 0-2.28.565a4.25 4.25 0 0 0-1.614 1.554q-.57.99-.57 2.213v5.062q0 .283.237.447l1.781 1.036zm12.061 11.253a4.13 4.13 0 0 0 1.876-1.6 4.2 4.2 0 0 0 .712-2.355q0-1.154-.593-2.213-.594-1.06-1.544-1.6l-4.44-2.543q-.142-.095-.26-.071a.46.46 0 0 0-.238.07l-1.78.99 5.745 3.319q.26.141.38.377a.9.9 0 0 1 .142.518zm-4.772-11.96q.522-.33 1.045 0l4.51 2.614v-.424q0-1.13-.57-2.142a4.1 4.1 0 0 0-1.59-1.648q-1.02-.613-2.374-.613-1.187 0-2.066.495L9.545 6.292a.52.52 0 0 0-.238.448v2.025z"/></svg> tools: Hydra never sends a prompt on its own.</p>
+    </div>
+  </section>
+</div>
+
+<div class="wrap" id="features">
+  <div class="grid3">
+    <div class="feat">
+      <p class="lead"><b>Isolated Worktree.</b> A separate checkout, branch, and index for every task an agent runs.</p>
+      <div class="card c1 anim"><div class="hd"><span>task</span><span class="live">live</span></div>
+        <div class="in">
+          <div class="bar"><i></i></div>
+          <div class="name">retry-loop-3f2a</div>
+          <div class="ttl">agent/retry-loop-3f2a · from HEAD 4054229</div>
+          <div class="tags"><span class="pill">worktree</span><span class="pill">codex</span><span class="pill">setup ok</span><span class="pill">isolated</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="feat">
+      <p class="lead"><b>Scoped Approvals.</b> Every command, file write, and network call the agent wants, shown before it runs.</p>
+      <div class="card c2 anim"><div class="hd"><span>approvals</span><span class="dot g"></span></div>
+        <div class="in">
+          <div class="who"><span class="id">t_3f2a</span><span class="pill">run: npm test</span></div>
+          <div class="stack">
+            <div class="row"><span>command · npm test</span><span class="dot g"></span></div>
+            <div class="row"><span>file · src/worktree.ts</span><span class="dot g"></span></div>
+            <div class="row"><span>network · registry.npmjs.org</span><span class="dot y"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="feat">
+      <p class="lead"><b>Guarded Checkout.</b> Nothing reaches your main working copy, even when the agent tries.</p>
+      <div class="card c3 anim"><div class="hd"><span>guard</span><span class="dot r"></span><span class="ghost">main · dirty</span></div>
+        <div class="in">
+          <div class="ev"><span class="x">⊗</span><span class="k">WT-018</span></div>
+          <div class="ev"><span>../hydra/src/index.ts</span></div>
+          <div class="ev"><span class="pill red">refused</span><span>outside task worktree</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="feat">
+      <p class="lead"><b>Queue.</b> Two sessions at a time by default, the rest waiting with explicit dependencies.</p>
+      <div class="card c4 anim"><div class="hd"><span>queued</span><span>limit 2 per window</span></div>
+        <div class="in">
+          <div class="ln"><span class="n">1</span><span>claude · rewrite retry loop</span></div>
+          <div class="ln"><span class="n">2</span><span>codex · add worktree tests</span></div>
+          <div class="ln"><span class="n">3</span><span style="color:var(--fg-3)">waiting · after 1</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="feat">
+      <p class="lead"><b>Reviewed Commits.</b> Freeze the tree you read, then commit exactly that tree.</p>
+      <div class="card c5 anim"><div class="hd"><span>review</span><span class="dot g"></span></div>
+        <div class="in">
+          <div class="cols"><span>Saved</span><span>Staged</span><span>Frozen</span><span class="on">Commit</span></div>
+          <div class="find"><span class="pill green">RECORDED</span><span>9c1e0b7 · 3 files, +41 −12</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <section class="statement">
+    <h2>An agent's change, reviewed before it lands.<span>One diff. One commit.</span></h2>
+    <p>Hydra makes a worktree for every task, checked out at committed HEAD on its own branch. Your agent works there whether it is Claude Code or Codex. You read the diff, stage what you want, and commit the tree you reviewed. Then the worktree can go.</p>
+    <ul class="steps" id="steps">
+      <li class="on"><span class="ar">→</span> A worktree per task, at committed HEAD</li>
+      <li><span class="ar">→</span> The agent runs there, with scoped approvals</li>
+      <li><span class="ar">→</span> You commit the tree you reviewed</li>
+    </ul>
+    <div class="ctl">
+      <button type="button" id="pause">❚❚ <span>Pause</span></button>
+      <button type="button" id="restart">↺ <span>Restart</span></button>
+      <button type="button" id="full">⛶ <span>Fullscreen</span></button>
+    </div>
+    <div class="log" id="log" aria-live="off"></div>
+  </section>
+</div>
+
+<div class="wrap" id="deep">
+  <nav class="tabs" id="tabs">
+    <a href="#t1" class="on"><span class="n">01</span> Isolated Worktrees</a>
+    <a href="#t2"><span class="n">02</span> Managed Sessions</a>
+    <a href="#t3"><span class="n">03</span> Native Review</a>
+    <a href="#t4"><span class="n">04</span> Scheduling</a>
+    <a href="#t5"><span class="n">05</span> Handoff</a>
+  </nav>
+
+  <!-- 01 -->
+  <section class="sec" id="t1">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h6v6H4zM14 14h6v6h-6zM14 4h6v6h-6z" stroke="#4fc62b"/><path d="M4 14h6v6H4z"/></svg></span> Isolated worktrees</div>
+    <h2 class="indent">Every task gets its own checkout. <span>A branch from committed HEAD, a sibling worktree, and an index nobody else writes to.</span></h2>
+    <div class="panel">
+      <div class="lab">Isolated worktree</div>
+      <h3>Nothing leaks</h3>
+      <div class="phases anim"><div><i></i>Create</div><div><i></i>Set up</div><div><i></i>Run</div><div><i></i>Review</div></div>
+      <div class="trio">
+        <div class="box anim">
+          <div class="t"><span>Main checkout</span><small>Not in path</small></div>
+          <div class="r"><span>src/</span><span class="dot"></span></div>
+          <div class="r"><span>dirty edits</span><span class="dot"></span></div>
+          <div class="r red"><span>index</span><span>✕</span></div>
+          <div class="r"><span>node_modules</span><span class="dot"></span></div>
+        </div>
+        <div class="box">
+          <div class="t"><span>Boundary</span></div>
+          <p>The task cannot write outside its own worktree.</p>
+          <div class="r"><span>Own branch<span class="sub">agent/… from committed HEAD</span></span><span class="dot g"></span></div>
+          <div class="r"><span>Own index<span class="sub">Staging never crosses tasks</span></span><span class="dot g"></span></div>
+          <div class="r"><span>No secrets copied<span class="sub">Ignored files stay ignored</span></span><span class="dot g"></span></div>
+        </div>
+        <div class="box anim">
+          <div class="t"><span>Task worktree</span><small>ready</small></div>
+          <div class="r gone"><span>Branch</span><span class="st">created</span></div>
+          <div class="r gone"><span>Ports</span><span class="st">reserved</span></div>
+          <div class="r gone"><span>Setup</span><span class="st">passed</span></div>
+          <div class="r gone"><span>Provider</span><span class="st">launched</span></div>
+        </div>
+      </div>
+      <div class="foot"><h4>Kept after stop</h4><p>Worktrees and branches remain until you discard them, with a reversible confirmed discard.</p></div>
+    </div>
+    <div class="illus"><span class="tag">Illustrative</span><span>The order is real, and so is the boundary: create, set up, run, review. The rows are a shaped run, not a recording.</span></div>
+    <div class="props">
+      <div class="p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3v18M18 3v18M6 12h12"/></svg><h4>Own branch, own worktree</h4><p>Each task starts at committed HEAD in a unique branch and sibling worktree. Dirty main-checkout edits stay where they are.</p></div>
+      <div class="p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><h4>Reserved resources</h4><p>Ports and database or service names are reserved per task before first launch, and reservations survive restart.</p></div>
+      <div class="p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v16H4z"/><path d="M8 12l3 3 5-6"/></svg><h4>Setup must pass</h4><p>Saved setup commands run in the checkout first. Provider work does not launch until they succeed.</p></div>
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section class="sec" id="t2">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 17l6-6-6-6M12 19h8" stroke="#4fc62b"/></svg></span> Managed sessions</div>
+    <h2 class="indent">Whether this agent is doing what you asked <span>with streamed output, raw events, token usage, and an approval card for every scoped action.</span></h2>
+    <div class="cards3">
+      <div class="scard">
+        <h4>Approve, once or for the task.</h4>
+        <p>Commands, file writes, and network reach are shown before they happen, and the answer is recorded.</p>
+        <div class="chat anim">
+          <div class="m dim"><span class="av d">C</span><div><span class="who">codex</span><span class="when">8:55 PM</span><br>wants to run <code>npm test</code> in the task worktree</div></div>
+          <div class="m pop"><span class="av">H</span><div><span class="who">hydra</span><span class="when">8:56 PM</span><br>Allowed for this task. Written to the session record.</div></div>
+        </div>
+      </div>
+      <div class="scard">
+        <h4>Usage you can see.</h4>
+        <p>Provider-reported tokens per turn, saved locally, and a soft budget that warns or holds.</p>
+        <div class="bars anim"><i style="height:30%"></i><i style="height:55%"></i><i style="height:80%"></i><i style="height:45%"></i><i style="height:65%"></i><i style="height:95%"></i><i style="height:40%"></i><i style="height:70%"></i><i style="height:85%"></i><i style="height:50%"></i><i style="height:60%"></i><i style="height:90%"></i><i style="height:35%"></i></div>
+      </div>
+      <div class="scard">
+        <h4>Interrupted, never completed.</h4>
+        <p>A session that goes missing is marked interrupted. Records recover after reload with what actually happened.</p>
+        <div class="ledger anim">
+          <div class="l"><span class="k">TURN</span><span>4:25:29 PM</span></div>
+          <div class="l"><span class="k pass">TEXT</span><span>4:25:30 PM</span></div>
+          <div class="l"><span class="k wait">APPROVAL</span><span>4:25:31 PM</span></div>
+          <div class="l"><span class="k">TURN</span><span>4:25:33 PM</span></div>
+          <div class="l"><span class="k">STOPPED</span><span>4:25:34 PM</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="props">
+      <div class="p"><h4>Managed Claude</h4><p>Streams a task through the verified Claude CLI. Follow-ups resume the explicit session ID. Stop terminates the owned process tree.</p></div>
+      <div class="p"><h4>Managed Codex</h4><p>Pinned Codex App Server: streamed text, thread-ID follow-ups, scoped approval cards, and explicit turn interruption. Sandbox readiness is checked before any model turn.</p></div>
+      <div class="p"><h4>Or a plain terminal</h4><p>Open the provider in a native terminal at the exact worktree and paste the prompt yourself. Login and permissions stay in the official CLI.</p></div>
+    </div>
+  </section>
+
+  <!-- 03 -->
+  <section class="sec" id="t3">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h10M4 18h16" stroke="#4fc62b"/></svg></span> Native review</div>
+    <h2 class="indent">Read the diff the editor shows you. <span>Base-to-saved, committed, staged, unstaged, untracked. Then commit the tree you read, not the tree the agent last touched.</span></h2>
+    <div class="panel">
+      <div class="editor">
+        <div class="bar"><span class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span><span>Hydra · retry-loop-3f2a</span><span></span></div>
+        <div class="body">
+          <div class="tree">
+            <div>▾ <span class="folder"></span> HYDRA-WORKTREES</div>
+            <div class="i1">▾ <span class="folder"></span> retry-loop-3f2a</div>
+            <div class="i2">▾ <span class="folder"></span> src</div>
+            <div class="i3 sel"><span class="fico"></span> worktree.ts</div>
+            <div class="i3"><span class="fico"></span> scheduler.ts</div>
+            <div class="i2">▸ <span class="folder"></span> tests</div>
+          </div>
+          <div>
+            <div class="tabbar"><div><span class="fico"></span> worktree.ts (base ↔ saved) <span style="color:var(--fg-3)">×</span></div></div>
+<pre><span class="ln">1</span><span class="cm">// Retry loop, rewritten by the task. Read-only diff, native tab.</span>
+<span class="ln">2</span><span class="kw">export async function</span> <span class="fn">withRetry</span>(fn, attempts = 3) {
+<span class="del"><span class="ln">3</span>  <span class="kw">for</span> (<span class="kw">let</span> i = 0; i &lt; attempts; i++) <span class="kw">return await</span> fn();</span>
+<span class="add"><span class="ln">3</span>  <span class="kw">let</span> lastError;</span>
+<span class="add"><span class="ln">4</span>  <span class="kw">for</span> (<span class="kw">let</span> i = 0; i &lt; attempts; i++) {</span>
+<span class="add"><span class="ln">5</span>    <span class="kw">try</span> { <span class="kw">return await</span> fn(); } <span class="kw">catch</span> (e) { lastError = e; }</span>
+<span class="add"><span class="ln">6</span>  }</span>
+<span class="add"><span class="ln">7</span>  <span class="kw">throw</span> lastError;</span>
+<span class="ln">8</span>}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="illus"><span class="tag">Illustrative</span><span>The diff modes are real. Renames keep both paths, deletions compare against an empty side, and binary, large, non-UTF-8, and submodule changes show metadata instead of a fake text diff.</span></div>
+    <div class="props">
+      <div class="p"><h4>Prepare commit review</h4><p>Freeze a fixed tree against the task base and inspect it. Stale changes, active writers, and unsaved task buffers refuse.</p></div>
+      <div class="p"><h4>Commit reviewed tree</h4><p>Creates the exact reviewed commit, or records one already made. Your native Git hooks still apply.</p></div>
+      <div class="p"><h4>Local receipt, not a merge</h4><p>Integrating the target branch is a separate, explicit step. Hydra never merges on your behalf.</p></div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section class="sec" id="t4">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8" stroke="#4fc62b"/><path d="M12 8v4l3 2"/></svg></span> Scheduling</div>
+    <h2 class="indent">Run several at once, inside a limit you set. <span>Two active managed sessions per window by default. The rest wait in a persistent queue with explicit dependencies.</span></h2>
+    <div class="panel">
+      <div class="lab">Agent map</div>
+      <h3>Every worktree on one canvas</h3>
+      <div class="map anim" aria-hidden="true">
+        <svg viewBox="0 0 1200 380" fill="none" stroke="#111" stroke-width="1.5">
+          <rect x="40" y="150" width="200" height="80" rx="10" fill="#fff"/>
+          <text x="140" y="185" text-anchor="middle" font-family="Inter,sans-serif" font-size="18" fill="#111" stroke="none">hydra</text>
+          <text x="140" y="210" text-anchor="middle" font-family="Courier Prime,monospace" font-size="14" fill="#8a8a8a" stroke="none">main · 4054229</text>
+          <path class="flow" d="M240 190 C 360 190, 360 70, 480 70" stroke="#4fc62b"/>
+          <path class="flow" d="M240 190 C 360 190, 360 190, 480 190" stroke="#4fc62b"/>
+          <path d="M240 190 C 360 190, 360 310, 480 310" stroke="#bbb" stroke-dasharray="6 8"/>
+          <rect x="480" y="40" width="220" height="60" rx="8" fill="#fff"/><text x="590" y="76" text-anchor="middle" font-family="Courier Prime,monospace" font-size="15" fill="#111" stroke="none">agent/retry-loop-3f2a</text>
+          <rect x="480" y="160" width="220" height="60" rx="8" fill="#fff"/><text x="590" y="196" text-anchor="middle" font-family="Courier Prime,monospace" font-size="15" fill="#111" stroke="none">agent/worktree-tests</text>
+          <rect x="480" y="280" width="220" height="60" rx="8" fill="#fff" stroke="#bbb"/><text x="590" y="316" text-anchor="middle" font-family="Courier Prime,monospace" font-size="15" fill="#8a8a8a" stroke="none">agent/docs-pass</text>
+          <path class="flow" d="M700 70 H 860" stroke="#4fc62b"/><path class="flow" d="M700 190 H 860" stroke="#4fc62b"/><path d="M700 310 H 860" stroke="#bbb" stroke-dasharray="6 8"/>
+          <circle cx="900" cy="70" r="30" fill="#fff"/><text x="900" y="76" text-anchor="middle" font-family="Inter,sans-serif" font-size="16" fill="#111" stroke="none">Codex</text>
+          <circle cx="900" cy="190" r="30" fill="#fff"/><text x="900" y="196" text-anchor="middle" font-family="Inter,sans-serif" font-size="16" fill="#111" stroke="none">Claude</text>
+          <circle cx="900" cy="310" r="30" fill="#fff" stroke="#bbb"/><text x="900" y="316" text-anchor="middle" font-family="Inter,sans-serif" font-size="14" fill="#8a8a8a" stroke="none">queued</text>
+          <text x="960" y="76" font-family="Inter,sans-serif" font-size="15" fill="#2ea043" stroke="none">running</text>
+          <text x="960" y="196" font-family="Inter,sans-serif" font-size="15" fill="#2ea043" stroke="none">running</text>
+          <text x="960" y="316" font-family="Inter,sans-serif" font-size="15" fill="#8a8a8a" stroke="none">after retry-loop</text>
+        </svg>
+      </div>
+      <div class="foot"><h4>Moving arrows are local sessions</h4><p>They stop for approvals. External sessions stay static because their progress is unavailable.</p></div>
+    </div>
+    <div class="illus"><span class="tag">Illustrative</span><span>The map follows the editor theme and the reduced-motion preference and makes no model requests. Agent-to-agent dependencies and message flow are not implemented yet.</span></div>
+    <div class="props">
+      <div class="p"><h4>Persistent queue</h4><p>Excess launches wait with explicit dependencies and are reconciled after restart.</p></div>
+      <div class="p"><h4>Soft budgets</h4><p>Task and project budgets can warn or hold new work using reported usage. Holds require an explicit retry.</p></div>
+      <div class="p"><h4>Shared profile capacity</h4><p>A reservation limit shared across participating windows in one local profile. Uncertain writers keep their slots until explicit recovery.</p></div>
+    </div>
+  </section>
+
+  <!-- 05 -->
+  <section class="sec" id="t5">
+    <div class="eb"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12h12M12 6l6 6-6 6" stroke="#4fc62b"/></svg></span> Handoff</div>
+    <h2 class="indent">Hand a task to the official extension when it makes sense. <span>A separate window, only that checkout, the task prompt, and nothing submitted until you press the button.</span></h2>
+    <div class="cards3">
+      <div class="scard">
+        <h4>Open in Claude Code.</h4>
+        <p>A generated workspace with exactly one checkout and the official extension recommendation.</p>
+        <div class="ledger anim">
+          <div class="l"><span class="k">WORKSPACE</span><span>generated</span></div>
+          <div class="l"><span class="k pass">CHECKOUT</span><span>identity verified</span></div>
+          <div class="l"><span class="k">PROMPT</span><span>copied locally</span></div>
+          <div class="l"><span class="k wait">PROVIDER</span><span>not launched</span></div>
+        </div>
+      </div>
+      <div class="scard">
+        <h4>Open in Codex.</h4>
+        <p>Same route. The extension owns login, conversation, permissions, and history.</p>
+        <div class="chat anim">
+          <div class="m dim"><span class="av">H</span><div><span class="who">hydra</span><span class="when">handoff</span><br>Select Open Codex to invoke the public UI command.</div></div>
+          <div class="m pop"><span class="av d">C</span><div><span class="who">codex</span><span class="when">extension</span><br>Ready in agent/retry-loop-3f2a. No prompt submitted.</div></div>
+        </div>
+      </div>
+      <div class="scard">
+        <h4>Missing extension, documented fallback.</h4>
+        <p>An absent or disabled extension shows an install search. An unsupported command shows the Command Palette route.</p>
+        <div class="ledger anim">
+          <div class="l"><span class="k">CHECK</span><span>extension present</span></div>
+          <div class="l"><span class="k wait">MISSING</span><span>search opened</span></div>
+          <div class="l"><span class="k">FALLBACK</span><span>Command Palette</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="props">
+      <div class="p"><h4>No CLI required for this route</h4><p>Handoff works through the extension alone. Provider authentication never passes through Hydra.</p></div>
+      <div class="p"><h4>Check before you trust</h4><p>Check Claude Code and Check Codex inspect the configured CLI version and public help, with captured stdout, stderr, and exit status kept locally.</p></div>
+    </div>
+  </section>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="cols">
+      <div><div class="brand">Hydra</div><p style="margin:0;max-width:420px">An IDE for orchestrating Claude Code and Codex in parallel, one worktree per task, reviewed before anything lands.</p></div>
+      <div><a href="https://github.com/ndunl075/hydra">GitHub</a><a href="https://github.com/ndunl075/hydra/blob/main/README.md">README</a><a href="https://github.com/ndunl075/hydra/blob/main/docs/Implementation_Status.md">Implementation status</a></div>
+      <div><a href="https://github.com/ndunl075/hydra/blob/main/docs/Standalone_Build.md">Build guide</a><a href="https://github.com/ndunl075/hydra/blob/main/docs/Native_Review.md">Native review</a><a href="https://github.com/ndunl075/hydra/blob/main/docs/Task_Scheduling.md">Scheduling</a></div>
+    </div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  // copy command
+  var copy = document.getElementById('copy');
+  copy.addEventListener('click', function () {
+    var t = document.getElementById('cmdtext').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(t).then(function(){ copy.style.color = '#2ea043'; setTimeout(function(){ copy.style.color=''; }, 1200); });
+  });
+
+  // statement demo: steps + log
+  var lines = [
+    ['worktree', 'create', 'agent/retry-loop-3f2a', 'from', '4054229'],
+    ['setup', 'run', 'npm ci', 'passed', '41s'],
+    ['codex', 'turn', 'revision 1', 'streaming', '3 files'],
+    ['approval', 'command', 'npm test', 'allowed', 'for task'],
+    ['codex', 'stopped', 'revision 2', '+41 −12', 'saved'],
+    ['review', 'diff', 'base ↔ saved', 'read', '3 files'],
+    ['commit', 'reviewed tree', '9c1e0b7', 'recorded', 'hooks ok']
+  ];
+  var log = document.getElementById('log');
+  var steps = document.getElementById('steps').children;
+  var i = 0, paused = false, timer;
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function tick() {
+    var l = lines[i % lines.length];
+    var d = document.createElement('div');
+    d.innerHTML = '<b>' + l[0] + '</b>&nbsp;&nbsp;' + l[1] + '&nbsp;&nbsp;<span class="cur">' + l[2] + '</span>&nbsp;&nbsp;' + l[3] + '&nbsp;&nbsp;' + l[4];
+    log.appendChild(d);
+    while (log.children.length > 4) log.removeChild(log.firstChild);
+    var s = i % lines.length < 2 ? 0 : i % lines.length < 5 ? 1 : 2;
+    for (var k = 0; k < steps.length; k++) steps[k].classList.toggle('on', k === s);
+    i++;
+    if (!paused && !reduce) timer = setTimeout(tick, 1400);
+  }
+  function restart() { clearTimeout(timer); log.innerHTML = ''; i = 0; paused = false; document.querySelector('#pause span').textContent = 'Pause'; tick(); }
+  document.getElementById('pause').addEventListener('click', function () {
+    paused = !paused; this.querySelector('span').textContent = paused ? 'Play' : 'Pause';
+    if (paused) clearTimeout(timer); else tick();
+  });
+  document.getElementById('restart').addEventListener('click', restart);
+  document.getElementById('full').addEventListener('click', function () {
+    var el = document.querySelector('.statement');
+    if (el.requestFullscreen) el.requestFullscreen();
+  });
+  if (reduce) { for (var j = 0; j < 4; j++) tick(); } else tick();
+
+  // tabs: highlight the section in view
+  var tabs = document.querySelectorAll('#tabs a');
+  var secs = Array.prototype.map.call(tabs, function (a) { return document.querySelector(a.getAttribute('href')); });
+  function sync() {
+    var y = window.scrollY + 200, cur = 0;
+    for (var k = 0; k < secs.length; k++) if (secs[k].offsetTop <= y) cur = k;
+    for (var m = 0; m < tabs.length; m++) tabs[m].classList.toggle('on', m === cur);
+  }
+  window.addEventListener('scroll', sync, { passive: true });
+  sync();
+})();
+</script>
+</body>
+</html>

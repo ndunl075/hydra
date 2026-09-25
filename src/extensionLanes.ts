@@ -18,7 +18,7 @@ import { openHandoffPreview, saveHandoff } from './extensionLimitOffer';
 import { laneNameFromTitle, type LanePlanLink } from './core/lanes';
 import type { LanePlanJobView } from './core/model';
 import type { Plan, PlanJob } from './core/plans';
-import type { PlanLaneLook, PlanLaneResultInput, PlanLaneStart } from './core/planRunner';
+import { planLaneBrief, type PlanLaneLook, type PlanLaneResultInput, type PlanLaneStart } from './core/planRunner';
 
 /**
  * The editor side of Hydra lanes (docs/Lanes_And_Planner_Plan.md): commands,
@@ -329,7 +329,7 @@ export class LanesController implements vscode.Disposable {
       ...(start.dependencies.length ? { startsFrom: start.dependencies.slice(0, 12).map(dependency => ({ title: dependency.title.slice(0, 80), commit: dependency.commit })) } : {}),
       ...(job.writeScope?.length ? { writeScope: job.writeScope.slice(0, 32) } : {}),
     };
-    const file = `# ${job.title}\n\nJob "${job.title}" of Hydra plan "${plan.title}". Hydra wrote this file for the lane; it is never committed.\n\n${brief}\n`;
+    const file = planLaneBrief(plan.title, job, start.dependencies);
     const lane = await service.create({ name: laneNameFromTitle(job.title), provider: job.provider ?? defaultProvider, goal }, { ...(start.baseCommit ? { baseCommit: start.baseCommit } : {}), plan: link, brief: file });
     this.postState(true);
     return { laneId: lane.id };

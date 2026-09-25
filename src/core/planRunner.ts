@@ -1,4 +1,4 @@
-import { DependencyConflict, dependencyBase, type DependencyResult } from './headStart';
+import { DependencyConflict, dependencyBase, dependencyBrief, type DependencyResult } from './headStart';
 import type { JobState } from './jobs';
 import type { LaneCloseMode, LaneState } from './lanes';
 import {
@@ -180,6 +180,15 @@ export function planRunRefusal(plan: Pick<Plan, 'jobs'>, terminals: boolean): st
 export const planHeadKey = (plan: Pick<Plan, 'id'>, job: Pick<PlanJob, 'key' | 'attempt'>): string => `plan-${plan.id}-${job.key}${job.attempt ? `-r${job.attempt}` : ''}`;
 
 // ---- The runner ----
+
+/**
+ * A plan lane's .hydra-job/brief.md: the job's whole brief, then what the jobs it depends on handed on
+ * (their notes or commit subjects, and changed files), as a head's brief has them (docs/Plan_Lanes_Plan.md, decision 2).
+ */
+export function planLaneBrief(planTitle: string, job: Pick<PlanJob, 'title' | 'brief'>, dependencies: readonly DependencyResult[]): string {
+  const handedOn = dependencies.length ? `\n${dependencyBrief(dependencies)}\n` : '';
+  return `# ${job.title}\n\nJob "${job.title}" of Hydra plan "${planTitle}". Hydra wrote this file for the lane; it is never committed.\n\n${job.brief.trim()}\n${handedOn}`;
+}
 
 export interface PlanLaneStart {
   /** The commit the lane starts from: its dependencies' work, merged when there are several. Missing: the main checkout's HEAD. */

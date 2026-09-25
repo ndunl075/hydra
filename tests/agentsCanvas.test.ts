@@ -394,7 +394,8 @@ test('an SSR render of a running plan shows its progress, a head slot, a lane ca
   assert.match(html, /0 of 3 done/);
   assert.match(html, /Claude head/, 'the started head keeps its ordinary head card');
   assert.match(html, /canvas-plan-lane-card/, 'the lane job gets a lane card');
-  assert.match(html, /Working · lane\/222222222222/);
+  assert.match(html, /<i aria-hidden="true"><\/i>Working<\/span>/, 'a working lane card says Working; its branch is on the foot');
+  assert.match(html, /lane\/222222222222/);
   assert.match(html, /Waiting for Job build/, 'the not-yet-started job shows its reason');
   assert.match(html, /Delete plan/);
 });

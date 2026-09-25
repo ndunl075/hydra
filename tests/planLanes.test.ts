@@ -9,8 +9,9 @@ import { LaneService, writeLaneJobBrief } from '../src/core/laneService';
 import { laneDiffBase, LaneSync } from '../src/core/laneSync';
 import { laneDiffFiles } from '../src/core/laneFinish';
 import { createPlan, PlanStore, type PlanJob } from '../src/core/plans';
-import { PlanRunner, type PlanHeadLook } from '../src/core/planRunner';
+import { PlanRunner, planLaneBrief, type PlanHeadLook } from '../src/core/planRunner';
 import type { GateRuntime } from '../src/core/gates';
+import type { DependencyResult } from '../src/core/headStart';
 import { fakePtyModule } from './lanePtyFake';
 import { parseMessage } from '../src/core/model';
 import { JobStore } from '../src/core/jobs';
@@ -199,17 +200,21 @@ test('a lane job starts from two heads\' results, merged; dependencies that conf
       { key: 'both', title: 'Both', brief: 'b', dependsOn: ['one', 'two'], runAs: 'lane' },
       { key: 'clashing', title: 'Clashing', brief: 'b', dependsOn: ['clash-a', 'clash-b'], runAs: 'lane' },
     ] });
-    const lanes: { key: string; base?: string; titles: string[] }[] = [];
+    const lanes: { key: string; base?: string; titles: string[]; dependencies: DependencyResult[] }[] = [];
     const runner = new PlanRunner({
       store: plans, repository: f.repo,
       look: { head: id => heads.get(id), lane: () => undefined, planLanes: () => [], lanesAvailable: () => true },
       startHead: async () => { throw new Error('unused'); },
-      startLane: async (_plan, job, start) => { lanes.push({ key: job.key, base: start.baseCommit, titles: start.dependencies.map(item => `${item.kind}:${item.title}`) }); return { laneId: '0000000000ee' }; },
+      startLane: async (_plan, job, start) => { lanes.push({ key: job.key, base: start.baseCommit, titles: start.dependencies.map(item => `${item.kind}:${item.title}`), dependencies: start.dependencies }); return { laneId: '0000000000ee' }; },
       cancelHead: async () => undefined, unlinkLane: async () => undefined,
       commitSubjects: async () => [], changedFiles: async () => [], terminalsAvailable: () => true,
     });
     await runner.run(plan.id);
     assert.deepEqual(lanes.map(item => [item.key, item.titles]), [['both', ['head:one', 'head:two']]]);
+    const brief = planLaneBrief('Merge', { title: 'Both', brief: 'Join them.' }, lanes[0]!.dependencies);
+    assert.match(brief, /^# Both\n\nJob "Both" of Hydra plan "Merge"\. [^\n]+\n\nJoin them\.\n/);
+    assert.match(brief, /What the heads you depend on did[^\n]*\n- one \(branch one, commit [a-f0-9]{12}\): Did one\.\n {2}Changed files: src\/one\.ts\n- two /, 'the lane\'s brief hands on what each dependency did');
+    assert.equal(planLaneBrief('Merge', { title: 'Solo', brief: 'Alone.' }, []), '# Solo\n\nJob "Solo" of Hydra plan "Merge". Hydra wrote this file for the lane; it is never committed.\n\nAlone.\n');
     const [, ...parents] = (await git(f.repo, ['rev-list', '--parents', '-n', '1', lanes[0]!.base!])).trim().split(' ');
     assert.deepEqual(parents, [one, two], 'one commit whose parents are both results');
     const clashing = plans.get(plan.id)!.jobs.find(job => job.key === 'clashing')!;

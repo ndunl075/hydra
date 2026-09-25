@@ -444,8 +444,9 @@ function PlanJobNode({ item, onOpen, onMenu, onHandleDown, onHandleUp }: {
   onHandleDown: (event: React.PointerEvent) => void; onHandleUp: (event: React.PointerEvent) => void;
 }) {
   const job = item.job, providerLabel = job.provider === 'codex' ? 'Codex' : job.provider === 'claude' ? 'Claude' : 'Auto';
+  const kind = job.runAs === 'lane' ? 'Draft job · Lane' : 'Draft job';
   return <div className="canvas-node canvas-plan-job" data-plan-job={item.id} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
-    role="button" tabIndex={0} aria-label={`${job.title}, draft job, ${providerLabel}. Enter to edit; Shift+F10 for more.`}
+    role="button" tabIndex={0} aria-label={`${job.title}, draft ${job.runAs === 'lane' ? 'lane job' : 'job'}, ${providerLabel}. Enter to edit; Shift+F10 for more.`}
     onClick={onOpen}
     onKeyDown={event => {
       if (event.key === 'Enter') { event.preventDefault(); onOpen(); }
@@ -453,7 +454,7 @@ function PlanJobNode({ item, onOpen, onMenu, onHandleDown, onHandleUp }: {
     }}
     onContextMenu={event => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}>
     <div className="canvas-node-card">
-      <div className="canvas-node-top"><span className="canvas-node-kind">Draft job</span><span className="canvas-state"><i aria-hidden="true" />{providerLabel}</span></div>
+      <div className="canvas-node-top"><span className="canvas-node-kind">{kind}</span><span className="canvas-state"><i aria-hidden="true" />{providerLabel}</span></div>
       <strong className="canvas-node-title" title={job.title}>{job.title}</strong>
       <p className="canvas-node-detail" title={job.brief}>{job.brief}</p>
       <button className="canvas-plan-handle" aria-label={`Drag onto another job to make it depend on "${job.title}"`}
@@ -477,7 +478,8 @@ function PlanRunningJobSlot({ item, onOpenMenu, onOpenLane, onPlan }: {
   const openMenuFromClick = (event: React.MouseEvent | React.KeyboardEvent) => { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); onOpenMenu(rect.left + 24, rect.top + 24); };
   if (item.lane) {
     const lane = item.lane;
-    const status = lane.state === 'exited' ? 'Exited' : view.status === 'done' ? `Job done · ${(view.commit || '').slice(0, 7)}` : `Working · ${lane.branch}`;
+    // The branch is on the card's foot, so the status stays short enough for the card.
+    const status = lane.state === 'exited' ? 'Exited' : view.status === 'done' ? `Job done · ${(view.commit || '').slice(0, 7)}` : 'Working';
     return <div className={`canvas-node canvas-plan-lane-card provider-${lane.provider} state-${view.status}`} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
       role="button" tabIndex={0} aria-label={`Lane, job ${job.title}. ${status}. Opens the Lanes view; Shift+F10 for more.`}
       onClick={() => onOpenLane?.(lane.id)}

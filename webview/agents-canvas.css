@@ -163,6 +163,7 @@ body.vscode-high-contrast .canvas-node-card, body.vscode-high-contrast-light .ca
 }
 .canvas-newplan-actions { display: flex; gap: 8px; }
 .canvas-newplan-actions button, .canvas-newplan .canvas-newplan-actions { flex: none; }
+.canvas-job-popover .canvas-newplan-actions button { width: auto; }
 .canvas-newplan button, .canvas-job-popover button { height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 .canvas-newplan button.primary, .canvas-job-popover button.primary { border-color: var(--canvas-flow); color: var(--canvas-flow); }
 .canvas-newplan button.text-button, .canvas-job-popover button.text-button { border-color: transparent; color: var(--muted); }
@@ -200,6 +201,7 @@ body.vscode-high-contrast .canvas-node-card, body.vscode-high-contrast-light .ca
 /* A lane card in a plan job slot (docs/Plan_Lanes_Plan.md, section 4): the size of a head card. */
 .canvas-node.canvas-plan-lane-card .canvas-node-card { cursor: pointer; }
 .canvas-node.canvas-plan-lane-card.state-active .canvas-node-card { border-left-color: var(--canvas-flow); }
+.canvas-node.canvas-plan-lane-card .canvas-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* A job that hasn't started, or has ended, sits as a small dashed status node (docs/Plan_Lanes_Plan.md, section 4). */
 .canvas-node.canvas-plan-status .canvas-node-card { border-style: dashed; }

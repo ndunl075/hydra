@@ -24,11 +24,15 @@ export const jobTransitions: Readonly<Record<JobState, readonly JobState[]>> = {
   blocked: ['running', 'failed', 'cancelled'],
   checking: ['done', 'running', 'failed', 'cancelled'],
   done: [],
-  failed: [],
+  // The one way out of "failed": HelperService.continueWith sends a head that
+  // failed on a usage limit back to queued, with the same worktree and branch.
+  failed: ['queued'],
   cancelled: [],
 };
 export const canTransition = (from: JobState, to: JobState): boolean => jobTransitions[from].includes(to);
 
+/** parseJobInput's cap on `brief`; HelperService.continueWith clips an appended handoff to the same limit. */
+export const maxBriefLength = 32000;
 export interface JobLimits { wallClockMs: number; maxTurns: number; maxBudgetUsd: number }
 export const defaultJobLimits: JobLimits = { wallClockMs: 30 * 60_000, maxTurns: 60, maxBudgetUsd: 5 };
 
@@ -74,6 +78,8 @@ export interface Job {
   maxAttempts: number;
   /** A helper that stops without reporting is nudged once, then failed. */
   nudged: boolean;
+  /** Failed because its provider hit a usage limit (headLimitReason), not the head's own fault. Lets HelperService.continueWith find it, and clears once it does. */
+  limitHit?: boolean;
   /** The helper's own git worktree, created when it starts. */
   worktree?: string;
   baseCommit?: string;
@@ -128,7 +134,7 @@ export function parseJobInput(value: unknown): JobInput {
   const limits = (source.limits && typeof source.limits === 'object' ? source.limits : {}) as Record<string, unknown>;
   return {
     title: text(source.title, 'title', 200),
-    brief: text(source.brief, 'brief', 32000),
+    brief: text(source.brief, 'brief', maxBriefLength),
     writeScope: parseWriteScope(source.write_scope ?? source.writeScope),
     provider,
     model: source.model === undefined ? undefined : text(source.model, 'model', 100),

@@ -39,7 +39,7 @@ The build lives in `.desktop/VSCode-win32-x64/`. The Windows CI job builds the s
   - The Claude Code and Codex chat panels are locked in place, as Cursor's chat is. They can't be dragged into the editor, the Explorer or the panel, and other views can't be dropped into them. You can still reorder icons in a bar, or move a panel on purpose from its icon's right-click menu.
 - **Hydra Settings** opens as a tab laid out like Cursor Settings: a left nav with search, and pages of cards. Open it from the top of the title bar gear menu, **Hydra: Open Settings**, or `Ctrl+Shift+,`. Its pages:
   - **General:** editor settings and keyboard shortcuts, import from VS Code or Cursor, reset dismissed prompts, **Chat location** (Docked in the side bar, or Tabs like Cursor), and the startup **Window layout** (Editor or Agents).
-  - **Connectors:** connect Claude Code and Codex to Hydra, see exactly what Hydra wrote to their user settings, and repair claude-mem.
+  - **Connectors:** connect Claude Code and Codex to Hydra, see exactly what Hydra wrote to their user settings, and repair claude-mem. When one hits its usage limit, Hydra offers to continue in the other, with a handoff (`hydra.limits.offerHandoff`); see [Heads.md](docs/Heads.md#when-a-provider-hits-its-limit).
   - **MCP servers:** list, add, test and remove your user-level MCP servers for Claude Code, Codex or both. Hydra keeps no copy of secrets and never edits Codex servers it didn't add.
   - **Heads:** heads at a time, default caps (minutes, turns, budget), and **Stop all heads**.
   - **Appearance** (Dark/Light, icon theme) and **Docs**.

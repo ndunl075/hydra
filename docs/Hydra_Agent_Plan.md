@@ -1,6 +1,8 @@
 # Continuing when a provider hits its limit (Freebuff research)
 
-Status: **research** (2026-09-24). Follows up the "Later" section of [Settings_And_Connectors_Plan.md](Settings_And_Connectors_Plan.md).
+Status: **phases 1–3 built (2026-09-25)**; phase 4 (Freebuff) and 5 not started. Follows up the "Later" section of [Settings_And_Connectors_Plan.md](Settings_And_Connectors_Plan.md).
+
+Phases 1–3, as built: limit detection (`src/extensionLimits.ts`, `src/core/limitDetection.ts`, `src/core/limitWatcher.ts`, heads' own `HelperService.onLimit`); the mechanical handoff builder (`src/core/limitHandoff.ts`); and the notification plus "Continue in <Other>" (`src/core/limitOffer.ts`, `src/extensionLimitOffer.ts`, `HelperService.continueWith`). Handoffs are saved under Hydra's **global storage** (`<globalStorage>/handoffs/`), never in the repository, and only the newest ~20 are kept. A chat's "Continue in <Other>" copies the handoff to the **clipboard** and opens the other provider's chat — Hydra never types into another extension; a head's "Continue in <Other>" restarts the same job, in its existing worktree and branch, with the handoff appended to its brief. See [Heads.md](Heads.md#when-a-provider-hits-its-limit).
 
 ## The idea
 

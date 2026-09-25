@@ -158,12 +158,13 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
   // ---- of its own. A red dashed conflict edge joins each conflicting pair, once.       ----
   // A parked lane (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): exited for at least
   // laneParkMs, with no running heads. Running lanes, and lanes with running heads, always
-  // stay full nodes even past that window.
+  // stay full nodes even past that window. A lane that exited before exitedAt was recorded
+  // has no time: it exited long ago, so it parks.
   const hasRunningHeads = (laneId: string): boolean => all.some(head => leadKeyOf(head) === laneId && isActive(head));
   const isParked = (lane: LaneView): boolean =>
-    lane.state === 'exited' && !!lane.exitedAt && now - Date.parse(lane.exitedAt) >= laneParkMs && !hasRunningHeads(lane.id);
+    lane.state === 'exited' && (!lane.exitedAt || now - Date.parse(lane.exitedAt) >= laneParkMs) && !hasRunningHeads(lane.id);
   const parkedLanes: CanvasParkedLane[] = (extras.lanes || []).filter(isParked)
-    .map(lane => ({ id: lane.id, name: lane.name, conflicts: !!lane.sync?.conflicts.length, exitedAt: lane.exitedAt! }));
+    .map(lane => ({ id: lane.id, name: lane.name, conflicts: !!lane.sync?.conflicts.length, exitedAt: lane.exitedAt ?? '' }));
   const openLanes = (extras.lanes || []).filter(lane => (lane.state === 'running' || lane.state === 'exited') && !isParked(lane));
   const laneById = new Map(openLanes.map(lane => [lane.id, lane]));
   const laneStatus = (lane: LaneView): string => {

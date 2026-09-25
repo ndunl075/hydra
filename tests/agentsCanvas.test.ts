@@ -160,6 +160,10 @@ test('buildCanvas parks an exited lane with no running heads after 10 minutes; a
   // Conflicts are marked on the chip.
   const conflicted = lane('333333333333', 'Lane 3', { state: 'exited', exitedAt: at(11 * 60_000), sync: { changedFiles: [], conflicts: [{ laneId: '444444444444', files: ['a.ts'] }], targetConflicts: [], behind: 0, dirty: false, checkedAt: at(0) } });
   assert.equal(buildCanvas([], now, { lanes: [conflicted] }).parkedLanes[0]!.conflicts, true);
+
+  // A lane that exited before exitedAt was recorded has no time: it exited long ago, so it parks.
+  const unrecorded = lane('555555555555', 'Lane 5', { state: 'exited' });
+  assert.deepEqual(buildCanvas([], now, { lanes: [unrecorded] }).parkedLanes.map(item => item.id), ['555555555555']);
 });
 
 test('buildCanvas filters the tray by dismissed ids; a new finished head still shows up', () => {

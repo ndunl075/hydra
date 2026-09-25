@@ -284,7 +284,7 @@ Acceptance:
 ## Not in this plan
 
 - Keeping one Claude or Codex process running per chat. The official extensions already do this for the lead. For helpers it's an optimization for later.
-- Pasting into terminals, mailboxes agents must check themselves, or anything that reads meaning out of chat text. These were the weak points in the Ninebrains comparison.
+- Pasting into terminals, mailboxes agents must check themselves, or anything that reads meaning out of chat text.
 
 ## Spike results
 

@@ -4,7 +4,7 @@ Status: **plan** (2026-09-25).
 
 ## Goal
 
-A **pack** bundles what one kind of work needs: **roles** for lanes and plan jobs, **gates**, **MCP servers** and **skills**. A project turns packs on; a project that hasn't turned a pack on gets nothing from it. The idea comes from Ninebrains.
+A **pack** bundles what one kind of work needs: **roles** for lanes and plan jobs, **gates**, **MCP servers** and **skills**. A project turns packs on; a project that hasn't turned a pack on gets nothing from it.
 
 - Hydra ships two packs, **Coding** and **Research**. You can add your own as folders.
 - Turning a pack on shows exactly what it will run. Nothing runs before that.

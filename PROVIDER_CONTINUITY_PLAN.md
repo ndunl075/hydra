@@ -4,11 +4,8 @@
 
 A provider usage limit should interrupt a **provider session**, not end the Hydra task.
 
-If Claude Code or Codex reaches a usage/quota limit mid-task, Hydra should preserve the exact task worktree and let the user explicitly continue with another available provider. The first concrete fallback can be Freebuff, following the pattern shown by Ninebrains, but the architecture should be provider-agnostic.
+If Claude Code or Codex reaches a usage/quota limit mid-task, Hydra should preserve the exact task worktree and let the user explicitly continue with another available provider. The first concrete fallback can be Freebuff, but the architecture should be provider-agnostic.
 
-Reference:
-- https://ninebrains.runs-on.dev/
-- https://github.com/Advance-Labs/ninebrains
 
 ## Product behavior
 
@@ -94,7 +91,7 @@ Provider-owned quota data that is unavailable stays unavailable.
 
 ## Freebuff
 
-Ninebrains currently presents Freebuff as a fallback that opens in the same worktree and receives a copied handoff note after Claude Code or Codex reaches a usage limit.
+Freebuff can serve as a fallback that opens in the same worktree and receives a copied handoff note after Claude Code or Codex reaches a usage limit.
 
 Hydra should borrow the workflow, not hard-code product claims.
 
@@ -247,9 +244,9 @@ The product concept is stronger when framed as **provider continuity**, with Fre
 
 ---
 
-# Additional Ninebrains-Inspired Plans
+# Additional Plans
 
-These are product patterns worth considering after reviewing Ninebrains' repository and landing page. They should be implemented in Hydra's existing architecture rather than copied literally. Hydra should preserve its deterministic scheduler, explicit provider ownership, bounded context, isolated worktrees, and token-efficiency goals.
+These are product patterns worth considering. They should be implemented in Hydra's existing architecture. Hydra should preserve its deterministic scheduler, explicit provider ownership, bounded context, isolated worktrees, and token-efficiency goals.
 
 ## 1. Project Packs / Profiles
 
@@ -264,7 +261,7 @@ Let a repository define reusable project-specific bundles of:
 - verification requirements
 - setup/resource defaults
 
-Ninebrains calls this concept **Packs**. Hydra should use a project-profile abstraction that fits its own task/scheduler model.
+Hydra should use a project-profile abstraction (packs) that fits its own task/scheduler model.
 
 ### Example profiles
 
@@ -518,7 +515,7 @@ Task/project usage accounting should attribute reviewer turns separately from im
 
 ## 4. What Not to Copy: Free-Form Agent Mailbox
 
-Ninebrains includes a mailbox-style communication mechanism between lanes. Hydra already has structured context requests, dependency bindings, result receipts, and persisted orchestration events.
+A free-form mailbox between lanes is not needed: Hydra already has structured context requests, dependency bindings, result receipts, and persisted orchestration events.
 
 Prefer those structured paths over unrestricted agent-to-agent chat.
 
@@ -535,7 +532,7 @@ If future agent-to-agent messaging is added, messages should be typed, bounded, 
 
 # Combined Product Principle
 
-Hydra should borrow the useful product abstractions from Ninebrains while keeping a different optimization target:
+Hydra keeps this optimization target:
 
 > **Parallel when useful, deterministic whenever possible, and model tokens only where reasoning adds value.**
 

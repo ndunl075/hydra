@@ -94,6 +94,18 @@
       {
         "command": "hydra.stopAllHelpers",
         "title": "Hydra: Stop All Heads"
+      },
+      {
+        "command": "hydra.newLane",
+        "title": "Hydra: New Lane"
+      },
+      {
+        "command": "hydra.openLanes",
+        "title": "Hydra: Open Lanes"
+      },
+      {
+        "command": "hydra.openCanvas",
+        "title": "Hydra: Open Agents Canvas"
       }
     ],
     "menus": {

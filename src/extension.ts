@@ -10,7 +10,7 @@ import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
 import { findProvider } from './core/providers';
-import { JobStore, resolveHeadDefaults } from './core/jobs';
+import { JobStore, finalJobStates, resolveHeadDefaults } from './core/jobs';
 import { HelperEndpoint } from './core/helperEndpoint';
 import { HelperService } from './core/helperService';
 import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
@@ -32,6 +32,7 @@ import { officialExtensionInfo, openOfficialExtension } from './extensionBridge'
 import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { registerLimitOffer } from './extensionLimitOffer';
+import { LanesController, isLaneMessage } from './extensionLanes';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
 import { createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
@@ -86,6 +87,12 @@ class Manager {
    * subscribes with `limitEvents.event(listener)`.
    */
   readonly limitEvents = new vscode.EventEmitter<LimitEvent>();
+  // ---- Lanes (docs/Lanes_And_Planner_Plan.md): state; the methods are in the Lanes block below ----
+  private readonly lanes: LanesController;
+  /** The Agents panel whose webview has sent "ready". */
+  private readyPanel?: vscode.WebviewPanel;
+  /** The window's discovery record lists its folders plus open lanes' worktrees. */
+  private discovery?: { port: number; folders: string[]; written: string; queue: Promise<void> };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
@@ -97,6 +104,14 @@ class Manager {
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.leadKey = key;
+    this.lanes = new LanesController({
+      context, log: line => this.output.appendLine(line),
+      post: message => { void this.panel?.webview.postMessage(message); },
+      openAgents: () => this.openAgents(), webviewReady: () => !!this.panel && this.readyPanel === this.panel,
+      helperServerSpec: provider => this.helperServerSpec(provider), runningHeads: id => this.laneHeads(id),
+      changed: () => this.laneFoldersChanged(),
+    });
+    context.subscriptions.push(this.lanes);
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -154,6 +169,7 @@ class Manager {
       return structuredClone(this.diagnostics.get(provider as Provider));
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
+    this.lanes.registerCommands(command);
     // Not in the palette: fires a made-up limit event, for the handoff UI and smoke tests.
     command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat') => {
       if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat" or "head".');
@@ -272,7 +288,7 @@ class Manager {
       // Every action is logged, whoever calls it (plan, Phase 3 security note).
       this.output.appendLine(`[heads] ${caller.role}${caller.jobId ? ` ${caller.jobId}` : ''}: ${tool}`);
       return service.handle(caller, tool, args, signal);
-    }, { leadKey, verifyLead: async socket => {
+    }, { leadKey, laneExists: id => this.lanes.exists(id), verifyLead: async socket => {
       const verdict = await verifyLead(socket);
       this.output.appendLine(`[heads] lead connection ${verdict.ok ? 'accepted' : `refused: ${verdict.reason}`}`);
       return verdict;
@@ -285,10 +301,13 @@ class Manager {
       bridge: this.helperBridge(), logDirectory: path.join(directory, 'logs'),
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
+      lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id) },
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
     await service.recover();
-    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
+    await this.lanes.start(leadFolder, this.storageDirectory).catch(error => this.output.appendLine(`[lanes] not started: ${this.describe(error)}`));
+    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders: [...folders, ...this.lanes.openWorktrees()] });
+    this.discovery = { port, folders, written: JSON.stringify(this.lanes.openWorktrees()), queue: Promise.resolve() };
     this.helpers = { store, endpoint, service, record };
     // Plans need the same trusted repository as heads (they read it, and running one starts heads in it).
     const planStore = new PlanStore(path.join(this.storageDirectory, 'plans'));
@@ -296,6 +315,28 @@ class Manager {
     this.plans = { store: planStore, planning: new Map() };
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
+  }
+  // ---- Lanes (docs/Lanes_And_Planner_Plan.md). The editor side is LanesController (src/extensionLanes.ts). ----
+  /** Unfinished heads started from a lane. */
+  private laneHeads(laneId: string): number {
+    return this.helpers?.service.list().filter(job => job.lead?.lane === laneId && !finalJobStates.has(job.state)).length ?? 0;
+  }
+  /**
+   * Rewrite the discovery record when the open lanes' worktrees change, so a
+   * lane's bridge finds this window from inside its worktree. The old record goes.
+   */
+  private laneFoldersChanged(): void {
+    const discovery = this.discovery;
+    if (!discovery) return;
+    const worktrees = this.lanes.openWorktrees(), key = JSON.stringify(worktrees);
+    if (key === discovery.written) return;
+    discovery.written = key;
+    discovery.queue = discovery.queue.then(async () => {
+      const helpers = this.helpers;
+      if (!helpers || this.discovery !== discovery) return;
+      const next = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port: discovery.port, pid: process.pid, folders: [...discovery.folders, ...worktrees] });
+      if (next !== helpers.record) { await removeWindowRecord(helpers.record).catch(() => undefined); helpers.record = next; }
+    }).catch(error => this.output.appendLine(`[lanes] discovery record not updated: ${this.describe(error)}`));
   }
   // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
   private helperServerSpec(provider: ConnectableProvider): HelperServerSpec { const bridge = this.helperBridge(provider); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
@@ -414,7 +455,9 @@ class Manager {
     const plans = this.plans; this.plans = undefined;
     for (const controller of plans?.planning.values() ?? []) controller.abort();
     const helpers = this.helpers; this.helpers = undefined;
+    await this.lanes.stop().catch(() => undefined);
     if (!helpers) return;
+    await this.discovery?.queue.catch(() => undefined); this.discovery = undefined;
     await removeWindowRecord(helpers.record).catch(() => undefined);
     await helpers.service.dispose();
     await helpers.endpoint.close();
@@ -718,9 +761,11 @@ class Manager {
     const message = parseMessage(value);
     if (message.type === 'ready') {
       await this.publish();
+      this.readyPanel = this.panel; this.lanes.webviewReady();
       if (this.pendingNewPlan) { this.pendingNewPlan = false; await this.broadcast({ type: 'showNewPlan' }); }
       return;
     }
+    if (isLaneMessage(message)) { await this.lanes.handle(message); return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }

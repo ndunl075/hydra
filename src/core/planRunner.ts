@@ -148,7 +148,11 @@ export function planSteps(plan: Plan, look: PlanLook, options: PlanStepOptions =
       // A head only needs its head dependencies started; a held one makes it wait, so giving up on that head skips it.
       return !(current === 'done' || (current === 'active' && (!!byKey.get(dependency)!.jobId || startingHeads.has(dependency))));
     });
-    if (blocking.length) { set('waiting', `Waiting for ${blocking.map(title).join(', ')}`); continue; }
+    if (blocking.length) {
+      const names = blocking.map(title).join(', ');
+      set('waiting', runAs === 'lane' ? `Starts as a lane when ${names} ${blocking.length === 1 ? 'is' : 'are'} done` : `Waiting for ${names}`);
+      continue;
+    }
     if (runAs === 'head') { start.push({ key, runAs }); startingHeads.add(key); set('active', 'Starting…'); continue; }
     if (!lanesAvailable) { set('waiting', 'Waiting: lanes aren\'t available in this window.'); continue; }
     if (options.deferred?.has(key)) { view.startable = true; set('waiting', 'Ready to start: press Start lane.'); continue; }

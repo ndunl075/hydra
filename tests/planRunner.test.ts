@@ -79,8 +79,8 @@ test('readiness: a lane job waits for all its dependencies; a head waits for its
   let steps = planSteps({ ...base, jobs }, world.look);
   assert.deepEqual(steps.start, [{ key: 'schema', runAs: 'head' }, { key: 'ui', runAs: 'head' }], 'ui starts with schema: its head dependency is starting');
   assert.deepEqual(steps.jobs.map(item => [item.key, item.status]), [['schema', 'active'], ['api', 'waiting'], ['ui', 'active'], ['docs', 'waiting'], ['e2e', 'waiting']]);
-  assert.equal(steps.jobs.find(item => item.key === 'api')!.reason, 'Waiting for Job schema');
-  assert.equal(steps.jobs.find(item => item.key === 'docs')!.reason, 'Waiting for Job api, Job ui');
+  assert.equal(steps.jobs.find(item => item.key === 'api')!.reason, 'Starts as a lane when Job schema is done');
+  assert.equal(steps.jobs.find(item => item.key === 'docs')!.reason, 'Starts as a lane when Job api, Job ui are done');
   assert.equal(steps.state, 'running');
 
   // schema and ui are running: nothing new starts; api still waits for schema to finish.
@@ -99,7 +99,7 @@ test('readiness: a lane job waits for all its dependencies; a head waits for its
   const apiDone = withLane.map(item => item.key === 'api' ? { ...item, result: { commit: sha('d'), via: 'marked' as const, at: new Date().toISOString(), changedFiles: [] } } : item);
   steps = planSteps({ ...base, jobs: apiDone }, world.look);
   assert.deepEqual(steps.start, [{ key: 'e2e', runAs: 'head' }]);
-  assert.equal(steps.jobs.find(item => item.key === 'docs')!.reason, 'Waiting for Job ui', 'docs still waits for the head ui to finish');
+  assert.equal(steps.jobs.find(item => item.key === 'docs')!.reason, 'Starts as a lane when Job ui is done', 'docs still waits for the head ui to finish');
 });
 
 test('a dependency cycle starts nothing in it; a draft job waits for Run plan; without lanes, lane jobs neither start nor fail', () => {

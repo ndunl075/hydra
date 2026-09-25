@@ -296,7 +296,8 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
             </div>)}
             {model.plans.map(node => <PlanLeadNode key={node.plan.id} node={node} defaultProvider={defaultProvider} onPlan={onPlan} />)}
             {model.plans.flatMap(node => node.jobs.map(item => {
-              if (!item.view) return <PlanJobNode key={item.id} item={item}
+              // A job added after the plan ran (+ Job) is still a draft: editable, like a draft plan's jobs.
+              if (!item.view || item.view.status === 'draft') return <PlanJobNode key={item.id} item={item}
                 onOpen={() => openJobPopover(item.planId, item.job, item.x, item.y)}
                 onMenu={(x, y) => openJobMenu(item.planId, item.job, x, y)}
                 onHandleDown={startDependencyDrag(item.planId, item.job.key)} onHandleUp={endDependencyDrag} />;
@@ -479,7 +480,7 @@ function PlanRunningJobSlot({ item, onOpenMenu, onOpenLane, onPlan }: {
   if (item.lane) {
     const lane = item.lane;
     // The branch is on the card's foot, so the status stays short enough for the card.
-    const status = lane.state === 'exited' ? 'Exited' : view.status === 'done' ? `Job done · ${(view.commit || '').slice(0, 7)}` : 'Working';
+    const status = view.status === 'done' ? `Job done · ${(view.commit || '').slice(0, 7)}` : lane.state === 'exited' ? 'Exited' : 'Working';
     return <div className={`canvas-node canvas-plan-lane-card provider-${lane.provider} state-${view.status}`} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
       role="button" tabIndex={0} aria-label={`Lane, job ${job.title}. ${status}. Opens the Lanes view; Shift+F10 for more.`}
       onClick={() => onOpenLane?.(lane.id)}

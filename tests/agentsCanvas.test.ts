@@ -384,20 +384,23 @@ test('an SSR render of a running plan shows its progress, a head slot, a lane ca
       { key: 'schema', runAs: 'head' as const, status: 'active' as const, jobId: '111111111111' },
       { key: 'build', runAs: 'lane' as const, status: 'active' as const, laneId: '222222222222' },
       { key: 'deploy', runAs: 'head' as const, status: 'waiting' as const, reason: 'Waiting for Job build' },
+      { key: 'later', runAs: 'lane' as const, status: 'draft' as const, reason: 'Added after the plan ran: Run plan starts it.' },
     ],
   };
+  running.jobs.push(planJob('later', { draft: true, runAs: 'lane' }));
   const html = renderToStaticMarkup(React.createElement(AgentsCanvas, {
     heads: [head('111111111111', 'running', { lead: { sessionId: `plan-${running.id}` } })],
     plans: [running], lanes: [buildLane], planJobs: views, onAction: () => {},
   }));
   assert.match(html, new RegExp(`Plan . ${running.title}`));
-  assert.match(html, /0 of 3 done/);
+  assert.match(html, /0 of 4 done/);
   assert.match(html, /Claude head/, 'the started head keeps its ordinary head card');
   assert.match(html, /canvas-plan-lane-card/, 'the lane job gets a lane card');
   assert.match(html, /<i aria-hidden="true"><\/i>Working<\/span>/, 'a working lane card says Working; its branch is on the foot');
   assert.match(html, /lane\/222222222222/);
   assert.match(html, /Waiting for Job build/, 'the not-yet-started job shows its reason');
   assert.match(html, /Delete plan/);
+  assert.match(html, /Job later, draft lane job/, 'a job added after the plan ran keeps the editable draft card');
 });
 
 test('an SSR render of a skipped plan job is prefixed "Skipped:"', async () => {

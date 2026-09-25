@@ -120,6 +120,13 @@ test('a plan lane\'s tile shows the plan chip, Mark job done, and Show plan/Canc
   const startedHtml = renderToStaticMarkup(React.createElement(LanesView, { lanes: [started], terminals: true, onSend: () => {}, onFocused: () => {} }));
   assert.doesNotMatch(startedHtml, /Mark job done/, 'hidden once a dependent has started from its result');
 
+  const merged = lane('555555555555', 'Build API', {
+    state: 'merged',
+    planJob: { planId: 'p1', planTitle: 'Checkout', jobKey: 'build', jobTitle: 'Build API', state: 'done', commit: 'b'.repeat(40), dependents: 0, dependentsStarted: 0 },
+  });
+  const mergedHtml = renderToStaticMarkup(React.createElement(LanesView, { lanes: [merged], terminals: true, onSend: () => {}, onFocused: () => {} }));
+  assert.doesNotMatch(mergedHtml, /Mark job done/, 'a merged lane\'s job is done with what was merged');
+
   const exitedRow = lane('444444444444', 'Build API', {
     state: 'exited', exitCode: 0,
     planJob: { planId: 'p1', planTitle: 'Checkout', jobKey: 'build', jobTitle: 'Build API', state: 'active', dependents: 0, dependentsStarted: 0 },

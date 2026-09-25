@@ -581,6 +581,7 @@ export class LanesController implements vscode.Disposable {
     const job = this.planJobOf(lane.id);
     if (!job) throw new Error(`Lane ${lane.name} doesn't run a plan job.`);
     if (job.state === 'failed' || job.state === 'cancelled' || job.state === 'skipped') throw new Error(`Job ${job.jobTitle} has ended; it can't be marked done.`);
+    if (lane.state === 'merged') throw new Error(`Lane ${lane.name} is merged, so its job is done with what was merged.`);
     if (job.dependentsStarted) throw new Error(`The jobs after ${job.jobTitle} have already started from ${job.commit ? job.commit.slice(0, 7) : 'its result'}, so its result can't move.`);
     if (options.message !== undefined && options.message.length > 2000) throw new Error('The note must be at most 2000 characters.');
     if (!this.host.markJobDone) throw new Error('Plans aren\'t ready in this window yet.');

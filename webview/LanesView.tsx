@@ -233,7 +233,7 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
       <div className="lane-tile-actions">
         <button onClick={() => act('diff')}>Diff</button>
         {/* Mark job done (docs/Plan_Lanes_Plan.md, section 5): only while no dependent has started from its result. */}
-        {lane.planJob && lane.planJob.dependentsStarted === 0 && <button onClick={() => act('markJobDone')}>{lane.planJob.state === 'done' ? 'Mark job done again' : 'Mark job done'}</button>}
+        {lane.planJob && lane.planJob.dependentsStarted === 0 && lane.state !== 'merged' && <button onClick={() => act('markJobDone')}>{lane.planJob.state === 'done' ? 'Mark job done again' : 'Mark job done'}</button>}
         <button className="primary" disabled={lane.state === 'merged' || !sync?.changedFiles.length} title={!sync?.changedFiles.length ? 'Nothing to merge yet' : undefined} onClick={() => act('merge')}>Merge</button>
         <div className="lane-menu-wrap">
           <button className="lane-menu-button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={`More actions for lane ${lane.name}`} onClick={() => setMenuOpen(value => !value)}>⋯</button>

@@ -249,6 +249,9 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     assert.deepEqual(await fs.readFile(path.join(fixture, 'dist', 'extension.cjs')), await fs.readFile(path.join(root, 'dist', 'extension.cjs')));
     assert.deepEqual(await fs.readFile(path.join(fixture, 'hydra-logo.png')), await fs.readFile(path.join(root, 'hydra-logo.png')));
     await fs.access(path.join(fixture, 'themes', 'hydra-light.json'));
+    // The built-in packs (docs/Packs_Plan.md) are read from <extensionPath>/packs.
+    await fs.access(path.join(fixture, 'packs', 'coding', 'pack.json'));
+    await fs.access(path.join(fixture, 'packs', 'research', 'pack.json'));
     await assert.rejects(fs.access(path.join(fixture, 'dist', 'smoke.cjs')));
     await assert.rejects(fs.access(path.join(fixture, 'node_modules')));
   } finally {

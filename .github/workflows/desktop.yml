@@ -69,13 +69,41 @@ jobs:
           script: |
             const fs = require('node:fs');
             const baseline = JSON.parse(fs.readFileSync('desktop/upgrade-baseline.json', 'utf8'));
+            if (baseline.source === 'release') {
+              // A published release doesn't expire like a CI artifact. Its tag must still point at the
+              // recorded commit, it must be published, and GitHub's digest for the installer asset must
+              // match the pinned hash (the upgrade script checks the downloaded file's hash again).
+              if (typeof baseline.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(baseline.version) || baseline.tag !== `v${baseline.version}`) throw new Error('Pinned release tag must be v<version>.');
+              if (baseline.assetName !== 'HydraSetup.exe' || !/^[a-f0-9]{64}$/i.test(baseline.installerSha256 || '') || !/^[a-f0-9]{40}$/.test(baseline.headSha || '')) throw new Error('Pinned release baseline is incomplete.');
+              const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag: baseline.tag });
+              if (release.draft) throw new Error('Pinned release is still a draft.');
+              const { data: ref } = await github.rest.git.getRef({ ...context.repo, ref: `tags/${baseline.tag}` });
+              let commit = ref.object.sha;
+              if (ref.object.type === 'tag') commit = (await github.rest.git.getTag({ ...context.repo, tag_sha: commit })).data.object.sha;
+              if (commit !== baseline.headSha) throw new Error('Pinned release tag no longer points at the recorded commit.');
+              const asset = release.assets.find(item => item.name === baseline.assetName);
+              if (!asset || asset.state !== 'uploaded') throw new Error('Pinned release installer asset is missing.');
+              if (asset.digest && asset.digest.toLowerCase() !== `sha256:${baseline.installerSha256.toLowerCase()}`) throw new Error('Pinned release installer digest does not match the pinned hash.');
+              core.setOutput('source', 'release');
+              core.setOutput('tag', baseline.tag);
+              return;
+            }
             const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: baseline.runId });
             if (run.conclusion !== 'success' || run.head_sha !== baseline.headSha || run.path !== '.github/workflows/desktop.yml') throw new Error('Pinned prior installer run has not passed the exact expected Windows workflow/head.');
             const { data: artifact } = await github.rest.actions.getArtifact({ ...context.repo, artifact_id: baseline.artifactId });
             if (artifact.expired || artifact.name !== baseline.artifactName || artifact.digest !== baseline.artifactDigest || artifact.workflow_run?.id !== baseline.runId || artifact.workflow_run?.head_sha !== baseline.headSha) throw new Error('Pinned prior installer artifact is expired or its provenance changed. Revalidate a replacement baseline explicitly.');
+            core.setOutput('source', 'artifact');
             core.setOutput('run-id', String(baseline.runId));
             core.setOutput('artifact-id', String(baseline.artifactId));
+      - name: Download pinned prior release installer
+        if: steps.upgrade-baseline.outputs.source == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED_TAG: ${{ steps.upgrade-baseline.outputs.tag }}
+        run: gh release download $env:PINNED_TAG --repo $env:GITHUB_REPOSITORY --pattern HydraSetup.exe --dir .desktop/upgrade-prior
       - name: Download pinned prior tested installer
+        if: steps.upgrade-baseline.outputs.source == 'artifact'
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}

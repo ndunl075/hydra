@@ -1,10 +1,8 @@
 {
-  "version": "0.22.0",
-  "headSha": "1f4d8d16a038d52172be0d41db38744629c6de31",
-  "runId": 36056921350,
-  "artifactId": 10833089566,
-  "artifactName": "Hydra-win32-x64-user-installer",
-  "artifactDigest": "sha256:805d9d88bba225a08982face91eba5185255e184a0032e48130690d89e15b91c",
-  "installerSha256": "843643DD1AB7B89E763535239F14EDF300079D1DA548274627BBA9C1E0B19ABB",
-  "expiresAt": "2026-10-01T21:07:37Z"
+  "source": "release",
+  "version": "0.23.0",
+  "tag": "v0.23.0",
+  "headSha": "4496eddc428616021e5ead135de53056b821d1dc",
+  "assetName": "HydraSetup.exe",
+  "installerSha256": "C37D9FF8620EC3E0232D3ADDD96B5B15725C19FE1B869E77812F93D5CBC68734"
 }

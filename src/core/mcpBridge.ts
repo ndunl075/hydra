@@ -58,10 +58,14 @@ export function createBridge(options: BridgeOptions) {
     leadTokens.set(record.port, token);
     return { port: record.port, token };
   };
-  /** The active roles, from the window, within a few seconds; none when it isn't open or doesn't answer in time. */
+  /**
+   * The active roles, from the window, within a few seconds; none when it isn't open or doesn't answer
+   * in time. This asks for the lead token at startup instead of at the first call; the window's lead
+   * check can take a second or two on Windows, well inside the CLIs' 30-second server startup.
+   */
   const activeRoles = async (): Promise<LeadRole[]> => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3000);
+    const timer = setTimeout(() => controller.abort(), 5000);
     try {
       const target = await Promise.race([connection(), new Promise<string>(resolve => controller.signal.addEventListener('abort', () => resolve('timed out'), { once: true }))]);
       if (typeof target === 'string') return [];

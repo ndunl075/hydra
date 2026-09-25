@@ -2,7 +2,7 @@ import { lstat, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { git, gitRun } from './git';
-import { processLaunch } from './process';
+import { processLaunch, shimSafe } from './process';
 import { createWorktree, defaultWorktreeRoot } from './worktrees';
 import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalsUnavailable, type PtyModule } from './lanePty';
 import { LaneSync, laneDiffBase, syncIntervalMs } from './laneSync';
@@ -52,14 +52,8 @@ export interface LaneLaunch { executable: string; args: string[]; env: Record<st
 /** A TOML literal string. Lane values never contain a quote or line break; refuse rather than mis-quote. */
 const toml = (value: string) => { if (value.includes("'") || /[\r\n]/.test(value)) throw new Error('A lane setting contains a quote or line break.'); return `'${value}'`; };
 
-/**
- * Text passed through a Windows `.cmd` shim is read by cmd.exe, which expands
- * `%` and treats `& | < > ^ !` as syntax. The prompt keeps to characters cmd
- * reads literally: double quotes become single ones, the rest become spaces.
- */
-export function shimSafe(text: string): string {
-  return text.replace(/"/g, '\'').replace(/[%^&|<>!\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/\\+$/, '');
-}
+/** shimSafe lives with processLaunch now; lanes and tests still import it from here. */
+export { shimSafe };
 
 /** HYDRA_TEST_LANE_COMMAND: a JSON array `[executable, ...args]`, or one executable path. */
 export function parseTestCommand(value: string): { executable: string; args: string[] } {

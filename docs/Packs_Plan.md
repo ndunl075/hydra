@@ -524,3 +524,73 @@ Not finished. When it is, record where it lives, the changes from the plan, what
   - Allowing must come from the review panel's own button, never from a public command, since any extension can run commands.
 
 **Not done in phase 1:** the launch effects (phase 2), the real pack content (phase 3), the UI and its commands (phase 4), and live checks.
+
+### Phase 2 (2026-09-25)
+
+**Where it lives:**
+- `src/core/packs/launch.ts` (pure): role names (`roleSummaries`, `findRole`, `parseRoleRef`), `RoleUnavailable` and its wording, `roleLaunch`, the skill index, `codexDeveloperInstructions` and `roleFirstPrompt`.
+- `PackService.roles`, `pick` and `resolve` (`service.ts`). `resolve` re-hashes the copy at every launch and builds the role's plugin. The window passes your own servers' names, read as the MCP servers page reads them (`extensionPacks.ts`).
+- **Heads:** `Job.role` and `JobInput.role` (`jobs.ts`); `HeadRoleArguments` (`helperRunner.ts`); resolution, the `--mcp-config` file, `changes` and the "Your role" section (`helperService.ts`); the roles lookup, the lead's instructions and the `role` enum (`helperTools.ts`, `mcpBridge.ts`).
+- **Lanes:** `Lane.role`, `parseLaneRole`, the role sentence and `laneRolePrompt` (`lanes.ts`); `laneLaunch`, `codexRoleInPrompt` and the tile note (`laneService.ts`); `extensionLanes.ts`; `LaneView.roleNote`, `laneNew.role` and `HelperJobView.role` (`model.ts`).
+- **Plans:** `PlanJob.role` (`plans.ts`). `extension.ts` passes it to heads and lanes.
+- **Review gates:** `reviewArguments(provider, images, web)` (`gates/review.ts`), and `reviewerRole.web`, set by the packs loader.
+- `src/core/process.ts`: the PowerShell quote fix, plus `shimSafe` and `isWindowsShim`.
+- Tests are in `tests/packsLaunch.test.ts`, with updated expectations in the gates, helperService, helperEndpoint, jobs and lanes tests.
+
+**What each launcher passes now:**
+
+| | Role | Without a role |
+| --- | --- | --- |
+| Claude head | "Your role" and the skill index in the first message. A second `--mcp-config=<logDirectory>/<jobId>.mcp.json` (0600, removed when the process ends) under `--strict-mcp-config`. `--plugin-dir`. `Skill`, `mcp__<pack>-<id>`, and `WebSearch`,`WebFetch` for web in `--allowedTools`. `--model` from the role on its own provider, unless the lead gave one. | As before |
+| Codex head | The same first message. `-c mcp_servers.<pack>-<id>.*` on every exec and resume, and the variables in its own environment. `-c web_search='live'` for web. `-m` as for Claude. | `-c web_search='disabled'` (R7) |
+| Claude lane | `--append-system-prompt-file`, `--plugin-dir` and `--model` on every launch. A `--mcp-config` file with the role's servers, even when connected, plus `hydra` when not. "Your role: X (Y pack)." in the preamble. | As before |
+| Codex lane | `-c mcp_servers.*` on every launch. `-c developer_instructions='…'` and `-m` on a fresh thread only. When the text can't pass, it goes in the first prompt. | As before |
+| Review | Web role: Claude gets `--allowedTools WebFetch,WebSearch` (still plan mode), Codex gets `-c web_search='live'`. | Codex gets `-c web_search='disabled'` |
+
+**Changes from the plan:**
+- **A PowerShell injection is fixed.** `processLaunch` (the `.cmd` shim path) quoted only `'`, but PowerShell also reads ‘ ’ ‚ ‛ as quotes. A lane goal, plan brief or pack text containing "it’s" ended the argument, and the rest ran as PowerShell. A local `.cmd` shim confirmed it. All four are now doubled, and they reach the CLI unchanged.
+- **Developer instructions keep apostrophes.** `'` and `"` become ’ and ” in the text, instead of sending any text that contains an apostrophe to the first prompt. The text is flattened with `shimSafe` only when it goes through a `.cmd` shim, as the prompt already was.
+- **The first-prompt fallback** uses the text itself when it fits in the preamble's remaining room. Otherwise it gives the path of the instructions file and up to 6 `SKILL.md` paths. A role's text can be 8000 characters, and the prompt is capped at 4000.
+- **How a lead learns the roles (decision 6):**
+  - The bridge asks the window at `initialize`, through a lead action the model never sees (`hydra_active_roles`), and waits at most 5 seconds. This moves the lead token request from the first call to startup.
+  - Without a window, or on a timeout, the lead gets no roles, which is today's behaviour.
+  - The roles also appear in the `role` parameter's description, since Codex doesn't read MCP instructions.
+  - The enum lists the name a lead passes: `builder`, or `coding/builder` when two active packs have a builder.
+- **A head's role is checked twice.** It must be active when the head is started; otherwise the start is refused with the reason and the active roles. A plan job's head is refused the same way, and the job's outcome carries that reason. When the head launches, the role is resolved again.
+- **Job fields:**
+  - `Job.role` is `{ ref, title, packTitle }`, so views keep the titles after a pack goes away.
+  - `JobInput.jobRole` is internal, like `inputs`.
+  - `hydra_start_head` answers with `provider` and `role`; `hydra_get_head` adds `role` and `role_title`.
+- **Name clashes** are checked per agent against your user-level servers, for heads too. `--strict-mcp-config` keeps yours out of a Claude head, but the check stays consistent with the Packs page's note.
+- **Codex server details:**
+  - Stdio servers get `startup_timeout_sec=60`, because `npx` may download first.
+  - HTTP servers use `url`, `http_headers`, `env_http_headers` (whole `${NAME}` values) and `bearer_token_env_var`.
+  - Header names are limited to `[A-Za-z0-9_-]`.
+- **A server that reads a variable under another name** (`"API_KEY": "${MY_KEY}"`):
+  - For Codex, the variable is set in its environment only when it isn't already set to something else.
+  - It is never set for names that steer the CLI, Node or Windows: `HYDRA_`, `CODEX_`, `OPENAI_`, `ANTHROPIC_`, `CLAUDE`, `ELECTRON_`, `NODE_` and `NPM_` prefixes, and `PATH`, `HOME`, proxies and the like. The server is left out with a note instead.
+- **Paths through a `.cmd` shim:** when a plugin folder or instructions file path has characters cmd.exe reads as syntax, it is left out with a note.
+- **A role's model on a Codex lane** is passed only on a fresh thread; a Claude lane gets `--model` on every launch.
+- **An optional-changes head** hears one more line under "How to work": its summary can be the result.
+- **A Claude lane's `--mcp-config` file** is now also removed at a launch that doesn't need it, not only when the lane closes.
+- **`LaneView.roleNote`** is kept in memory and set at each launch, so after a window restart it shows again at the lane's next launch.
+
+**For later phases:**
+- **Phase 4:**
+  - `PackService.roles(folder)` has what `Snapshot.roles` needs.
+  - The data is ready: the `laneNew` message takes `role`, `LaneView.roleNote` is the tile's note, and `HelperJobView.role` gives "Claude head · Builder".
+  - Still to build: the `hydra.newLane` Role step, roles in the planner, and R1's "the tile says so" when a role changed since a Claude lane started.
+  - Servers left out (`RoleLaunch.notes`) are only logged; the Packs page can show them.
+- **Phase 3:** role instructions can use apostrophes freely. Coding's Playwright server is a bare `npx`; see live check 2.
+- **Phase 5, live checks to add:**
+  1. A Codex lane through `codex.cmd` receives `developer_instructions` with ’ intact, and follows them.
+  2. A bare `npx` server command starts on Windows for Claude and for Codex. Codex spawns commands directly, so it may need `npx.cmd` (`resolveCommand`) or `cmd /c`.
+  3. Codex accepts the HTTP keys and `startup_timeout_sec` as passed, and `-c` before `resume --last`.
+  4. A Claude head runs with two `--mcp-config=` and `--plugin-dir` under `--strict-mcp-config` in `-p` stream-json, and `mcp__<pack>-<id>` in `--allowedTools` lets its tools run.
+  5. A lead chat's startup: the lead check at `initialize` finishes within 5 seconds on Windows, the delay is acceptable, and the roles show in the instructions and the enum.
+  6. The longest Codex lane command line through the shim (Hydra's server, a role's servers, 2000 characters of instructions and a 4000-character prompt) stays under cmd.exe's 8191 characters. Nothing measures it yet.
+  7. A variable Hydra sets under another name reaches a Codex server through `env_vars`.
+  8. R9: a web role's review opens a page, and other Codex reviews can't.
+  9. A head's `.mcp.json` is gone after it ends, and a lane's holds only references.
+
+**Not done in phase 2:** the UI (phase 4), the pack content (phase 3), and live checks (phase 5). The lead-check test in `tests/helperEndpoint.test.ts` fails when the tests run inside a Claude Code session, as it did before this phase; it reads the real process tree.

@@ -166,8 +166,8 @@ export async function runPlan(plan: Plan, start: PlanHeadStarter): Promise<Plan>
 
 const minPlannerJobs = 2, maxPlannerJobs = 8;
 
-/** The first balanced `{...}` in the text, skipping over braces inside strings. `undefined` if none is well-formed JSON. */
-function extractFirstJsonObject(text: string): string | undefined {
+/** The first balanced `{...}` in the text, skipping over braces inside strings. `undefined` if none is well-formed JSON. Also reads a review gate's verdict. */
+export function extractFirstJsonObject(text: string): string | undefined {
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
     const end = matchingBrace(text, start);
     if (end === -1) continue;

@@ -3,6 +3,8 @@ import path from 'node:path';
 
 export interface ProbeOutput {
   args: string[]; stdout: string; stderr: string; exitCode: number | null; error?: string;
+  /** Stopped because it ran past `timeoutMs`. */
+  timedOut?: boolean;
 }
 export function processLaunch(executable: string, args: string[]): { executable: string; args: string[] } {
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
@@ -48,18 +50,24 @@ export async function terminateProcessTree(pid: number): Promise<void> {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
   }
 }
-// Public help/version probes only. Arguments are never interpreted by a command shell.
-export function runProbe(executable: string, args: string[], cwd: string, options: { timeoutMs?: number; maxBytes?: number; signal?: AbortSignal } = {}): Promise<ProbeOutput> {
+/**
+ * Run a CLI once and collect its output: help/version probes, the planner, and a
+ * review gate. Arguments are never interpreted by a command shell. `input` is
+ * written to stdin (a review's prompt is too long for a command line), and
+ * `spawned` hears the process id, so Hydra can refuse it as a lead.
+ */
+export function runProbe(executable: string, args: string[], cwd: string, options: { timeoutMs?: number; maxBytes?: number; signal?: AbortSignal; input?: string; spawned?: (pid: number) => void } = {}): Promise<ProbeOutput> {
   return new Promise(resolve => {
     const launch = processLaunch(executable, args);
     const child = spawn(launch.executable, launch.args, { cwd, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+    if (child.pid) options.spawned?.(child.pid);
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
-    let bytes = 0, failure: string | undefined, settled = false;
+    let bytes = 0, failure: string | undefined, settled = false, timedOut = false;
     const finish = (exitCode: number | null) => {
       if (settled) return;
       settled = true; clearTimeout(timer); clearTimeout(fallback);
       options.signal?.removeEventListener('abort', abort);
-      resolve({ args, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), exitCode, error: failure });
+      resolve({ args, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), exitCode, error: failure, ...(timedOut ? { timedOut } : {}) });
     };
     let fallback: ReturnType<typeof setTimeout> | undefined;
     const stop = (reason: string) => {
@@ -69,7 +77,7 @@ export function runProbe(executable: string, args: string[], cwd: string, option
       fallback = setTimeout(() => finish(null), 3000);
     };
     const abort = () => stop('Provider check cancelled.');
-    const timer = setTimeout(() => stop('Provider check timed out.'), options.timeoutMs ?? 8000);
+    const timer = setTimeout(() => { timedOut = true; stop('Provider check timed out.'); }, options.timeoutMs ?? 8000);
     const collect = (target: Buffer[], data: Buffer) => {
       const remaining = (options.maxBytes ?? 256 * 1024) - bytes;
       if (remaining > 0) { target.push(data.subarray(0, remaining)); bytes += Math.min(remaining, data.length); }
@@ -79,7 +87,9 @@ export function runProbe(executable: string, args: string[], cwd: string, option
     child.stderr.on('data', data => collect(stderr, data));
     child.on('error', error => { failure = error.message; finish(null); });
     child.on('close', code => finish(code));
-    child.stdin.end();
+    // A CLI that exits before reading all of its input closes the pipe; that is its answer, not a crash.
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(options.input);
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
   });

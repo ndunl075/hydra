@@ -42,6 +42,8 @@ import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, ty
 import { planBrief } from './core/planner';
 // ---- Gates (docs/Gates_Plan.md). Their own block. ----
 import { otherStillLimited } from './core/limitOffer';
+import { gateBlocks, gateKind, gateState } from './core/jobs';
+import { buildEvidenceMarkdown, evidenceScheme } from './core/evidence';
 
 let manager: Manager | undefined;
 /** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
@@ -181,6 +183,8 @@ class Manager {
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
     this.lanes.registerCommands(command);
+    // ---- Gates (docs/Gates_Plan.md): View evidence, a read-only Markdown document built fresh each time it's opened. ----
+    this.context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(evidenceScheme, { provideTextDocumentContent: uri => this.evidenceMarkdown(uri) }));
     // ---- The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3) ----
     this.context.subscriptions.push(vscode.window.createTreeView('hydra.overview', { treeDataProvider: this.tree }));
     command('hydra.overview.mergeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'merge', true));
@@ -465,12 +469,18 @@ class Manager {
     await setClaudeLimitHook(paths, group);
     this.output.appendLine(`[limits] ${state === 'stale' ? 'updated' : 'added'} the Claude usage-limit hook`);
   }
-  /** Dashboard actions: review a helper's changes as a diff, open its log, or cancel it. */
-  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer', jobId: string): Promise<void> {
+  /** Dashboard actions: review a helper's changes as a diff, open its log, view its gate evidence, or cancel it. */
+  private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer' | 'helperEvidence', jobId: string): Promise<void> {
     const helpers = this.helpers;
     const job = helpers?.store.get(jobId);
     if (!helpers || !job) throw new Error('That head is not in this window.');
     if (action === 'helperCancel') { await helpers.service.handle({ role: 'lead', leadKey: job.leadKey }, 'hydra_cancel_head', { job_id: jobId, reason: 'Cancelled from the Agents view.' }, new AbortController().signal); return; }
+    if (action === 'helperEvidence') {
+      if (!job.result?.checks.length) throw new Error('This head has no gate results yet.');
+      const uri = vscode.Uri.parse(`${evidenceScheme}://head/${jobId}`);
+      await vscode.commands.executeCommand('markdown.showPreview', uri);
+      return;
+    }
     if (action === 'helperAnswer') {
       // The head is waiting on the lead; you can answer in its place from the Agents view.
       if (job.state !== 'blocked') throw new Error('That head is not waiting for an answer.');
@@ -489,6 +499,23 @@ class Manager {
     const diff = await git(job.worktree, ['diff', '--stat', '--patch', '--no-color', job.baseCommit, head, '--']);
     const document = await vscode.workspace.openTextDocument({ language: 'diff', content: `# ${job.title} (Hydra head ${job.id})\n# ${job.branch} ${job.baseCommit.slice(0, 12)}..${head.slice(0, 12)}\n# Merge it yourself with git when you're happy: git merge ${job.branch}\n\n${diff || '(no changes)'}` });
     await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+  }
+  /** The `hydra-evidence:` scheme's content: `hydra-evidence://head/<jobId>` or `hydra-evidence://lane/<laneId>`. */
+  private evidenceMarkdown(uri: vscode.Uri): string {
+    const id = uri.path.replace(/^\/+/, '');
+    if (uri.authority === 'head') {
+      const job = this.helpers?.store.get(id);
+      if (!job?.result?.checks.length) return `# Evidence\n\nThat head has no gate results.\n`;
+      const logDirectory = path.join(this.storageDirectory, 'helpers', 'logs');
+      return buildEvidenceMarkdown({ title: job.title, worktree: job.worktree ?? this.helpers!.service.leadFolder, logDirectories: [logDirectory], results: job.result.checks });
+    }
+    if (uri.authority === 'lane') {
+      const evidence = this.lanes.laneEvidence(id);
+      const root = this.lanes.laneGatesLogRoot();
+      if (!evidence || !root) return `# Evidence\n\nThat lane has no gate results.\n`;
+      return buildEvidenceMarkdown({ title: evidence.title, worktree: evidence.worktree, logDirectories: [root], results: evidence.results });
+    }
+    return `# Evidence\n\nUnknown evidence source.\n`;
   }
   private async stopHelpers(): Promise<void> {
     const plans = this.plans; this.plans = undefined;
@@ -565,7 +592,10 @@ class Manager {
       id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
       progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
       branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
-      checks: job.result?.checks.map(check => ({ id: check.id, passed: check.passed })) ?? [],
+      checks: job.result?.checks.map(check => ({
+        id: check.id, passed: check.passed, kind: gateKind(check), state: gateState(check), required: check.required,
+        ...(check.summary ? { summary: check.summary } : {}), ...(check.findings?.length ? { findings: check.findings } : {}), ...(check.evidence?.length ? { evidence: check.evidence } : {}),
+      })) ?? [],
       repository: service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
       lead: job.lead, merged: service.isMerged(job.id), startedAt: job.startedAt, writeScope: job.writeScope,
     })).reverse();
@@ -829,7 +859,7 @@ class Manager {
     if (message.type === 'settings') { this.settings.show(); return; }
     if (message.type === 'refresh') { await this.refresh(); return; }
     if (message.type === 'helperStopAll') { await vscode.commands.executeCommand('hydra.stopAllHelpers'); return; }
-    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer') { await this.helperAction(message.type, message.jobId); return; }
+    if (message.type === 'helperReview' || message.type === 'helperLog' || message.type === 'helperCancel' || message.type === 'helperAnswer' || message.type === 'helperEvidence') { await this.helperAction(message.type, message.jobId); return; }
     // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
     if (message.type === 'planCreate') { await this.planCreate(message.title, message.brief); return; }
     if (message.type === 'planCreateEmpty') { await this.planCreateEmpty(message.title); return; }

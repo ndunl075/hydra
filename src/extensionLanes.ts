@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import path from 'node:path';
 import { git } from './core/git';
 import { findProvider } from './core/providers';
+import type { JobCheckResult } from './core/jobs';
 import { claudeStatus, codexStatus, providerPaths, type HelperServerSpec } from './core/helperRegistration';
 import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePty';
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
@@ -123,6 +124,14 @@ export class LanesController implements vscode.Disposable {
 
   exists(id: string): boolean { return !!this.service?.exists(id); }
   laneName(id: string): string | undefined { return this.service?.name(id); }
+  /** For View evidence (docs/Gates_Plan.md): the lane's last gates run, or undefined when none has run yet. */
+  laneEvidence(id: string): { title: string; worktree: string; results: JobCheckResult[] } | undefined {
+    const lane = this.service?.get(id);
+    if (!lane?.lastGates?.results.length) return undefined;
+    return { title: lane.name, worktree: lane.worktree, results: lane.lastGates.results };
+  }
+  /** Where this window's lane gate runs keep their logs and screenshots, for the evidence document's path check. */
+  laneGatesLogRoot(): string | undefined { return this.storageDirectory ? path.join(this.storageDirectory, 'lanes', 'gates') : undefined; }
   describe(you?: string): Promise<unknown> {
     if (!this.service) throw new Error('Lanes are not available in this Hydra window.');
     return this.service.describe(you);

@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { replaceAtomic } from './atomicFile';
 import type { Provider } from './model';
+import type { JobCheckResult } from './jobs';
 
 /**
  * Hydra lanes (docs/Lanes_And_Planner_Plan.md, section 1). A lane is a git
@@ -29,6 +30,15 @@ export interface Lane {
   reason?: string;
   /** Provider switches this lane has made (docs/Gates_Plan.md, section 2: "Continue in <Other>" and the manual "Switch to <Other>"). Oldest first. */
   switches?: LaneSwitch[];
+  /** The last gates run on this lane (docs/Gates_Plan.md, "Lanes"): Run gates, or Merge when gates.json says "onMerge". Kept for the tile's chips and View evidence; only the most recent run. */
+  lastGates?: LaneGatesRecord;
+}
+
+export interface LaneGatesRecord {
+  /** Where the gates came from (GatesConfig['source']): 'gates' | 'checks' | 'none'. */
+  source: 'gates' | 'checks' | 'none';
+  at: string;
+  results: JobCheckResult[];
 }
 
 export type LaneSwitchReason = 'limit' | 'manual';
@@ -128,13 +138,26 @@ export function validateLane(value: unknown): Lane {
   if (lane.mergedAt !== undefined && !text(lane.mergedAt, 64)) throw new Error(`${where} has an invalid merge time.`);
   if (lane.reason !== undefined && !text(lane.reason, 500)) throw new Error(`${where} has an invalid reason.`);
   const switches = validateLaneSwitches(lane.switches, where);
+  const lastGates = validateLastGates(lane.lastGates, where);
   return {
     id: lane.id, name, provider: lane.provider, ...(goal ? { goal } : {}),
     repository: lane.repository!, worktree: lane.worktree!, branch: lane.branch, baseCommit: lane.baseCommit, target: lane.target,
     createdAt: lane.createdAt!, state: lane.state!,
     ...(lane.exitCode !== undefined ? { exitCode: lane.exitCode } : {}), ...(lane.mergedAt ? { mergedAt: lane.mergedAt } : {}), ...(lane.reason ? { reason: lane.reason } : {}),
     ...(switches ? { switches } : {}),
+    ...(lastGates ? { lastGates } : {}),
   };
+}
+
+/** `lane.lastGates`: only its shape, not each JobCheckResult field (those are Hydra's own gates output, never user input). */
+function validateLastGates(value: unknown, where: string): LaneGatesRecord | undefined {
+  if (value === undefined) return undefined;
+  const record = value as Partial<LaneGatesRecord> | undefined;
+  if (!record || typeof record !== 'object') throw new Error(`${where} has an invalid gates record.`);
+  if (record.source !== 'gates' && record.source !== 'checks' && record.source !== 'none') throw new Error(`${where} has an invalid gates source.`);
+  if (typeof record.at !== 'string' || !record.at || Number.isNaN(Date.parse(record.at))) throw new Error(`${where} has an invalid gates time.`);
+  if (!Array.isArray(record.results)) throw new Error(`${where} has an invalid gates result list.`);
+  return { source: record.source, at: record.at, results: record.results as JobCheckResult[] };
 }
 
 /** `lane.switches`, field by field; kept short (the newest `maxLaneSwitches`), never guessed at. */
@@ -220,7 +243,7 @@ export class LaneStore {
   }
 
   /** Change a lane. A state change must be in the transition table; a closed lane can't change. */
-  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'reason' | 'provider' | 'switches'>>): Promise<Lane> {
+  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'reason' | 'provider' | 'switches' | 'lastGates'>>): Promise<Lane> {
     return this.serialize(async () => {
       this.assertLoaded();
       const lane = this.lanes.get(id);

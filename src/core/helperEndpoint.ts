@@ -15,7 +15,11 @@ import type { Provider } from './model';
  * Codex chat) and, when known, its provider, so the Agents canvas can show which
  * chat started which head.
  */
-export interface HelperCaller { role: HelperRole; leadKey: string; jobId?: string; leadSessionId?: string; provider?: Provider }
+export interface HelperCaller {
+  role: HelperRole; leadKey: string; jobId?: string; leadSessionId?: string; provider?: Provider;
+  /** The Hydra lane this lead runs in, kept only when that lane is open in this window. */
+  lane?: string;
+}
 export type HelperHandler = (caller: HelperCaller, tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
 /**
  * Decides whether the process on the other end of a connection may act as this
@@ -35,7 +39,7 @@ export class HelperEndpoint {
   private readonly calls = new Map<string, number[]>();
   private listening = 0;
   private sessionAttempts: number[] = [];
-  constructor(private readonly handler: HelperHandler, private readonly options: { maxBodyBytes?: number; callsPerMinute?: number; leadKey?: string; verifyLead?: LeadVerifier } = {}) {}
+  constructor(private readonly handler: HelperHandler, private readonly options: { maxBodyBytes?: number; callsPerMinute?: number; leadKey?: string; verifyLead?: LeadVerifier; laneExists?: (id: string) => boolean } = {}) {}
 
   get port(): number { return this.listening; }
 
@@ -89,11 +93,16 @@ export class HelperEndpoint {
         if (!verdict.ok) return reply(403, { ok: false, error: `Hydra refused this lead: ${verdict.reason}` });
         // The bridge says which agent it serves (set at Connect); the process chain is the fallback.
         const sessionBody = await readBody(request, 1024);
-        let declared: Provider | undefined;
-        try { declared = asProvider((JSON.parse(sessionBody || '{}') as { provider?: unknown }).provider); } catch { declared = undefined; }
+        let declared: Provider | undefined, lane: string | undefined;
+        try {
+          const body = JSON.parse(sessionBody || '{}') as { provider?: unknown; lane?: unknown };
+          declared = asProvider(body.provider);
+          // A lane's bridge names its lane (HYDRA_LANE_ID); it counts only if that lane is open here.
+          if (typeof body.lane === 'string' && /^[a-f0-9]{12}$/.test(body.lane) && this.options.laneExists?.(body.lane)) lane = body.lane;
+        } catch { declared = undefined; }
         const provider = declared ?? verdict.provider;
         const leadSessionId = randomBytes(6).toString('hex');
-        return reply(200, { ok: true, result: { token: this.issue({ role: 'lead', leadKey: this.options.leadKey, leadSessionId, ...(provider ? { provider } : {}) }), session: leadSessionId } });
+        return reply(200, { ok: true, result: { token: this.issue({ role: 'lead', leadKey: this.options.leadKey, leadSessionId, ...(provider ? { provider } : {}), ...(lane ? { lane } : {}) }), session: leadSessionId } });
       }
       const auth = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(request.headers.authorization || '');
       const key = auth ? digest(auth[1]!) : undefined;
@@ -134,9 +143,9 @@ function readBody(request: http.IncomingMessage, max: number): Promise<string | 
   });
 }
 
-/** Client side, used by a lead bridge: ask the window for this bridge's lead token. */
-export function requestLeadSession(port: number, provider?: Provider): Promise<HelperCallResponse> {
-  const body = JSON.stringify(provider ? { provider } : {});
+/** Client side, used by a lead bridge: ask the window for this bridge's lead token, naming its agent and, in a lane, its lane. */
+export function requestLeadSession(port: number, provider?: Provider, lane?: string): Promise<HelperCallResponse> {
+  const body = JSON.stringify({ ...(provider ? { provider } : {}), ...(lane && /^[a-f0-9]{12}$/.test(lane) ? { lane } : {}) });
   return new Promise((resolve, reject) => {
     const request = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/hydra/v1/lead-session', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, response => {
       const chunks: Buffer[] = [];

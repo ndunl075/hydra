@@ -1,6 +1,6 @@
 # Lanes, the Hydra panel and the Planner
 
-Status: **plan** (2026-09-24). Agreed with Nico; to be built end to end.
+Status: **built** (2026-09-25). The Planner shipped in #202; Lanes and the Hydra panel follow. See "As built" at the end.
 
 ## Goal
 
@@ -316,3 +316,52 @@ interface PlanJob { key: string; title: string; brief: string; provider?: Provid
 10. New plan from a brief: jobs appear; add a cycle and it's refused; fix it and Run, and heads appear under the plan node.
 
 **Done** when the local gate passes (check, build, tests, smoke), the live checklist passes, the PRs are merged with CI green, the installed app is refreshed, and Nico has the summary.
+
+## As built
+
+**Where it lives**
+- **Lanes:** `src/core/lanes.ts`, `lanePty.ts`, `laneSync.ts`, `laneFinish.ts`, `laneService.ts`, and `src/extensionLanes.ts` (commands, messages, confirmations, diff).
+- **Hydra panel:** `src/core/hydraTree.ts` and `src/extensionTree.ts`.
+- **Planner:** `src/core/plans.ts` and `planner.ts`.
+- **Webview:** `LanesView.tsx`, `laneBus.ts`, `AgentsBody.tsx` (Canvas | Lanes), and the canvas additions in `AgentsCanvas.tsx` and `agentsCanvas.ts`.
+
+**Changes from the plan**
+- **Lane names** are limited to letters, numbers, spaces and `- _ . ( ) #`, because a name reaches a TOML value and, through a `.cmd` shim, cmd.exe. Through a shim, the first prompt also drops the characters cmd would expand.
+- **Lane identity reaches the bridge through the environment.**
+  - `HYDRA_LANE_ID`, `HYDRA_LANE_NAME` and `HYDRA_LANE_BRANCH` identify the lane.
+  - `HYDRA_LANE_HELPERS_DIR` names this window. It is needed because the user-level server's own `HYDRA_HELPERS_DIR` overrides the lane's value, and can belong to another Hydra profile.
+  - Codex clears its servers' environment, so for Codex these go in as `-c mcp_servers.hydra.env.*`.
+- **A lane starts as a fresh top-level session.** The markers a parent Claude session leaves (`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, …) are dropped, since they turn off transcripts and so break Resume. `DISABLE_AUTOUPDATER=1` is set, as it is for heads.
+- **Measurements run from the merge-base with the target.** Changed files and the diff use merge-base(target, lane), so work brought in by Update from main isn't counted as the lane's own. The snapshot's temporary index starts from a copy of the lane's own index.
+- **Removal safety** unlinks links at any depth, and before non-forced removals too.
+- **Limit:** at most 24 open lanes.
+- **Open PR** asks before pushing.
+- **Content Security Policy:** the Agents panel allows inline styles (`style-src … 'unsafe-inline'`), because xterm.js writes its font and ANSI colours into a `<style>` element. Scripts stay nonce-only.
+- **Heads a lane starts** are grouped by `lead.lane`, labelled with the lane name.
+- **Plan state:** a running plan becomes done once every head it started is done.
+- **Test windows:** a development or test window no longer refreshes the user's Claude or Codex connection (or the usage-limit hook) to point at itself. Before this, a test window re-pointed your real Claude at the test copy.
+
+**Verified live** in an isolated window with the real CLIs, on 2026-09-24 and 25:
+- **Planner:**
+  - A brief planned by Claude produced 2 jobs.
+  - Drawing dependencies into a cycle was refused and highlighted.
+  - Breaking the cycle and running the plan started 2 heads under the plan, both finishing Done.
+- **Hydra panel:** the icon and the tree of lanes, heads and plans.
+- **Claude lane with a goal:**
+  - The TUI rendered in the tile, typing worked, and the lane did the task.
+  - `hydra_lanes` from inside the lane listed the other lane with its files and the conflict.
+  - A head it started appeared under the lane on the canvas.
+- **Codex lane:** it did its task, and `hydra_lanes` worked through the `-c` server config.
+- **Conflicts:** two lanes editing the same file showed chips on both tiles and a red conflict edge on the canvas.
+- **Commit and merge:** committing a lane and merging it put a merge commit on main. The other lane then showed "Conflicts with main". Update from main refused while dirty, and after a commit left the lane mid-merge.
+- **Reload:** after a window reload the lanes showed Exited, and Start fresh relaunched.
+- **Close:**
+  - A merged lane closed quietly, removing its worktree and branch.
+  - Delete everything on an unmerged lane removed its worktree and branch, while a junction planted inside it kept its target intact.
+- **Canvas to terminal:** clicking a lane on the canvas focused its terminal.
+
+**Not done, or later**
+- Gates, Packs, and the Freebuff fallback.
+- Sending plan jobs to lanes.
+- **Usage-limit offer:** #201's hook also fires inside a Claude lane that hits its limit, and the offer then refers to that lane's session. Its handoff note is written from the lane's folder, so it still makes sense, but the offer isn't lane-aware yet.
+- **Resuming a dead session:** Resume after a crash relies on the CLI's own "continue the last session in this folder". A session that never saved a transcript can't be resumed; use Start fresh.

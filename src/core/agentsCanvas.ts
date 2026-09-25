@@ -1,4 +1,4 @@
-import type { HelperJobView, Provider } from './model';
+import type { HelperJobView, LaneView, Provider } from './model';
 // Type-only: this file is bundled into the browser webview, and plans.ts's
 // storage (PlanStore) pulls in node:fs/node:crypto, which a browser bundle
 // cannot resolve. So only types cross this boundary; the tiny bit of cycle
@@ -19,9 +19,14 @@ export const finishedLingerMs = 2 * 60_000;
 export const trayWindowMs = 12 * 3600_000;
 export const activeStates: ReadonlySet<string> = new Set(['queued', 'starting', 'running', 'blocked', 'checking']);
 
-export interface CanvasLead { key: string; provider?: Provider; label: string; startedAt: string; heads: string[]; x: number; y: number }
+/**
+ * A lead node. Most are a chat with heads; `kind: 'lane'` is an open lane
+ * (docs/Lanes_And_Planner_Plan.md, section 2), shown even with no heads yet,
+ * with its own status line instead of a head count.
+ */
+export interface CanvasLead { key: string; kind: 'chat' | 'lane'; provider?: Provider; label: string; status?: string; laneId?: string; startedAt: string; heads: string[]; x: number; y: number }
 export interface CanvasHead { id: string; lead: string; depth: number; x: number; y: number; head: HelperJobView }
-export interface CanvasEdge { id: string; kind: 'lead' | 'dependency' | 'plan-lead' | 'plan-dependency'; from: string; to: string; waiting: boolean; active: boolean; cycle?: boolean }
+export interface CanvasEdge { id: string; kind: 'lead' | 'dependency' | 'plan-lead' | 'plan-dependency' | 'conflict'; from: string; to: string; waiting: boolean; active: boolean; cycle?: boolean }
 /**
  * A plan that hasn't started running yet (docs/Lanes_And_Planner_Plan.md,
  * "Drafting on the canvas"): the plan itself renders as a lead node
@@ -49,8 +54,12 @@ export function onCanvas(head: HelperJobView, now: number): boolean {
   return now - finishedAt(head) < finishedLingerMs;
 }
 
-/** The chat a head belongs to. Heads started before chats were tracked share one "this window" lead. */
-export const leadKeyOf = (head: HelperJobView): string => head.lead?.sessionId || 'window';
+/**
+ * The lead a head belongs to. A head started from a lane groups under that lane
+ * node instead of its chat (docs/Lanes_And_Planner_Plan.md, section 2); heads
+ * started before chats were tracked share one "this window" lead.
+ */
+export const leadKeyOf = (head: HelperJobView): string => head.lead?.lane || head.lead?.sessionId || 'window';
 
 /**
  * The first dependency cycle in a plan's jobs, as a path like `['a','b','a']`
@@ -79,7 +88,7 @@ function planCycleMessage(jobs: readonly PlanJob[], cycle: readonly string[]): s
   return `The plan has a dependency cycle: ${cycle.map(key => titleOf.get(key) || key).join(' → ')}`;
 }
 
-export function buildCanvas(all: readonly HelperJobView[], now: number, extras: { plans?: readonly Plan[] } = {}): CanvasModel {
+export function buildCanvas(all: readonly HelperJobView[], now: number, extras: { plans?: readonly Plan[]; lanes?: readonly LaneView[] } = {}): CanvasModel {
   const visible = all.filter(head => onCanvas(head, now));
   const tray = all.filter(head => !onCanvas(head, now) && !head.merged && !isActive(head) && now - finishedAt(head) < trayWindowMs)
     .sort((a, b) => finishedAt(b) - finishedAt(a));
@@ -121,7 +130,9 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
     const provider = members.find(head => head.lead?.provider)?.lead?.provider;
     const label = members.find(head => head.lead?.label)?.lead?.label
       || (key === 'window' ? 'This window' : `${providerName(provider)} chat · ${timeOf(first.createdAt)}`);
-    leads.push({ key, provider, label, startedAt: first.createdAt, heads: members.map(head => head.id), x: layout.leadX, y: top + groupHeight / 2 - layout.rowGap / 2 });
+    // A lane's heads are patched into "lane" leads just below; here they still get an ordinary chat lead
+    // (overwritten there) so a lane's own label and provider always win over a head's lead.label/provider.
+    leads.push({ key, kind: 'chat', provider, label, startedAt: first.createdAt, heads: members.map(head => head.id), x: layout.leadX, y: top + groupHeight / 2 - layout.rowGap / 2 });
     for (const head of members) {
       const roots = head.dependsOn.filter(id => byId.has(id));
       if (!roots.length) edges.push({ id: `${key}>${head.id}`, kind: 'lead', from: key, to: head.id, waiting: false, active: isActive(head) });
@@ -131,6 +142,36 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
       }
     }
     top += groupHeight + layout.groupGap;
+  }
+
+  // ---- Lanes (docs/Lanes_And_Planner_Plan.md, section 2). Every open lane (running or ----
+  // ---- exited, not closed or merged) is a lead node, even with no heads. Heads with   ----
+  // ---- lead.lane === lane.id already grouped above (leadKeyOf prefers the lane id), so ----
+  // ---- their chat lead is patched into a lane node here; a lane with no heads gets one ----
+  // ---- of its own. A red dashed conflict edge joins each conflicting pair, once.       ----
+  const openLanes = (extras.lanes || []).filter(lane => lane.state === 'running' || lane.state === 'exited');
+  const laneById = new Map(openLanes.map(lane => [lane.id, lane]));
+  const laneStatus = (lane: LaneView): string => {
+    if (lane.state === 'exited') return 'Exited';
+    const conflict = lane.sync?.conflicts[0];
+    if (conflict) return `Conflicts with ${laneById.get(conflict.laneId)?.name || 'another lane'}`;
+    return `Working · ${lane.branch}`;
+  };
+  for (const lane of openLanes) {
+    const existing = leads.find(item => item.key === lane.id);
+    if (existing) { existing.kind = 'lane'; existing.laneId = lane.id; existing.provider = lane.provider; existing.label = lane.name; existing.status = laneStatus(lane); continue; }
+    leads.push({ key: lane.id, kind: 'lane', laneId: lane.id, provider: lane.provider, label: lane.name, status: laneStatus(lane), startedAt: lane.createdAt, heads: [], x: layout.leadX, y: top });
+    top += layout.rowGap + layout.groupGap;
+  }
+  const conflictPairs = new Set<string>();
+  for (const lane of openLanes) {
+    for (const conflict of lane.sync?.conflicts || []) {
+      if (!laneById.has(conflict.laneId)) continue;
+      const pair = [lane.id, conflict.laneId].sort().join('|');
+      if (conflictPairs.has(pair)) continue;
+      conflictPairs.add(pair);
+      edges.push({ id: `conflict:${pair}`, kind: 'conflict', from: lane.id, to: conflict.laneId, waiting: false, active: false });
+    }
   }
 
   // ---- Plans (docs/Lanes_And_Planner_Plan.md, section 4). A running or done plan's ----

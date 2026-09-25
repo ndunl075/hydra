@@ -1,6 +1,6 @@
 import { callHelperEndpoint, requestLeadSession } from './helperEndpoint';
 import { findWindowFor } from './helperDiscovery';
-import { helperInstructions, leadInstructions, toolsFor, type HelperRole } from './helperTools';
+import { helperInstructions, laneGuidance, leadInstructions, toolsFor, type HelperRole } from './helperTools';
 
 /**
  * The `hydra-mcp` bridge core: a stdio MCP server (newline-delimited JSON-RPC)
@@ -15,8 +15,21 @@ import { helperInstructions, leadInstructions, toolsFor, type HelperRole } from 
 export interface BridgeOptions { env: Record<string, string | undefined>; cwd: string; version: string }
 type Message = { jsonrpc?: string; id?: string | number; method?: string; params?: Record<string, unknown> };
 
+/**
+ * A lead running in a Hydra lane: Hydra sets HYDRA_LANE_ID (12 hex), and the
+ * lane's name and branch, in the lane's terminal. Anything malformed is ignored.
+ */
+export function laneFromEnv(env: Record<string, string | undefined>): { id: string; name?: string; branch?: string } | undefined {
+  const id = env.HYDRA_LANE_ID;
+  if (!id || !/^[a-f0-9]{12}$/.test(id)) return undefined;
+  const name = (env.HYDRA_LANE_NAME || '').replace(/[\u0000-\u001f\u007f"]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+  const branch = env.HYDRA_LANE_BRANCH || '';
+  return { id, ...(name ? { name } : {}), ...(new RegExp(`^lane/[a-z0-9-]{1,32}-${id}$`).test(branch) ? { branch } : {}) };
+}
+
 export function createBridge(options: BridgeOptions) {
   const role: HelperRole = options.env.HYDRA_HELPER_TOKEN ? 'helper' : 'lead';
+  const lane = role === 'lead' ? laneFromEnv(options.env) : undefined;
   const inflight = new Map<string | number, AbortController>();
   const leadTokens = new Map<number, string>();
   const connection = async (): Promise<{ port: number; token: string } | string> => {
@@ -24,7 +37,8 @@ export function createBridge(options: BridgeOptions) {
       const port = Number(options.env.HYDRA_HELPER_PORT);
       return Number.isInteger(port) && port > 0 ? { port, token: options.env.HYDRA_HELPER_TOKEN! } : 'This head was started without a Hydra port.';
     }
-    const root = options.env.HYDRA_HELPERS_DIR;
+    // A lane's bridge looks in its own window's directory first (see laneLaunch).
+    const root = (lane && options.env.HYDRA_LANE_HELPERS_DIR) || options.env.HYDRA_HELPERS_DIR;
     if (!root) return 'Hydra heads are not set up for this CLI. Connect Claude Code or Codex to Hydra from Hydra\'s onboarding or Settings.';
     const record = await findWindowFor(root, options.cwd);
     if (!record) return `Hydra isn't open for this folder (${options.cwd}). Open the folder in Hydra to use heads.`;
@@ -32,7 +46,7 @@ export function createBridge(options: BridgeOptions) {
     const cached = leadTokens.get(record.port);
     if (cached) return { port: record.port, token: cached };
     const declared = options.env.HYDRA_LEAD_PROVIDER === 'claude' || options.env.HYDRA_LEAD_PROVIDER === 'codex' ? options.env.HYDRA_LEAD_PROVIDER : undefined;
-    const session = await requestLeadSession(record.port, declared).catch(error => ({ ok: false, error: String(error) }) as { ok: false; error: string });
+    const session = await requestLeadSession(record.port, declared, lane?.id).catch(error => ({ ok: false, error: String(error) }) as { ok: false; error: string });
     const token = session.ok ? (session.result as { token?: unknown } | undefined)?.token : undefined;
     if (typeof token !== 'string') return session.error || 'Hydra did not accept this lead.';
     leadTokens.set(record.port, token);
@@ -50,7 +64,7 @@ export function createBridge(options: BridgeOptions) {
         protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'hydra', title: 'Hydra heads', version: options.version },
-        instructions: role === 'lead' ? leadInstructions : helperInstructions,
+        instructions: role === 'lead' ? (lane ? `${leadInstructions}\n\n${laneGuidance(lane.name, lane.branch)}` : leadInstructions) : helperInstructions,
       });
     }
     if (method === 'ping') return result(id, {});

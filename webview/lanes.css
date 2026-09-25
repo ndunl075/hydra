@@ -1,0 +1,64 @@
+/* The Lanes view (docs/Lanes_And_Planner_Plan.md, "Lanes view"): a grid of real terminals. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+.lanes-view { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--primary); color: var(--text); }
+.lanes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.lanes-title { display: flex; align-items: baseline; gap: 8px; }
+.lanes-title strong { font-size: 14px; font-weight: 600; }
+.lanes-title span { font-size: 12px; color: var(--muted); }
+.lanes-controls { display: flex; align-items: center; gap: 10px; }
+
+.lanes-grid { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 16px; align-content: start; }
+@media (max-width: 720px) { .lanes-grid { grid-template-columns: 1fr; } }
+.lanes-empty, .lanes-empty-hint { padding: 40px 24px; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* New lane card */
+.lane-new { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.lane-new label, .lane-new-field { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--muted); }
+.lane-new input, .lane-new textarea { padding: 7px 9px; border: 1px solid var(--input-border); border-radius: 5px; background: var(--rail); color: var(--text); font: inherit; resize: vertical; }
+.lane-new-provider { display: flex; gap: 6px; }
+.lane-new-provider button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); }
+.lane-new-provider button.on { background: var(--secondary); color: white; border-color: #315541; }
+.lane-new-error { color: var(--error-text); font-size: 12px; margin: 0; }
+.lane-new-actions { display: flex; gap: 8px; }
+
+/* A tile: fixed height, never resizes to its content. */
+.lane-tile { display: flex; flex-direction: column; height: 440px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.lane-tile-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; flex-shrink: 0; }
+.lane-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.lane-dot.state-running { background: var(--state-run, #8cc8ff); }
+.lane-dot.state-exited { background: var(--muted); }
+.lane-dot.state-merged { background: var(--green); }
+.lane-dot.state-closed { background: var(--muted); opacity: .5; }
+.lane-name { font-size: 13px; font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-provider svg { width: 16px; height: 16px; }
+.lane-branch { font-family: var(--vscode-editor-font-family, Consolas, monospace); font-size: 11px; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.lane-chip { font-size: 10.5px; padding: 3px 7px; border-radius: 99px; border: 1px solid var(--border); white-space: nowrap; }
+.lane-chip.tone-warning { color: var(--warning); border-color: var(--warning); }
+.lane-chip.tone-info { color: var(--muted); }
+.lane-chip.tone-good { color: var(--green); border-color: var(--green); }
+.lane-chip.tone-neutral { color: var(--muted); }
+
+.lane-tile-body { position: relative; flex: 1; min-height: 0; background: var(--vscode-terminal-background, var(--primary)); }
+.lane-terminal { position: absolute; inset: 6px; }
+.lane-exited { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: color-mix(in srgb, var(--primary) 82%, transparent); text-align: center; }
+.lane-exited p { margin: 0; font-size: 12px; color: var(--text); }
+.lane-exited-actions { display: flex; gap: 8px; }
+.lane-exited-actions button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); }
+
+.lane-tile-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.lane-tile-actions { display: flex; align-items: center; gap: 6px; position: relative; }
+.lane-tile-actions button:not(.text-button) { height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font-size: 12px; }
+.lane-tile-actions button.primary { background: var(--secondary); color: white; border-color: #315541; }
+.lane-menu-wrap { position: relative; }
+.lane-menu-button { width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 5px; }
+.lane-menu { position: absolute; right: 0; bottom: 32px; z-index: 20; display: flex; flex-direction: column; min-width: 170px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.lane-menu button { padding: 7px 9px; border-radius: 5px; text-align: left; font-size: 12px; color: var(--text); }
+.lane-menu button:hover { background: var(--hover); }
+.lane-menu button.danger { color: var(--error-text); }
+
+@media (prefers-reduced-motion: reduce) { .lane-tile, .lane-chip { transition: none; } }
+body.vscode-high-contrast .lane-tile { border-width: 2px; }
+body.vscode-high-contrast .lane-chip { border-width: 2px; }
+body.vscode-high-contrast .lane-dot { outline: 1px solid var(--text); }

@@ -44,6 +44,11 @@ body.vscode-light .agents-canvas { --canvas-claude: #b8552f; --canvas-codex: #3d
 .canvas-lead-copy em { font: 500 9.5px var(--vscode-editor-font-family, Consolas, monospace); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-style: normal; }
 .canvas-lead-copy b { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .canvas-lead-copy span { font-size: 11px; color: var(--muted); }
+/* Lanes (docs/Lanes_And_Planner_Plan.md, section 2): a lead node for every open lane, clickable through to the Lanes view. */
+.canvas-lead.kind-lane { cursor: pointer; }
+.canvas-lead.kind-lane:hover, .canvas-lead.kind-lane:focus-visible { background: var(--hover); }
+.canvas-lead.kind-lane.conflict .canvas-lead-copy span { color: var(--canvas-wait); }
+.canvas-edge.conflict .base { stroke: #e0546b; stroke-width: 1.6; stroke-dasharray: 5 5; opacity: .8; }
 
 /* Heads. The outer element moves (layout); the card grows in and collapses out. */
 .canvas-node { position: absolute; left: 0; top: 0; width: 250px; transition: transform .5s cubic-bezier(.2,.8,.2,1); outline: none; }

@@ -1,3 +1,4 @@
+import type { Lane } from './lanes';
 import type { Plan } from './plans';
 
 export type Provider = 'claude' | 'codex';
@@ -20,8 +21,8 @@ export interface HelperJobView {
   repository?: string;
   worktree?: string;
   dependsOn: string[];
-  /** The chat that started it (one Claude Code or Codex conversation), when known. */
-  lead?: { sessionId: string; provider?: Provider; label?: string };
+  /** The chat that started it (one Claude Code or Codex conversation), when known; `lane` when that chat is a Hydra lane. */
+  lead?: { sessionId: string; provider?: Provider; label?: string; lane?: string };
   /** Done, and its commit is already in the lead folder's HEAD. */
   merged?: boolean;
   startedAt?: string;
@@ -36,6 +37,7 @@ export interface Snapshot {
   defaultProvider?: Provider;
 }
 export type ClientMessage =
+  | LaneClientMessage
   | { type: 'ready' | 'editor' | 'agents' | 'refresh' | 'settings' }
   | { type: 'checkProvider'; provider: Provider }
   | { type: 'openOfficial' | 'showOfficial' | 'copyHandoffPrompt' }
@@ -60,6 +62,8 @@ export function parseMessage(value: unknown): ClientMessage {
     return result;
   };
   const type = string('type');
+  const lane = parseLaneMessage(message, type);
+  if (lane) return lane;
   if (type === 'helperReview' || type === 'helperLog' || type === 'helperCancel' || type === 'helperAnswer') {
     const jobId = string('jobId'); if (!/^[a-f0-9]{12}$/.test(jobId)) throw new Error('Invalid head job ID.');
     return { type, jobId };
@@ -91,4 +95,87 @@ export function parseMessage(value: unknown): ClientMessage {
     return { type, id, key, dependsOn };
   }
   throw new Error('Unknown command.');
+}
+
+// ---- Lanes (docs/Lanes_And_Planner_Plan.md, "Extension-webview protocol") ----
+
+/** What a lane's coordination pass found (src/core/laneSync.ts). */
+export interface LaneSyncView {
+  changedFiles: string[];
+  conflicts: { laneId: string; files: string[] }[];
+  targetConflicts: string[];
+  behind: number;
+  /** Uncommitted changes (untracked files included): the UI offers Commit. */
+  dirty: boolean;
+  checkedAt: string;
+  error?: string;
+}
+/** A lane as the webview shows it: the record, its last sync, and whether its terminal is alive. */
+export type LaneView = Lane & { sync?: LaneSyncView; running: boolean };
+export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh';
+export const laneActions: readonly LaneAction[] = ['commit', 'merge', 'update', 'pr', 'close', 'resume', 'restart', 'diff', 'openWindow', 'refresh'];
+export type AgentsView = 'canvas' | 'lanes';
+
+/** Webview to extension. */
+export type LaneClientMessage =
+  | { type: 'laneNew'; name: string; provider: Provider; goal?: string }
+  /** After the Lanes view mounts: the extension replays every terminal's buffer. */
+  | { type: 'laneAttach' }
+  | { type: 'laneInput'; id: string; data: string }
+  | { type: 'laneResize'; id: string; cols: number; rows: number }
+  | { type: 'laneAction'; id: string; action: LaneAction }
+  /** Remember the view; focus a lane or head. */
+  | { type: 'view'; view: AgentsView; focus?: string };
+
+/** Extension to webview. A `laneReplay` replaces what the terminal shows; `laneData` appends to it. */
+export type LaneServerMessage =
+  | { type: 'lanes'; lanes: LaneView[]; terminals: boolean }
+  | { type: 'laneData'; id: string; data: string }
+  | { type: 'laneReplay'; id: string; data: string }
+  /** For the New lane form. */
+  | { type: 'laneError'; message: string }
+  | { type: 'show'; view: AgentsView; focus?: string };
+
+export const laneInputMaxBytes = 64 * 1024;
+const utf8Length = (text: string) => text.length <= laneInputMaxBytes / 4 ? text.length : new TextEncoder().encode(text).byteLength;
+
+/** Validate a lane message from the webview; undefined when `type` isn't one. */
+export function parseLaneMessage(message: Record<string, unknown>, type: string): LaneClientMessage | undefined {
+  const laneId = (key: string, what: string): string => {
+    const value = message[key];
+    if (typeof value !== 'string' || !/^[a-f0-9]{12}$/.test(value)) throw new Error(`Invalid ${what}.`);
+    return value;
+  };
+  const integer = (key: string, min: number, max: number): number => {
+    const value = message[key];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) throw new Error(`Invalid ${key}.`);
+    return value;
+  };
+  switch (type) {
+    case 'laneNew': {
+      const { name, provider, goal } = message;
+      if (typeof name !== 'string' || /[\u0000-\u001f\u007f]/.test(name) || !name.trim() || name.trim().length > 40) throw new Error('Invalid lane name.');
+      if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
+      if (goal !== undefined && (typeof goal !== 'string' || goal.length > 2000 || goal.includes('\0'))) throw new Error('Invalid lane goal.');
+      return { type, name: name.trim(), provider, ...(typeof goal === 'string' && goal.trim() ? { goal } : {}) };
+    }
+    case 'laneAttach': return { type };
+    case 'laneInput': {
+      const data = message.data;
+      if (typeof data !== 'string' || utf8Length(data) > laneInputMaxBytes) throw new Error('Invalid lane input.');
+      return { type, id: laneId('id', 'lane ID'), data };
+    }
+    case 'laneResize': return { type, id: laneId('id', 'lane ID'), cols: integer('cols', 20, 500), rows: integer('rows', 5, 200) };
+    case 'laneAction': {
+      const action = message.action;
+      if (typeof action !== 'string' || !laneActions.includes(action as LaneAction)) throw new Error('Unknown lane action.');
+      return { type, id: laneId('id', 'lane ID'), action: action as LaneAction };
+    }
+    case 'view': {
+      const view = message.view;
+      if (view !== 'canvas' && view !== 'lanes') throw new Error('Unknown view.');
+      return { type, view, ...(message.focus !== undefined ? { focus: laneId('focus', 'lane or head ID') } : {}) };
+    }
+  }
+  return undefined;
 }

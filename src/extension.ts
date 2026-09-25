@@ -10,7 +10,7 @@ import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
 import { findProvider } from './core/providers';
-import { JobStore, resolveHeadDefaults } from './core/jobs';
+import { JobStore, finalJobStates, resolveHeadDefaults } from './core/jobs';
 import { HelperEndpoint } from './core/helperEndpoint';
 import { HelperService } from './core/helperService';
 import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
@@ -32,9 +32,11 @@ import { officialExtensionInfo, openOfficialExtension } from './extensionBridge'
 import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { registerLimitOffer } from './extensionLimitOffer';
+import { LanesController, isLaneMessage } from './extensionLanes';
+import { HydraTreeProvider } from './extensionTree';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
-import { createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
+import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
 import { planBrief } from './core/planner';
 
 let manager: Manager | undefined;
@@ -86,17 +88,33 @@ class Manager {
    * subscribes with `limitEvents.event(listener)`.
    */
   readonly limitEvents = new vscode.EventEmitter<LimitEvent>();
+  // ---- Lanes (docs/Lanes_And_Planner_Plan.md): state; the methods are in the Lanes block below ----
+  private readonly lanes: LanesController;
+  /** The Hydra activity-bar panel (section 3): one TreeView over lanes, heads and plans. */
+  private readonly tree = new HydraTreeProvider();
+  /** The Agents panel whose webview has sent "ready". */
+  private readyPanel?: vscode.WebviewPanel;
+  /** The window's discovery record lists its folders plus open lanes' worktrees. */
+  private discovery?: { port: number; folders: string[]; written: string; queue: Promise<void> };
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
     this.settings = new AppearanceSettings(context, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
-    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota, this.limitEvents);
+    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota, this.limitEvents, this.tree);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.leadKey = key;
+    this.lanes = new LanesController({
+      context, log: line => this.output.appendLine(line),
+      post: message => { void this.panel?.webview.postMessage(message); },
+      openAgents: () => this.openAgents(), webviewReady: () => !!this.panel && this.readyPanel === this.panel,
+      helperServerSpec: provider => this.helperServerSpec(provider), runningHeads: id => this.laneHeads(id),
+      changed: () => this.laneFoldersChanged(),
+    });
+    context.subscriptions.push(this.lanes);
   }
   async initialize(): Promise<void> {
     const command = (name: string, callback: (...args: any[]) => unknown) => this.context.subscriptions.push(vscode.commands.registerCommand(name, (...args) =>
@@ -154,6 +172,11 @@ class Manager {
       return structuredClone(this.diagnostics.get(provider as Provider));
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
+    this.lanes.registerCommands(command);
+    // ---- The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3) ----
+    this.context.subscriptions.push(vscode.window.createTreeView('hydra.overview', { treeDataProvider: this.tree }));
+    command('hydra.overview.mergeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'merge', true));
+    command('hydra.overview.closeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'close', true));
     // Not in the palette: fires a made-up limit event, for the handoff UI and smoke tests.
     command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat') => {
       if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat" or "head".');
@@ -272,7 +295,7 @@ class Manager {
       // Every action is logged, whoever calls it (plan, Phase 3 security note).
       this.output.appendLine(`[heads] ${caller.role}${caller.jobId ? ` ${caller.jobId}` : ''}: ${tool}`);
       return service.handle(caller, tool, args, signal);
-    }, { leadKey, verifyLead: async socket => {
+    }, { leadKey, laneExists: id => this.lanes.exists(id), verifyLead: async socket => {
       const verdict = await verifyLead(socket);
       this.output.appendLine(`[heads] lead connection ${verdict.ok ? 'accepted' : `refused: ${verdict.reason}`}`);
       return verdict;
@@ -285,17 +308,45 @@ class Manager {
       bridge: this.helperBridge(), logDirectory: path.join(directory, 'logs'),
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
+      lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id) },
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
     await service.recover();
-    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
+    await this.lanes.start(leadFolder, this.storageDirectory).catch(error => this.output.appendLine(`[lanes] not started: ${this.describe(error)}`));
+    const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders: [...folders, ...this.lanes.openWorktrees()] });
+    this.discovery = { port, folders, written: JSON.stringify(this.lanes.openWorktrees()), queue: Promise.resolve() };
     this.helpers = { store, endpoint, service, record };
     // Plans need the same trusted repository as heads (they read it, and running one starts heads in it).
     const planStore = new PlanStore(path.join(this.storageDirectory, 'plans'));
     await planStore.load();
     this.plans = { store: planStore, planning: new Map() };
+    await this.finishDonePlans();
+    this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list() });
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
+  }
+  // ---- Lanes (docs/Lanes_And_Planner_Plan.md). The editor side is LanesController (src/extensionLanes.ts). ----
+  /** Unfinished heads started from a lane. */
+  private laneHeads(laneId: string): number {
+    return this.helpers?.service.list().filter(job => job.lead?.lane === laneId && !finalJobStates.has(job.state)).length ?? 0;
+  }
+  /**
+   * Rewrite the discovery record when the open lanes' worktrees change, so a
+   * lane's bridge finds this window from inside its worktree. The old record goes.
+   */
+  private laneFoldersChanged(): void {
+    this.tree.update({ lanes: this.lanes.state().lanes });
+    const discovery = this.discovery;
+    if (!discovery) return;
+    const worktrees = this.lanes.openWorktrees(), key = JSON.stringify(worktrees);
+    if (key === discovery.written) return;
+    discovery.written = key;
+    discovery.queue = discovery.queue.then(async () => {
+      const helpers = this.helpers;
+      if (!helpers || this.discovery !== discovery) return;
+      const next = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port: discovery.port, pid: process.pid, folders: [...discovery.folders, ...worktrees] });
+      if (next !== helpers.record) { await removeWindowRecord(helpers.record).catch(() => undefined); helpers.record = next; }
+    }).catch(error => this.output.appendLine(`[lanes] discovery record not updated: ${this.describe(error)}`));
   }
   // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
   private helperServerSpec(provider: ConnectableProvider): HelperServerSpec { const bridge = this.helperBridge(provider); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
@@ -365,6 +416,9 @@ class Manager {
   }
   /** A connection made by an older Hydra (a different executable path) is refreshed; nothing is connected here that the user didn't connect. */
   private async refreshHelperConnections(): Promise<void> {
+    // A development or test window (another profile, another extension folder) would
+    // point the user's real Claude and Codex at itself; only an installed Hydra refreshes.
+    if (this.context.extensionMode !== vscode.ExtensionMode.Production) { this.output.appendLine('[heads] development window: leaving the Claude and Codex connections as they are'); return; }
     for (const connection of await this.helperConnections()) {
       if (connection.connected && !connection.current && !connection.error) {
         await this.connectHelpers(connection.provider).catch(error => this.output.appendLine(`[heads] could not refresh ${connection.provider}: ${this.describe(error)}`));
@@ -414,7 +468,9 @@ class Manager {
     const plans = this.plans; this.plans = undefined;
     for (const controller of plans?.planning.values() ?? []) controller.abort();
     const helpers = this.helpers; this.helpers = undefined;
+    await this.lanes.stop().catch(() => undefined);
     if (!helpers) return;
+    await this.discovery?.queue.catch(() => undefined); this.discovery = undefined;
     await removeWindowRecord(helpers.record).catch(() => undefined);
     await helpers.service.dispose();
     await helpers.endpoint.close();
@@ -490,8 +546,23 @@ class Manager {
   }
   /** Head changes go to the webview at once (the Agents canvas animates them); the full snapshot follows, debounced. */
   private headsChanged(): void {
-    void this.broadcast({ type: 'heads', heads: this.headViews() ?? [] }).catch(() => undefined);
+    const heads = this.headViews() ?? [];
+    void this.broadcast({ type: 'heads', heads }).catch(() => undefined);
+    this.tree.update({ heads });
+    void this.finishDonePlans().catch(error => this.report(error));
     this.publishSoon();
+  }
+  /** A running plan whose every head is done becomes done. */
+  private async finishDonePlans(): Promise<void> {
+    const plans = this.plans, store = this.helpers?.store;
+    if (!plans || !store) return;
+    let changed = false;
+    for (const plan of plans.store.list()) {
+      if (plan.state !== 'running' || !allJobsDone(plan, id => store.get(id)?.state)) continue;
+      await plans.store.save({ ...plan, state: 'done' });
+      changed = true;
+    }
+    if (changed) this.plansChanged();
   }
   private publishSoon(): void {
     if (this.publishTimer) clearTimeout(this.publishTimer);
@@ -513,7 +584,9 @@ class Manager {
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
   /** Plan changes go to the webview at once (mirrors headsChanged); the full snapshot follows, debounced. */
   private plansChanged(): void {
-    void this.broadcast({ type: 'plans', plans: this.plans?.store.list() ?? [] }).catch(() => undefined);
+    const plans = this.plans?.store.list() ?? [];
+    void this.broadcast({ type: 'plans', plans }).catch(() => undefined);
+    this.tree.update({ plans });
     this.publishSoon();
   }
   private requirePlans(): { store: PlanStore; planning: Map<string, AbortController> } {
@@ -712,15 +785,19 @@ class Manager {
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.css'));
     const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'hydra-logo.png'));
-    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-logo="${logo}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
+    // Lane terminals (xterm.js) write their font and ANSI colours into a <style> element they create,
+    // so inline styles are allowed here. Scripts stay nonce-only; text is escaped by React and xterm.
+    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-logo="${logo}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
   }
   private async handle(value: unknown): Promise<void> {
     const message = parseMessage(value);
     if (message.type === 'ready') {
       await this.publish();
+      this.readyPanel = this.panel; this.lanes.webviewReady();
       if (this.pendingNewPlan) { this.pendingNewPlan = false; await this.broadcast({ type: 'showNewPlan' }); }
       return;
     }
+    if (isLaneMessage(message)) { await this.lanes.handle(message); return; }
     if (message.type === 'editor') { await this.openEditor(); return; }
     if (message.type === 'agents') { await this.openAgents(); return; }
     if (message.type === 'settings') { this.settings.show(); return; }

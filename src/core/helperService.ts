@@ -1,9 +1,8 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { git } from './git';
 import { createWorktree } from './worktrees';
-import { runCheckCommand } from './checkCommand';
-import { finalJobStates, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
+import { defaultMaxAttempts, finalJobStates, gateBlocks, gateKind, gateState, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
+import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig } from './gates';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
 import type { Provider } from './model';
@@ -17,11 +16,11 @@ import { continuedHistoryReason } from './limitOffer';
  * chain: start the helper, enforce its limits, check its work when it reports, and
  * hand the result back to the lead through hydra_wait_for_heads.
  */
-export interface HelperCheck { id: string; command: string[]; timeoutSeconds: number; required: boolean }
+export { loadHelperChecks, type HelperCheck } from './gates';
 export interface HelperServiceOptions {
   store: JobStore;
   endpoint: Pick<HelperEndpoint, 'issue' | 'revokeJob' | 'port'>;
-  /** The window's folder: the lead's working copy. Helpers branch from its HEAD, and its .hydra/checks.json is used. */
+  /** The window's folder: the lead's working copy. Helpers branch from its HEAD, and its .hydra/gates.json (or checks.json) is used. */
   leadFolder: string;
   leadKey: string;
   worktreeRoot?: () => string | undefined;
@@ -41,10 +40,13 @@ export interface HelperServiceOptions {
    * and the name a lane's heads are labelled with.
    */
   lanes?: { describe(you?: string): Promise<unknown>; name(id: string): string | undefined };
+  /** Gates (docs/Gates_Plan.md): whether a provider is at its usage limit now, so a review uses the other one. */
+  providerLimited?: (provider: Provider) => boolean;
+  /** Gates: test seams for the reviewer, the browser and the clock. */
+  gateRuntime?: Partial<GateRuntime>;
 }
 
 interface Active { run: HelperRun; token: string; startedAt: number; blockedSince?: number; blockedTotal: number; answer?: (reply: string) => void }
-const maxChecksOutput = 2000;
 const clip = (value: string, max: number) => value.length > max ? `${value.slice(0, max)}…` : value;
 
 export class HelperService {
@@ -93,7 +95,7 @@ export class HelperService {
     } else {
       const jobId = caller.jobId!;
       switch (tool) {
-        case 'hydra_done': return this.done(jobId, args);
+        case 'hydra_done': return this.done(jobId, args, signal);
         case 'hydra_stuck': return this.stuck(jobId, args, signal);
         case 'hydra_progress': return this.progress(jobId, args);
       }
@@ -202,7 +204,7 @@ export class HelperService {
 
   // ---- helper actions ----
 
-  private async done(jobId: string, args: Record<string, unknown>) {
+  private async done(jobId: string, args: Record<string, unknown>, signal?: AbortSignal) {
     const job = this.options.store.get(jobId);
     if (!job || job.state !== 'running') throw new Error(`This head can't report done while it is ${job?.state ?? 'unknown'}.`);
     if (typeof args.summary !== 'string' || !args.summary.trim()) throw new Error('summary is required.');
@@ -213,33 +215,60 @@ export class HelperService {
     if ((await git(worktree, ['status', '--porcelain=v1', '--untracked-files=all'])).trim()) await commitAll(worktree, `${job.title} (Hydra head ${job.id})`);
     const commit = (await git(worktree, ['rev-parse', 'HEAD'])).trim();
     if (commit === base) return { accepted: false, message: 'You have not changed anything yet. Make the changes, then call hydra_done again.' };
+    // Gates come from the lead's folder, never the head's worktree. A gates file Hydra can't
+    // read is the project's problem, not the head's: no attempt is spent on it.
+    let gates: GatesConfig;
+    try { gates = await loadGates(this.options.leadFolder); }
+    catch (error) { return { accepted: false, message: `Hydra can't check your work: ${error instanceof Error ? error.message : String(error)} That isn't your fault. Call hydra_stuck and ask the lead to fix it, then call hydra_done again.` }; }
+    const maxAttempts = gates.maxAttempts ?? defaultMaxAttempts;
     const changedFiles = (await git(worktree, ['diff', '--name-only', '-z', '--no-renames', base, commit, '--'])).split('\0').filter(Boolean);
     const outside = changedFiles.filter(file => !inScope(file, job.writeScope));
     await this.options.store.transition(jobId, 'checking');
     this.changed();
     const attempts = job.attempts + 1;
-    if (outside.length) return this.checkFailed(jobId, attempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`);
-    const checks = await this.runChecks(job, attempts);
-    const failed = checks.filter(check => check.required && !check.passed);
-    if (failed.length) return this.checkFailed(jobId, attempts, `Checks failed:\n${failed.map(check => `- ${check.id} (exit ${check.exitCode ?? 'none'}):\n${check.outputTail}`).join('\n')}\nFix them, commit, and call hydra_done again.`, checks);
-    await this.options.store.update(jobId, { attempts });
+    if (outside.length) return this.checkFailed(jobId, attempts, maxAttempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`);
+    // The scope check first, then the gates in order (docs/Gates_Plan.md, "Heads").
+    const checks = gates.gates.length ? await runGateList(gates.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [];
+    if (this.options.store.get(jobId)?.state !== 'checking') return { accepted: false, message: 'This head was stopped. Stop now.' };
+    if (signal?.aborted) {
+      // The head's call ended mid-check: not its failure, so no attempt is spent.
+      await this.options.store.transition(jobId, 'running', 'The gates were interrupted.');
+      this.changed();
+      return { accepted: false, message: 'The gates were interrupted. Call hydra_done again.' };
+    }
+    if (checks.some(gateBlocks)) return this.checkFailed(jobId, attempts, maxAttempts, gateFailureMessage(checks), checks);
+    await this.options.store.update(jobId, { attempts, maxAttempts });
     await this.options.store.transition(jobId, 'done', undefined, { result: { summary, commit, changedFiles, checks } });
     this.changed();
     return { accepted: true, message: 'Accepted. Your work is recorded for the lead. Stop now.' };
   }
 
-  private async checkFailed(jobId: string, attempts: number, message: string, checks: JobCheckResult[] = []) {
+  private async checkFailed(jobId: string, attempts: number, maxAttempts: number, message: string, checks: JobCheckResult[] = []) {
     const job = this.options.store.get(jobId)!;
-    await this.options.store.update(jobId, { attempts });
-    if (attempts >= job.maxAttempts) {
-      await this.options.store.transition(jobId, 'failed', `Checks failed ${attempts} times.`, { result: { summary: 'Not accepted: checks kept failing.', commit: (await git(job.worktree!, ['rev-parse', 'HEAD'])).trim(), changedFiles: [], checks } });
+    await this.options.store.update(jobId, { attempts, maxAttempts });
+    if (attempts >= maxAttempts) {
+      await this.options.store.transition(jobId, 'failed', `Gates failed ${attempts} ${attempts === 1 ? 'time' : 'times'}.`, { result: { summary: 'Not accepted: its gates kept failing.', commit: (await git(job.worktree!, ['rev-parse', 'HEAD'])).trim(), changedFiles: [], checks } });
       this.changed();
       void this.stopRun(jobId);
-      return { accepted: false, message: `${message}\n\nThat was the last attempt (${attempts} of ${job.maxAttempts}). Stop now; the lead will see the failure.` };
+      return { accepted: false, message: `${message}\n\nThat was the last attempt (${attempts} of ${maxAttempts}). Stop now; the lead will see the failure.` };
     }
-    await this.options.store.transition(jobId, 'running', `Checks failed (attempt ${attempts} of ${job.maxAttempts}).`);
+    await this.options.store.transition(jobId, 'running', `Gates failed (attempt ${attempts} of ${maxAttempts}).`);
     this.changed();
-    return { accepted: false, attempt: attempts, attempts_left: job.maxAttempts - attempts, message };
+    return { accepted: false, attempt: attempts, attempts_left: maxAttempts - attempts, message };
+  }
+
+  /** What the gates need to know about a head, and where this attempt's logs, replies and screenshots go. */
+  private async gateContext(job: Job, attempt: number, signal?: AbortSignal): Promise<GateContext> {
+    return {
+      author: job.provider, title: job.title, brief: job.brief, writeScope: job.writeScope,
+      logDirectory: await freshDirectory(this.options.logDirectory, `${job.id}-gates-${attempt}`),
+      executable: provider => this.options.executable(provider),
+      ...(this.options.providerLimited ? { limited: this.options.providerLimited } : {}),
+      spawned: pid => { this.helperPids.add(pid); },
+      ...(signal ? { signal } : {}),
+      ...(this.options.log ? { log: this.options.log } : {}),
+      ...(this.options.gateRuntime ? { runtime: this.options.gateRuntime } : {}),
+    };
   }
 
   private async stuck(jobId: string, args: Record<string, unknown>, signal: AbortSignal) {
@@ -442,19 +471,6 @@ export class HelperService {
     await active.run.stop().catch(() => undefined);
   }
 
-  private async runChecks(job: Job, attempt: number): Promise<JobCheckResult[]> {
-    const checks = await loadHelperChecks(this.options.leadFolder);
-    const results: JobCheckResult[] = [];
-    for (const check of checks) {
-      const logFile = path.join(this.options.logDirectory, `${job.id}-check-${attempt}-${check.id}.log`);
-      const started = this.now();
-      const outcome = await runCheckCommand({ executable: check.command[0]!, args: check.command.slice(1) }, job.worktree!, logFile, undefined, undefined, 3000, check.timeoutSeconds * 1000, undefined, pid => { this.helperPids.add(pid); });
-      const output = await readFile(logFile, 'utf8').catch(() => '');
-      results.push({ id: check.id, required: check.required, passed: outcome.exitCode === 0 && !outcome.timedOut, exitCode: outcome.exitCode, durationMs: this.now() - started, outputTail: output.slice(-maxChecksOutput) });
-    }
-    return results;
-  }
-
   private ownJob(id: unknown): Job {
     if (typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw new Error('job_id must be a head job id.');
     const job = this.options.store.get(id);
@@ -468,8 +484,8 @@ export class HelperService {
       ...(job.branch ? { branch: job.branch } : {}), ...(job.worktree ? { worktree: job.worktree } : {}), ...(job.baseCommit ? { base_commit: job.baseCommit } : {}),
       ...(job.progress ? { progress: job.progress } : {}), ...(job.question && job.state === 'blocked' ? { question: job.question } : {}),
       ...(job.reason && job.state !== 'running' ? { reason: job.reason } : {}),
-      ...(job.result ? { summary: job.result.summary, commit: job.result.commit, ...(detail ? { changed_files: job.result.changedFiles, checks: job.result.checks.map(check => ({ id: check.id, passed: check.passed, required: check.required, ...(check.passed ? {} : { output_tail: check.outputTail }) })) } : {}) } : {}),
-      ...(detail ? { write_scope: job.writeScope, attempts: job.attempts } : {}),
+      ...(job.result ? { summary: job.result.summary, commit: job.result.commit, ...(detail ? { changed_files: job.result.changedFiles, checks: job.result.checks.map(describeGate) } : {}) } : {}),
+      ...(detail ? { write_scope: job.writeScope, attempts: job.attempts, max_attempts: job.maxAttempts } : {}),
     };
   }
 
@@ -498,20 +514,16 @@ export function inScope(file: string, scope: string[]): boolean {
   });
 }
 
-/** Checks come from the lead's folder, never the helper's worktree, so a helper can't edit them away. */
-export async function loadHelperChecks(folder: string): Promise<HelperCheck[]> {
-  let raw: string;
-  try { raw = await readFile(path.join(folder, '.hydra', 'checks.json'), 'utf8'); } catch { return []; }
-  const parsed = JSON.parse(raw) as { checks?: unknown };
-  if (!Array.isArray(parsed.checks) || parsed.checks.length > 20) throw new Error('.hydra/checks.json must have a "checks" list of up to 20 entries.');
-  return parsed.checks.map((value, index) => {
-    const check = value as Record<string, unknown>;
-    const command = check.command;
-    if (!Array.isArray(command) || command.length < 1 || command.some(part => typeof part !== 'string' || !part)) throw new Error(`.hydra/checks.json check ${index + 1}: "command" must be a list like ["npm", "test"].`);
-    const id = typeof check.id === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(check.id) ? check.id : `check-${index + 1}`;
-    const timeoutSeconds = typeof check.timeoutSeconds === 'number' ? Math.max(1, Math.min(900, check.timeoutSeconds)) : 600;
-    return { id, command: command as string[], timeoutSeconds, required: check.required !== false };
-  });
+/** One gate result as hydra_get_head shows it. Results from before gates read as command gates. */
+function describeGate(check: JobCheckResult) {
+  const state = gateState(check);
+  return {
+    id: check.id, kind: gateKind(check), state, passed: check.passed, required: check.required,
+    ...(check.summary ? { summary: check.summary } : {}),
+    ...(check.findings?.length ? { findings: check.findings } : {}),
+    ...(check.evidence?.length ? { evidence: check.evidence } : {}),
+    ...(state !== 'passed' && check.outputTail ? { output_tail: check.outputTail } : {}),
+  };
 }
 
 export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeScope' | 'worktree' | 'branch' | 'baseCommit'>): string {
@@ -524,7 +536,7 @@ export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeSco
     `- Work only in this git worktree: ${job.worktree}, on branch ${job.branch}. It starts from commit ${job.baseCommit}.`,
     `- You may change only these paths: ${job.writeScope.length ? job.writeScope.map(entry => entry || '(whole repository)').join(', ') : '(whole repository)'}. Changes elsewhere are refused.`,
     '- Nobody will approve anything for you. Tools you are not allowed to use are denied; work around them.',
-    '- When you are finished, call the hydra_done tool with a summary. Hydra commits any uncommitted changes for you (you may also commit yourself), checks the changes, and tells you if anything must be fixed.',
+    '- When you are finished, call the hydra_done tool with a summary. Hydra commits any uncommitted changes for you (you may also commit yourself), runs the project\'s gates on the changes (its checks, and possibly a review by another agent), and tells you if anything must be fixed.',
     '- If you cannot continue without a decision, call hydra_stuck with one clear question. The answer comes back as the tool result.',
     '- Never stop without calling hydra_done or hydra_stuck.',
   ].join('\n');

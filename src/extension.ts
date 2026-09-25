@@ -38,6 +38,8 @@ import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnosti
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
 import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
 import { planBrief } from './core/planner';
+// ---- Gates (docs/Gates_Plan.md). Their own block. ----
+import { otherStillLimited } from './core/limitOffer';
 
 let manager: Manager | undefined;
 /** Every contributed Hydra setting except the preference-only ones (see settingsRefresh). */
@@ -96,6 +98,8 @@ class Manager {
   private readyPanel?: vscode.WebviewPanel;
   /** The window's discovery record lists its folders plus open lanes' worktrees. */
   private discovery?: { port: number; folders: string[]; written: string; queue: Promise<void> };
+  // ---- Gates (docs/Gates_Plan.md): each provider's latest usage limit, so a review gate uses the other agent while one is limited ----
+  private readonly latestLimits = new Map<Provider, LimitEvent>();
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
@@ -309,8 +313,11 @@ class Manager {
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
       lanes: { describe: you => this.lanes.describe(you), name: id => this.lanes.laneName(id) },
+      // ---- Gates (docs/Gates_Plan.md) ----
+      providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
+    this.context.subscriptions.push(this.limitEvents.event(event => { this.latestLimits.set(event.provider, event); }));
     await service.recover();
     await this.lanes.start(leadFolder, this.storageDirectory).catch(error => this.output.appendLine(`[lanes] not started: ${this.describe(error)}`));
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders: [...folders, ...this.lanes.openWorktrees()] });

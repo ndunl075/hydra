@@ -15,7 +15,7 @@ export async function checkProvider(info: ProviderInfo, cwd: string, signal?: Ab
   }
   const versionText = result.probes[0]!.stdout.trim();
   const version = info.provider === 'claude' ? /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(versionText) : /^codex-cli (\d+\.\d+\.\d+)(?:[-+][\w.-]+)?$/.exec(versionText);
-  if (!version) { result.status = 'error'; result.error = 'Unrecognized provider version output. Interactive terminals remain available; managed sessions are not verified.'; return result; }
+  if (!version) { result.status = 'error'; result.error = 'Unrecognized provider version output.'; return result; }
   result.version = version[1]; result.status = 'checked';
   const help = result.probes[1]!.stdout;
   if (info.provider === 'claude') {

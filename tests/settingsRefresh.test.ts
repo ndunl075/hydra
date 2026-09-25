@@ -9,8 +9,8 @@ test('only preferences read fresh (the head cap) skip the provider reset; every 
   const refreshing = settingsRequiringRefresh(contributed);
   // Solo/Auto used to clear both model catalogs and run a full refresh on every flip.
   for (const key of preferenceOnlySettings) { assert.ok(contributed.includes(key), `${key} is a real setting`); assert.ok(!refreshing.includes(key)); }
-  // Anything that changes which CLI runs, where worktrees go, or capacity still refreshes.
-  for (const key of ['hydra.claudePath', 'hydra.codexPath', 'hydra.defaultProvider', 'hydra.worktreeRoot', 'hydra.maxConcurrentTasks']) assert.ok(refreshing.includes(key), key);
+  // Anything that changes which CLI runs, or where worktrees go still refreshes.
+  for (const key of ['hydra.claudePath', 'hydra.codexPath', 'hydra.defaultProvider', 'hydra.worktreeRoot']) assert.ok(refreshing.includes(key), key);
   assert.equal(refreshing.length, contributed.length - preferenceOnlySettings.size);
   // No readable manifest: fail safe to a full refresh.
   assert.deepEqual(settingsRequiringRefresh([]), ['hydra']);

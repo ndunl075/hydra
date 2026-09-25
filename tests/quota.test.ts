@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { publicCodexQuota, readCodexQuota } from '../src/core/quota';
 import { accountRpc, type AccountRpc } from '../src/core/accountSetup';
-import { parseMessage } from '../src/core/model';
 
 const fetchedAt = '2026-09-18T01:30:00.000Z';
 const primary = { usedPercent: 25, windowDurationMins: 300, resetsAt: 1789700000 };
@@ -22,7 +21,6 @@ test('quota uses authoritative provider buckets, observed windows and unavailabl
   assert.equal(mapped.buckets[0]?.primary?.remainingPercent, 100); assert.equal(mapped.buckets[0]?.primary?.resetsAt, undefined);
   assert.equal(mapped.buckets[1]?.id, 'model'); assert.equal(mapped.buckets[1]?.secondary?.remainingPercent, 0);
   assert.equal(publicCodexQuota({ ...legacy, rateLimitsByLimitId: {} }).buckets.length, 0, 'An authoritative empty map is unavailable, not a fallback to stale single-bucket data');
-  assert.deepEqual(parseMessage({ type: 'openQuota' }), { type: 'openQuota' });
 });
 
 test('quota strips identities, billing balances, banners and reset credits without storing unknown as zero', () => {

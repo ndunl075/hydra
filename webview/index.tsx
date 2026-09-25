@@ -4,13 +4,11 @@ import type { ClientMessage, HelperJobView, Snapshot, Provider, Handoff, Officia
 import './styles.css';
 import { AgentsCanvas } from './AgentsCanvas';
 import { HydraMark } from './HydraMark';
-import { EditorConversation } from './EditorConversation';
-import './editor-conversation.css';
 
 declare function acquireVsCodeApi(): { postMessage(message: ClientMessage): void; getState(): unknown; setState(state: unknown): void };
 const api = acquireVsCodeApi();
 const send = (message: ClientMessage) => api.postMessage(message);
-const initial: Snapshot = { tasks: [], repositories: [], providers: [], files: [], busy: false, mode: 'agents' };
+const initial: Snapshot = { busy: false, mode: 'agents' };
 const providerName = (provider: Provider) => provider === 'claude' ? 'Claude Code' : 'Codex';
 
 function Icon({ name }: { name: 'branch' | 'arrow' }) {
@@ -18,7 +16,7 @@ function Icon({ name }: { name: 'branch' | 'arrow' }) {
   return <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
 }
 
-/** A window opened to hand one task to an official extension (Handoff mode). */
+/** A window opened to hand one piece of work to an official extension (Handoff mode). */
 function HandoffView({ handoff, info, busy }: { handoff: Handoff; info?: OfficialExtensionInfo; busy: boolean }) {
   const task = handoff.task;
   return <section className="conversation handoff-only" aria-label="Handoff">
@@ -65,4 +63,4 @@ function App() {
       : <div className="agents-body"><AgentsCanvas heads={heads} onAction={(type, jobId) => send({ type, jobId })} onStopAll={() => send({ type: 'helperStopAll' })} /></div>}
   </main>;
 }
-createRoot(document.getElementById('root')!).render(document.body.dataset.surface === 'editor' ? <EditorConversation send={send} /> : <App />);
+createRoot(document.getElementById('root')!).render(<App />);

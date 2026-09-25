@@ -2,11 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { LocalStore } from '../src/core/store';
 import { OwnershipLock } from '../src/core/ownership';
-import { changedFiles, createWorktree, git, parseStatus, resolveTaskFile } from '../src/core/worktrees';
-import { parseMessage, type Task } from '../src/core/model';
-import { assertCliAllowed, createHandoffWorkspace, handoffTask, parseHandoff, officialProviders } from '../src/core/handoff';
+import { createWorktree, git } from '../src/core/worktrees';
+import { parseMessage, type HandoffTask } from '../src/core/model';
+import { createHandoffWorkspace, parseHandoff, officialProviders } from '../src/core/handoff';
 import { checkWindowsTermination, runProbe } from '../src/core/process';
 import { checkProvider } from '../src/core/diagnostics';
 
@@ -110,60 +109,17 @@ test('refuses a worktree root inside the repository, including junction escapes,
     const alias = path.join(root, 'alias');
     await symlink(repository, alias, process.platform === 'win32' ? 'junction' : 'dir');
     await assert.rejects(createWorktree(repository, 'task', '444444444444', path.join(alias, 'new')), /outside/);
-    await assert.rejects(createWorktree(repository, 'task', '../escape'), /Invalid task ID/);
+    await assert.rejects(createWorktree(repository, 'task', '../escape'), /Invalid worktree ID/);
   } finally { await rm(root, { recursive: true, force: true }); }
-});
-test('change inventory includes committed, staged, unstaged, deleted, and untracked files', async () => {
-  const { root, repository } = await fixture();
-  try {
-    const task = await createWorktree(repository, 'changes', '555555555555');
-    await writeFile(path.join(task.worktree, 'committed.txt'), 'committed\n');
-    await git(task.worktree, ['add', '.']);
-    await git(task.worktree, ['commit', '-m', 'committed change']);
-    await writeFile(path.join(task.worktree, 'staged.txt'), 'staged\n');
-    await git(task.worktree, ['add', 'staged.txt']);
-    await writeFile(path.join(task.worktree, 'keep.txt'), 'unstaged\n');
-    await rm(path.join(task.worktree, 'delete.txt'));
-    await writeFile(path.join(task.worktree, 'untracked ü.txt'), 'untracked\n');
-    const files = await changedFiles(task.worktree, task.baseCommit);
-    assert.deepEqual(files.map(file => file.path), ['committed.txt', 'delete.txt', 'keep.txt', 'staged.txt', 'untracked ü.txt']);
-    assert.equal(files.find(file => file.path === 'untracked ü.txt')?.status, '??');
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-test('file access rejects traversal and symlinks outside the task worktree', async () => {
-  const { root, repository } = await fixture();
-  try {
-    const task = await createWorktree(repository, 'paths', '666666666666');
-    assert.equal(await resolveTaskFile(task.worktree, 'keep.txt'), await realpath(path.join(task.worktree, 'keep.txt')));
-    await assert.rejects(resolveTaskFile(task.worktree, '../../main repo/keep.txt'), /escapes/);
-    const link = path.join(task.worktree, 'outside');
-    await symlink(repository, link, process.platform === 'win32' ? 'junction' : 'dir');
-    await assert.rejects(resolveTaskFile(task.worktree, 'outside/keep.txt'), /Symlink escapes/);
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-test('NUL-delimited status preserves spaces, newlines, and rename paths', () => {
-  assert.deepEqual(parseStatus('R  new name.txt\0old name.txt\0?? file\nname.txt\0'), [{ status: 'R ', path: 'new name.txt' }, { status: '??', path: 'file\nname.txt' }]);
 });
 test('webview messages reject unknown actions, malformed providers, and invalid IDs', () => {
-  assert.throws(() => parseMessage({ type: 'launch', id: '../../escape' }));
   assert.throws(() => parseMessage({ type: 'exec', command: 'anything' }));
-  assert.throws(() => parseMessage({ type: 'create', title: 'task', prompt: 'go', provider: 'other', repository: 'repo' }));
-  assert.throws(() => parseMessage({ type: 'create', title: '', prompt: 'go', provider: 'codex', repository: 'repo' }));
-  assert.deepEqual(parseMessage({ type: 'select', id: '111111111111' }), { type: 'select', id: '111111111111' });
-});
-test('atomic store serializes concurrent saves and preserves corrupt input instead of resetting it', async () => {
-  const { root, repository } = await fixture();
-  try {
-    const directory = path.join(root, 'store');
-    const store = new LocalStore(directory);
-    const worktree = await createWorktree(repository, 'store', '777777777777');
-    const task: Task = { id: '777777777777', title: 'Saved', prompt: 'goal', repository, ...worktree, provider: 'codex', interface: 'interactive-cli', state: 'external', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    await Promise.all([store.save([]), store.save([task])]);
-    assert.deepEqual(await store.load(), [task]);
-    await writeFile(path.join(directory, 'tasks.json'), '{ corrupt');
-    await assert.rejects(store.load());
-    assert.equal(await readFile(path.join(directory, 'tasks.json'), 'utf8'), '{ corrupt');
-  } finally { await rm(root, { recursive: true, force: true }); }
+  assert.throws(() => parseMessage({ type: 'create', title: 'task', prompt: 'go', provider: 'codex', repository: 'repo' }), /Unknown command/);
+  assert.throws(() => parseMessage({ type: 'checkProvider', provider: 'other' }), /Unknown provider/);
+  assert.throws(() => parseMessage({ type: 'helperCancel', jobId: '../../escape' }), /Invalid head job ID/);
+  assert.deepEqual(parseMessage({ type: 'helperCancel', jobId: '111111111111' }), { type: 'helperCancel', jobId: '111111111111' });
+  assert.deepEqual(parseMessage({ type: 'checkProvider', provider: 'codex' }), { type: 'checkProvider', provider: 'codex' });
+  assert.deepEqual(parseMessage({ type: 'copyHandoffPrompt' }), { type: 'copyHandoffPrompt' });
 });
 test('repository ownership is exclusive and can be reacquired after release', async () => {
   const { root, repository } = await fixture();
@@ -183,7 +139,7 @@ test('official handoff selects only the exact worktree and preserves prompts as 
   const { root, repository } = await fixture();
   try {
     const worktree = await createWorktree(repository, 'handoff', '888888888888');
-    const task: Task = { id: '888888888888', title: 'Official task', prompt: 'Keep "quotes", Unicode ü, and $(literal text).\nNo shell execution.', repository, ...worktree, provider: 'claude', interface: 'interactive-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const task: HandoffTask = { id: '888888888888', title: 'Official task', prompt: 'Keep "quotes", Unicode ü, and $(literal text).\nNo shell execution.', repository, worktree: worktree.worktree, branch: worktree.branch, baseCommit: worktree.baseCommit, provider: 'claude' };
     for (const provider of ['claude', 'codex'] as const) {
       const filename = await createHandoffWorkspace(path.join(root, 'handoffs'), task, provider);
       const workspace = JSON.parse(await readFile(filename, 'utf8'));
@@ -193,37 +149,12 @@ test('official handoff selects only the exact worktree and preserves prompts as 
       assert.equal(descriptor.task.provider, provider);
       assert.equal(descriptor.task.prompt, task.prompt);
       assert.equal(descriptor.task.branch, task.branch);
-      assert.equal('interface' in descriptor.task, false);
       assert.throws(() => parseHandoff({ ...descriptor, version: 2 }));
-      for (const invalid of [{ worktree: '../escape' }, { provider: 'other' }, { id: '../../escape' }, { branch: 'main' }]) {
+      for (const invalid of [{ worktree: '../escape' }, { provider: 'other' }, { id: '../../escape' }, { branch: 'main' }, { title: '' }, { prompt: 'x'.repeat(32001) }]) {
         assert.throws(() => parseHandoff({ ...descriptor, task: { ...descriptor.task, ...invalid } }));
       }
     }
-    assert.equal(task.interface, 'interactive-cli', 'Preparing a descriptor does not implicitly start a session');
     assert.equal(await readFile(path.join(repository, 'keep.txt'), 'utf8'), 'base\n');
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test('handoff persists ownership before opening and retains it after an ambiguous open failure', async () => {
-  const { root, repository } = await fixture();
-  try {
-    const worktree = await createWorktree(repository, 'ownership', '999999999999');
-    const task: Task = { id: '999999999999', title: 'External', prompt: 'goal', repository, ...worktree, provider: 'claude', interface: 'interactive-cli', state: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    const store = new LocalStore(path.join(root, 'store'));
-    const persist = () => store.save([task]);
-    let opens = 0;
-    const open = async () => { opens++; assert.equal((await store.load())[0]?.interface, 'official-extension'); };
-    await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'codex', true, persist, open), /Stop this task terminal/);
-    assert.equal(opens, 0);
-    await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'codex', false, persist, async () => { await open(); throw new Error('Ambiguous window failure'); }), /Ambiguous/);
-    const recovered = (await store.load())[0]!;
-    assert.equal(recovered.interface, 'official-extension');
-    assert.equal(recovered.state, 'external');
-    assert.equal(recovered.provider, 'codex');
-    assert.match(recovered.error!, /could not be confirmed/);
-    assert.throws(() => assertCliAllowed(recovered), /external extension/);
-    await assert.rejects(handoffTask(task, path.join(root, 'handoffs'), 'claude', false, persist, open), /already externally owned/);
-    assert.equal(opens, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

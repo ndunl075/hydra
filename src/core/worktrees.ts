@@ -1,26 +1,16 @@
 import { realpath, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { TaskFile } from './model';
 import { git } from './git';
 export { git } from './git';
 export function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
-export async function resolveTaskFile(root: string, relative: string): Promise<string> {
-  if (!relative || path.isAbsolute(relative)) throw new Error('Expected a relative worktree path.');
-  const canonicalRoot = await realpath(root);
-  const candidate = path.resolve(canonicalRoot, relative);
-  if (!isInside(canonicalRoot, candidate)) throw new Error('Path escapes the task worktree.');
-  const canonical = await realpath(candidate);
-  if (!isInside(canonicalRoot, canonical)) throw new Error('Symlink escapes the task worktree.');
-  return canonical;
-}
 export async function repositoryRoot(folder: string): Promise<string> {
   return realpath((await git(folder, ['rev-parse', '--show-toplevel'])).trim());
 }
 export async function createWorktree(repository: string, title: string, id: string, configuredRoot?: string, startingCommit?: string) {
-  if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid task ID.');
+  if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid worktree ID.');
   repository = await repositoryRoot(repository);
   if (startingCommit && !/^[a-f0-9]{40,64}$/.test(startingCommit)) throw new Error('Starting commit must be a full commit SHA.');
   const baseCommit = (await git(repository, ['rev-parse', '--verify', `${startingCommit || 'HEAD'}^{commit}`])).trim();
@@ -49,30 +39,4 @@ export async function createWorktree(repository: string, title: string, id: stri
   const branch = `agent/${slug}-${id}`;
   await git(repository, ['worktree', 'add', '-b', branch, worktree, baseCommit]);
   return { worktree, branch, baseCommit, integrationTarget };
-}
-export function parseStatus(output: string): TaskFile[] {
-  const records = output.split('\0');
-  const files: TaskFile[] = [];
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
-    if (!record) continue;
-    const status = record.slice(0, 2);
-    files.push({ status, path: record.slice(3) });
-    if (status.includes('R') || status.includes('C')) i++;
-  }
-  return files;
-}
-export async function changedFiles(worktree: string, baseCommit: string): Promise<TaskFile[]> {
-  const [committed, status] = await Promise.all([
-    git(worktree, ['diff', '--name-status', '-z', '--no-renames', baseCommit, 'HEAD', '--']),
-    git(worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
-  ]);
-  const entries = committed.split('\0');
-  const files = new Map<string, TaskFile>();
-  for (let i = 0; i < entries.length - 1; i += 2) {
-    const name = entries[i + 1];
-    if (name) files.set(name, { path: name, status: entries[i] || 'M' });
-  }
-  for (const file of parseStatus(status)) files.set(file.path, file);
-  return [...files.values()].sort((a, b) => a.path.localeCompare(b.path));
 }

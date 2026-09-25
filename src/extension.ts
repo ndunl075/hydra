@@ -123,6 +123,8 @@ class Manager {
       openAgents: () => this.openAgents(), webviewReady: () => !!this.panel && this.readyPanel === this.panel,
       helperServerSpec: provider => this.helperServerSpec(provider), runningHeads: id => this.laneHeads(id),
       changed: () => this.laneFoldersChanged(),
+      gatesExecutable: provider => this.helperExecutable(provider),
+      gatesLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
     }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
   }

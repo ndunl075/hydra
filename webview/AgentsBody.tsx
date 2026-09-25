@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneView, Provider } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
+import type { JobCheckResult } from '../src/core/jobs';
 import { AgentsCanvas, type HeadAction } from './AgentsCanvas';
 import { LanesView, type LaneSwitchCountdown } from './LanesView';
 
@@ -15,7 +16,7 @@ export type AgentsViewName = 'canvas' | 'lanes';
  */
 export function AgentsBody({
   view, onViewChange, heads, plans, lanes, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
-  laneLimits, laneSwitchCountdowns, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
+  laneLimits, laneSwitchCountdowns, laneGates, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
 }: {
   view: AgentsViewName;
   onViewChange: (view: AgentsViewName) => void;
@@ -30,6 +31,8 @@ export function AgentsBody({
   /** Usage-limit banners and switch countdowns (docs/Gates_Plan.md, section 2), by lane id. */
   laneLimits?: Readonly<Record<string, LaneLimitOfferView>>;
   laneSwitchCountdowns?: Readonly<Record<string, LaneSwitchCountdown>>;
+  /** A gates run in progress on a lane, by lane id (docs/Gates_Plan.md, "Lanes"). */
+  laneGates?: Readonly<Record<string, { done: JobCheckResult[]; running?: string }>>;
   onAction: (action: HeadAction, jobId: string) => void;
   onPlan?: (message: ClientMessage) => void;
   onStopAll?: () => void;
@@ -48,7 +51,7 @@ export function AgentsBody({
     </div>
     <div className="agents-view-pane" hidden={view !== 'lanes'}>
       <LanesView lanes={lanes || []} terminals={terminals} defaultProvider={defaultProvider} laneError={laneError} focus={laneFocus} onSend={onSend} onFocused={onLaneFocused}
-        laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} />
+        laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} laneGates={laneGates} />
     </div>
   </div>;
 }

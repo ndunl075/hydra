@@ -1,4 +1,7 @@
-import type { HelperJobView, LaneView, Provider } from './model';
+import type { HeadCheckView, HelperJobView, LaneView, Provider } from './model';
+// Type-only, same rule as plans.ts above: jobs.ts pulls in node:fs/node:crypto for
+// the job store, so only its types (never gateChip/gateState as values) may cross.
+import type { JobCheckResult } from './jobs';
 // Type-only: this file is bundled into the browser webview, and plans.ts's
 // storage (PlanStore) pulls in node:fs/node:crypto, which a browser bundle
 // cannot resolve. So only types cross this boundary; the tiny bit of cycle
@@ -221,6 +224,22 @@ export function buildCanvas(all: readonly HelperJobView[], now: number, extras: 
   }
 
   return { leads, heads, edges, tray, plans, width: widest + 60, height: Math.max(top - layout.groupGap + layout.top, 240) };
+}
+
+/**
+ * A gate chip (docs/Gates_Plan.md, "Seeing results"): "✓ unit · ✓ review · ✗
+ * ui", plus a not-run style with the reason on hover. Text as well as colour,
+ * never colour alone. The same reading src/core/jobs.ts's gateChip gives
+ * server-side, duplicated here (never imported as a value — see the note atop
+ * this file) so the webview bundle never needs jobs.ts's Node-only imports.
+ */
+export interface GateChipView { id: string; icon: '✓' | '✗' | '–'; label: string; tone: 'good' | 'bad' | 'neutral'; title: string }
+export function gateChip(check: Pick<HeadCheckView, 'id' | 'summary'> & { state?: JobCheckResult['state']; passed: boolean }): GateChipView {
+  const state = check.state ?? (check.passed ? 'passed' : 'failed');
+  const icon = state === 'passed' ? '✓' : state === 'notRun' ? '–' : '✗';
+  const tone: GateChipView['tone'] = state === 'passed' ? 'good' : state === 'notRun' ? 'neutral' : 'bad';
+  const title = state === 'notRun' ? (check.summary ? `Not run: ${check.summary}` : 'Not run') : (check.summary || (state === 'failed' ? 'Failed' : 'Passed'));
+  return { id: check.id, icon, label: `${icon} ${check.id}`, tone, title };
 }
 
 /** A short, human state for a head. */

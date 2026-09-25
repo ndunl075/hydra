@@ -80,6 +80,22 @@ export const gateKind = (check: JobCheckResult): GateKind => check.kind ?? 'comm
 export const gateState = (check: JobCheckResult): GateState => check.state ?? (check.passed ? 'passed' : 'failed');
 /** A gate that stops the work being accepted: required and failed. A gate that didn't run never blocks. */
 export const gateBlocks = (check: JobCheckResult): boolean => check.required && gateState(check) === 'failed';
+
+/**
+ * A gate chip (docs/Gates_Plan.md, "Seeing results"): "✓ unit · ✓ review · ✗
+ * ui", plus a not-run style with the reason on hover. Text as well as colour,
+ * never colour alone — `tone` only ever adds colour on top of `label`'s icon.
+ * Pure so both the Agents canvas and the Lanes tiles (and their SSR tests) use
+ * the same reading of a result.
+ */
+export interface GateChipView { id: string; icon: '✓' | '✗' | '–'; label: string; tone: 'good' | 'bad' | 'neutral'; title: string }
+export function gateChip(check: Pick<JobCheckResult, 'id' | 'kind' | 'state' | 'passed' | 'summary' | 'required'>): GateChipView {
+  const state = gateState(check as JobCheckResult);
+  const icon = state === 'passed' ? '✓' : state === 'notRun' ? '–' : '✗';
+  const tone: GateChipView['tone'] = state === 'passed' ? 'good' : state === 'notRun' ? 'neutral' : 'bad';
+  const title = state === 'notRun' ? (check.summary ? `Not run: ${check.summary}` : 'Not run') : (check.summary || (state === 'failed' ? 'Failed' : 'Passed'));
+  return { id: check.id, icon, label: `${icon} ${check.id}`, tone, title };
+}
 export interface JobResult { summary: string; commit: string; changedFiles: string[]; checks: JobCheckResult[] }
 export interface JobEvent { at: string; from: JobState | null; to: JobState; reason?: string }
 

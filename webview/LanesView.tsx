@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientMessage, LaneAction, LaneLimitOfferView, LaneOfferButtonId, LaneView, Provider } from '../src/core/model';
+import type { JobCheckResult } from '../src/core/jobs';
 import { otherProvider } from '../src/core/limitEvents';
+import { gateChip } from '../src/core/agentsCanvas';
 import { ProviderLogo } from './ProviderLogo';
 import { onLaneEvent } from './laneBus';
 import '@xterm/xterm/css/xterm.css';
@@ -144,9 +146,21 @@ function Chip({ tone, title, children }: { tone: 'warning' | 'info' | 'good' | '
   return <span className={`lane-chip tone-${tone}`} title={title}>{children}</span>;
 }
 
-function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, onSend, onFocused }: {
+/** Gate chips (docs/Gates_Plan.md, "Lanes"): "Gates: ✓ unit · … review" while running, or the last run's chips once it's done. */
+function GateChips({ results, running }: { results: readonly JobCheckResult[]; running?: string }) {
+  if (!results.length && !running) return null;
+  return <div className="lane-gate-chips" aria-label="Gate results">
+    <span className="lane-gate-chips-label">Gates:</span>
+    {results.map(result => { const chip = gateChip(result); return <span key={chip.id} className={`gate-chip tone-${chip.tone}`} title={chip.title}>{chip.label}</span>; })}
+    {running && <span className="gate-chip tone-neutral" title={`Running ${running}…`}>… {running}</span>}
+  </div>;
+}
+
+function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates, onSend, onFocused }: {
   lane: LaneView; laneName: (id: string) => string | undefined; focused: boolean;
   limitOffer?: LaneLimitOfferView; switchCountdown?: LaneSwitchCountdown;
+  /** A gates run in progress on this lane; undefined once it's finished (the lane's own lastGates then has the chips). */
+  gates?: { done: JobCheckResult[]; running?: string };
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -190,6 +204,7 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, onSend
         {lane.state === 'merged' && <Chip tone="neutral">Merged</Chip>}
       </div>
     </header>
+    <GateChips results={gates?.done ?? lane.lastGates?.results ?? []} running={gates?.running} />
     {switchCountdown
       ? <LaneSwitchCountdownBanner countdown={switchCountdown} onCancel={() => onSend({ type: 'laneCancelSwitch', id: lane.id })} />
       : limitOffer && <LaneLimitBanner offer={limitOffer} onAction={action => onSend({ type: 'laneLimitAction', id: lane.id, action })} />}
@@ -210,6 +225,8 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, onSend
           {menuOpen && <div className="lane-menu" role="menu">
             {sync?.dirty && <button role="menuitem" onClick={() => { setMenuOpen(false); act('commit'); }}>Commit…</button>}
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('update'); }}>Update from {lane.target}</button>
+            <button role="menuitem" onClick={() => { setMenuOpen(false); act('runGates'); }}>Run gates</button>
+            {!!lane.lastGates?.results.length && <button role="menuitem" onClick={() => { setMenuOpen(false); act('evidence'); }}>View evidence</button>}
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('pr'); }}>Open PR</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('openWindow'); }}>Open in new window</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('resume'); }}>Resume</button>
@@ -223,9 +240,10 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, onSend
   </section>;
 }
 
-export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, laneLimits, laneSwitchCountdowns, onSend, onFocused }: {
+export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, laneLimits, laneSwitchCountdowns, laneGates, onSend, onFocused }: {
   lanes: readonly LaneView[]; terminals: boolean; defaultProvider?: Provider; laneError?: string; focus?: string;
   laneLimits?: Readonly<Record<string, LaneLimitOfferView>>; laneSwitchCountdowns?: Readonly<Record<string, LaneSwitchCountdown>>;
+  laneGates?: Readonly<Record<string, { done: JobCheckResult[]; running?: string }>>;
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -256,7 +274,7 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
         {showForm && <NewLaneCard initial={{ name: nextName, provider: defaultProvider === 'codex' ? 'codex' : 'claude', goal: '' }} error={laneError}
           onCancel={() => setShowForm(false)}
           onStart={form => { starting.current = lanes.length; onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}) }); }} />}
-        {lanes.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} onSend={onSend} onFocused={onFocused} />)}
+        {lanes.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} onSend={onSend} onFocused={onFocused} />)}
         {!lanes.length && !showForm && <p className="lanes-empty-hint">No lanes yet. Start one to run a real Claude Code or Codex terminal in its own worktree.</p>}
       </div>}
   </section>;

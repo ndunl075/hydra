@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientMessage, HelperJobView, LaneView, Provider } from '../src/core/model';
-import { buildCanvas, elapsedLabel, headStatus, isActive, layout, type CanvasHead, type CanvasLead, type CanvasPlanJob, type CanvasPlanNode } from '../src/core/agentsCanvas';
+import { buildCanvas, elapsedLabel, gateChip, headStatus, isActive, layout, type CanvasHead, type CanvasLead, type CanvasPlanJob, type CanvasPlanNode } from '../src/core/agentsCanvas';
 // Type-only (see the note in agentsCanvas.ts): plans.ts's storage code must never
 // enter this browser bundle, so only PlanJob's shape crosses this boundary.
 import type { Plan, PlanJob } from '../src/core/plans';
@@ -13,7 +13,7 @@ import './agents-canvas.css';
  * grows out of its chat, shows what it's doing, and leaves when it's merged.
  * The canvas never starts work itself.
  */
-export type HeadAction = 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer';
+export type HeadAction = 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer' | 'helperEvidence';
 const leaveMs = 650;
 const edgeStart = (x: number, y: number) => ({ x, y: y + 34 });
 const curve = (x1: number, y1: number, x2: number, y2: number) => { const mid = (x1 + x2) / 2; return `M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`; };
@@ -309,6 +309,7 @@ export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, o
       <button role="menuitem" autoFocus disabled={!menuHead.branch} onClick={() => { setMenu(undefined); onAction('helperReview', menuHead.id); }}>Open diff</button>
       <button role="menuitem" onClick={() => { setMenu(undefined); onAction('helperLog', menuHead.id); }}>Open log</button>
       {menuHead.state === 'blocked' && <button role="menuitem" onClick={() => { setMenu(undefined); onAction('helperAnswer', menuHead.id); }}>Answer question…</button>}
+      {!!menuHead.checks.length && <button role="menuitem" onClick={() => { setMenu(undefined); onAction('helperEvidence', menuHead.id); }}>View evidence</button>}
       {isActive(menuHead) && <button role="menuitem" className="danger" onClick={() => { setMenu(undefined); onAction('helperCancel', menuHead.id); }}>Cancel head</button>}
     </div>}
     {jobMenu && <div className="canvas-menu" role="menu" style={{ left: jobMenu.x, top: jobMenu.y }}>
@@ -326,10 +327,9 @@ function HeadNode({ item, now, fresh, from, selected, onSelect, onOpen, onMenu, 
   onSelect: () => void; onOpen: () => void; onMenu: (x: number, y: number) => void; onKey: (event: React.KeyboardEvent) => void;
 }) {
   const head = item.head, status = headStatus[head.state] || head.state, active = isActive(head);
-  const passed = head.checks.filter(check => check.passed).length;
   const detail = head.state === 'blocked' ? `Asks: ${head.question || 'a question'}`
     : active ? head.progress || (head.state === 'queued' ? (head.dependsOn.length ? 'Waiting for what it depends on' : 'Waiting for a free slot') : 'Working…')
-    : head.state === 'done' ? `${head.checks.length ? `${passed}/${head.checks.length} checks passed · ` : ''}${head.changedFiles} ${head.changedFiles === 1 ? 'file' : 'files'} changed`
+    : head.state === 'done' ? `${head.changedFiles} ${head.changedFiles === 1 ? 'file' : 'files'} changed`
     : head.reason || status;
   const style = { transform: `translate(${item.x}px, ${item.y}px)`, ...(fresh && from ? { '--from-x': `${from.x - item.x}px`, '--from-y': `${from.y - item.y}px` } : {}) } as React.CSSProperties;
   return <div id={`head-${item.id}`} className={`canvas-node provider-${head.provider} state-${head.state}${fresh ? ' entering' : ''}${selected ? ' selected' : ''}`} style={style}
@@ -343,6 +343,9 @@ function HeadNode({ item, now, fresh, from, selected, onSelect, onOpen, onMenu, 
       </div>
       <strong className="canvas-node-title" title={head.title}>{head.title}</strong>
       <p key={detail} className="canvas-node-detail" title={detail}>{detail}</p>
+      {!!head.checks.length && <div className="canvas-node-gates" aria-label="Gate results">
+        {head.checks.map(check => { const chip = gateChip(check); return <span key={chip.id} className={`gate-chip tone-${chip.tone}`} title={chip.title}>{chip.label}</span>; })}
+      </div>}
       <div className="canvas-node-foot">
         <code title={head.branch || head.writeScope?.join(', ')}>{head.branch ? head.branch.replace(/^agent\//, '') : (head.writeScope || []).join(' ') || 'not started'}</code>
         <span>{elapsedLabel(head, now)}</span>

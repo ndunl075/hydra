@@ -2,12 +2,14 @@ import * as vscode from 'vscode';
 import path from 'node:path';
 import { git } from './core/git';
 import { findProvider } from './core/providers';
-import type { JobCheckResult } from './core/jobs';
 import { claudeStatus, codexStatus, providerPaths, type HelperServerSpec } from './core/helperRegistration';
 import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePty';
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
 import { LaneService } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
+import { gateFailureMessage, loadGates, type GatesOutcome } from './core/gates';
+import { gateBlocks, gateKind, type JobCheckResult } from './core/jobs';
+import { evidenceScheme } from './core/evidence';
 import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneLimitOfferView, type LaneOfferButtonId, type LaneServerMessage, type LaneView, type Provider } from './core/model';
 import { otherProvider, type LimitEvent } from './core/limitEvents';
 import { buildHandoff } from './core/limitHandoff';
@@ -31,6 +33,9 @@ export interface LanesHost {
   runningHeads(laneId: string): number;
   /** The open lanes changed (the discovery record lists their worktrees). */
   changed(): void;
+  // ---- Gates (docs/Gates_Plan.md, "Lanes"): the same checked executable and limit awareness as HelperService's ----
+  gatesExecutable(provider: Provider): Promise<string>;
+  gatesLimited(provider: Provider): boolean;
 }
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
@@ -41,6 +46,24 @@ const baseScheme = 'hydra-lane';
 const providerLabel = (provider: Provider) => provider === 'codex' ? 'Codex' : 'Claude Code';
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+// ---- Gates (docs/Gates_Plan.md, "Lanes") ----
+
+/** The failed gates, one short line each, for the merge/run-gates modal's detail. */
+function summarizeGateFailures(results: readonly JobCheckResult[]): string {
+  return results.filter(gateBlocks).map(result => {
+    const kind = gateKind(result);
+    const detail = kind === 'command' ? `exit ${result.exitCode ?? 'none'}`
+      : kind === 'review' ? (result.findings?.length ? `${result.findings.length} finding${result.findings.length === 1 ? '' : 's'}` : result.summary || 'failed')
+      : result.summary || 'failed';
+    return `${result.id} (${kind}): ${detail}`;
+  }).join('\n');
+}
+/** "Send to lane": gateFailureMessage flattened to one line, capped at ~1500 characters, so it fits a terminal's input line. */
+function flattenGateFailureMessage(results: readonly JobCheckResult[], max = 1500): string {
+  const flat = gateFailureMessage(results).replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
 
 function parseActionOptions(value: unknown): LaneActionOptions {
   if (value === undefined || value === null) return {};
@@ -114,6 +137,9 @@ export class LanesController implements vscode.Disposable {
       onChange: () => this.changed(),
       onData: (id, data) => this.host.post({ type: 'laneData', id, data }),
       log: line => this.host.log(line),
+      gatesExecutable: provider => this.host.gatesExecutable(provider),
+      gatesLimited: provider => this.host.gatesLimited(provider),
+      gatesLogDirectory: path.join(storageDirectory, 'lanes', 'gates'),
     });
     this.disposables.push(vscode.workspace.registerTextDocumentContentProvider(baseScheme, { provideTextDocumentContent: uri => this.baseContent(uri) }));
     this.service.activate();
@@ -380,8 +406,22 @@ export class LanesController implements vscode.Disposable {
           }
           throw new Error(check.message);
         }
+        // Gates (docs/Gates_Plan.md, "Merge"): after the commit-first refusals, before the merge
+        // confirmation, when this project's gates.json says lanes: "onMerge" and there are gates.
+        const gatesConfig = await loadGates(lane.repository).catch(() => undefined);
+        let gatesNote = '';
+        if (gatesConfig && gatesConfig.lanes === 'onMerge' && gatesConfig.gates.length) {
+          const outcome = await this.runGatesFlow(service, lane, interactive);
+          if (!outcome) return undefined; // cancelled, or gates couldn't run and this was interactive
+          if (outcome.failed.length) {
+            if (!interactive) throw new Error(`Gates failed for lane ${lane.name}:\n${summarizeGateFailures(outcome.results)}`);
+            const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. Merge anyway?`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Merge anyway', 'Send to lane');
+            if (choice === 'Send to lane') { this.sendGatesToLane(service, lane, outcome.results); return undefined; }
+            if (choice !== 'Merge anyway') return undefined; // Cancel
+          } else gatesNote = ' Gates passed.';
+        }
         if (interactive) {
-          const pick = await vscode.window.showInformationMessage(`Merge lane ${lane.name} into ${lane.target}?`, { modal: true, detail: `${plural(check.commits, 'commit')}, ${plural(check.files, 'file')}. Merges cleanly.` }, 'Merge');
+          const pick = await vscode.window.showInformationMessage(`Merge lane ${lane.name} into ${lane.target}?`, { modal: true, detail: `${plural(check.commits, 'commit')}, ${plural(check.files, 'file')}. Merges cleanly.${gatesNote}` }, 'Merge');
           if (pick !== 'Merge') return undefined;
         }
         const commit = await service.merge(lane.id);
@@ -434,7 +474,43 @@ export class LanesController implements vscode.Disposable {
       }
       case 'diff': return this.openDiff(lane);
       case 'openWindow': await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(lane.worktree), { forceNewWindow: true }); return undefined;
+      case 'runGates': {
+        const outcome = await this.runGatesFlow(service, lane, interactive);
+        if (outcome && interactive) {
+          if (outcome.failed.length) void vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}.`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'View evidence')
+            .then(pick => { if (pick === 'View evidence') void this.run(service, service.get(lane.id) ?? lane, 'evidence', true, {}); });
+          else void info(`Gates passed for lane ${lane.name}.`);
+        }
+        return outcome;
+      }
+      case 'evidence': {
+        if (!service.get(lane.id)?.lastGates?.results.length) { void info(`Lane ${lane.name} has no gate results yet.`); return undefined; }
+        await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.parse(`${evidenceScheme}://lane/${lane.id}`));
+        return undefined;
+      }
     }
+  }
+
+  /**
+   * Run this project's gates on the lane, relaying progress to its tile header
+   * ("Gates: unit ✓ · review …"). The lane need not be committed: gates read the
+   * worktree as it is, so uncommitted work is included, but a dirty lane still
+   * gets a heads-up, since a lead's gates always run on a commit.
+   */
+  private async runGatesFlow(service: LaneService, lane: Lane, interactive: boolean): Promise<GatesOutcome | undefined> {
+    if (interactive && this.viewOf(lane.id)?.sync?.dirty) void vscode.window.showInformationMessage(`Lane ${lane.name} has uncommitted changes; the gates run against them too.`);
+    try {
+      return await service.runGates(lane.id, progress => this.host.post({ type: 'laneGates', id: lane.id, done: progress.done, ...(progress.running ? { running: progress.running } : {}) }));
+    } catch (error) {
+      this.host.post({ type: 'laneGates', id: lane.id, done: [] });
+      if (!interactive) throw error;
+      void vscode.window.showErrorMessage(`Hydra: ${describe(error)}`);
+      return undefined;
+    }
+  }
+  /** "Send to lane" (docs/Gates_Plan.md, "Merge"): the failures as one line in the lane's terminal input, never pressing Enter. */
+  private sendGatesToLane(service: LaneService, lane: Lane, results: readonly JobCheckResult[]): void {
+    service.input(lane.id, flattenGateFailureMessage(results));
   }
 
   /** The multi-file diff of the lane against where it meets its target, uncommitted work included. */

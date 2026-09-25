@@ -40,6 +40,14 @@
 .lane-chip.tone-good { color: var(--green); border-color: var(--green); }
 .lane-chip.tone-neutral { color: var(--muted); }
 
+/* Gate chips (docs/Gates_Plan.md, "Lanes"): "Gates: ✓ unit · … review". Text carries the state; colour only adds to it. */
+.lane-gate-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 12px 8px; }
+.lane-gate-chips-label { font-size: 10.5px; color: var(--muted); }
+.gate-chip { font-size: 10.5px; padding: 2px 6px; border-radius: 99px; border: 1px solid var(--border); white-space: nowrap; }
+.gate-chip.tone-good { color: var(--green); border-color: var(--green); }
+.gate-chip.tone-bad { color: var(--error-text); border-color: var(--error-border); }
+.gate-chip.tone-neutral { color: var(--muted); }
+
 .lane-switched { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* The usage-limit banner and the onLimit:"switch" countdown (docs/Gates_Plan.md, section 2) */

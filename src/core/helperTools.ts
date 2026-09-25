@@ -37,6 +37,11 @@ export const leadTools: readonly HelperToolDefinition[] = [
   { name: 'hydra_list_heads', description: 'List this window\'s heads and their states.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
   { name: 'hydra_reply_to_head', description: 'Answer a head that is blocked on a question. Hydra delivers the message and the head continues.', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id', 'message'], properties: { job_id: jobId, message: string('The answer, under 8000 characters.') } } },
   { name: 'hydra_cancel_head', description: 'Stop a head and mark it cancelled. Its branch is kept.', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id'], properties: { job_id: jobId, reason: string('Why, for the record.') } } },
+  {
+    name: 'hydra_lanes',
+    description: 'List the Hydra lanes open in this window. A lane is a Claude Code or Codex terminal the user drives, in its own git worktree and branch. For each lane: its goal, branch and state, the files it is changing, the lanes it would conflict with (and in which files), files that would conflict with its target branch, how many commits it is behind, and its running heads. `you` is your own lane, if you are in one. Checks fresh before answering. Call it before you start and before large changes, and avoid editing files other lanes are changing.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
 ];
 
 export const helperTools: readonly HelperToolDefinition[] = [
@@ -54,6 +59,17 @@ export const leadInstructions = [
   'Before starting any task that changes code, decide whether it splits into pieces that touch separate files and don\'t need each other\'s results, for example a feature and its tests, frontend and backend, several unrelated fixes, or the same change across separate modules. If it has two or more such pieces worth more than a few minutes each, start one head per piece with hydra_start_head: a complete brief (the head has no other context) and a narrow write_scope. Commit first if heads must see uncommitted changes. Do the remaining coupled part yourself while they run, then call hydra_wait_for_heads, review each branch, and merge it with git. Do this behind the scenes: do not ask the user whether to use heads, and do not mention heads or narrate the delegation unless the user asks; report only the combined result, as if you had done the work yourself.',
   'Work alone when the task is small, is one tightly coupled change, or is only a question or investigation.',
 ].join('\n\n');
-/** The same guidance for agents that don't read MCP instructions (Codex's AGENTS.md). */
-export const leadGuidanceMarkdown = `## Hydra heads\n\nOnly when the Hydra tools (hydra_start_head) are available to you; a Hydra head itself ignores this section.\n\n${leadInstructions}\n`;
+const laneAdvice = 'Call hydra_lanes before you start and before large changes; avoid editing files other lanes are changing, and tell the user if you must.';
+/**
+ * Added to the lead instructions when the bridge runs in a Hydra lane
+ * (HYDRA_LANE_ID set); the lane's name and branch come from its environment.
+ */
+export function laneGuidance(name?: string, branch?: string): string {
+  return `${name && branch ? `You are in Hydra lane "${name}" on branch ${branch}.` : 'You are in a Hydra lane.'} ${laneAdvice}`;
+}
+/**
+ * The same guidance for agents that don't read MCP instructions (Codex's AGENTS.md).
+ * A lane's name isn't known there, so its branch prefix identifies it.
+ */
+export const leadGuidanceMarkdown = `## Hydra heads\n\nOnly when the Hydra tools (hydra_start_head) are available to you; a Hydra head itself ignores this section.\n\n${leadInstructions}\n\nWhen you work in a Hydra lane (your git branch starts with \`lane/\`): ${laneAdvice}\n`;
 export const helperInstructions = 'You are a Hydra head working in your own git worktree. Stay inside your write scope, then call hydra_done with a summary (Hydra commits your changes). If you cannot continue, call hydra_stuck with one clear question. Never stop without calling one of them.';

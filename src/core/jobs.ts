@@ -57,7 +57,11 @@ export interface JobResult { summary: string; commit: string; changedFiles: stri
 export interface JobEvent { at: string; from: JobState | null; to: JobState; reason?: string }
 
 /** The chat that started a job: one lead bridge (one Claude Code or Codex conversation). Set by Hydra from the caller's token. */
-export interface JobLead { sessionId: string; provider?: Provider; label?: string }
+export interface JobLead {
+  sessionId: string; provider?: Provider; label?: string;
+  /** The Hydra lane that chat runs in, when it does (docs/Lanes_And_Planner_Plan.md). */
+  lane?: string;
+}
 export interface Job {
   version: 1;
   id: string;

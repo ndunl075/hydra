@@ -36,6 +36,11 @@ export interface HelperServiceOptions {
   log?: (line: string) => void;
   now?: () => number;
   watchdogMs?: number;
+  /**
+   * This window's lanes (docs/Lanes_And_Planner_Plan.md): the hydra_lanes answer,
+   * and the name a lane's heads are labelled with.
+   */
+  lanes?: { describe(you?: string): Promise<unknown>; name(id: string): string | undefined };
 }
 
 interface Active { run: HelperRun; token: string; startedAt: number; blockedSince?: number; blockedTotal: number; answer?: (reply: string) => void }
@@ -81,6 +86,9 @@ export class HelperService {
         case 'hydra_list_heads': return { heads: this.options.store.list(this.options.leadKey).map(job => this.describe(job, false)) };
         case 'hydra_reply_to_head': return this.reply(args);
         case 'hydra_cancel_head': return this.cancel(this.ownJob(args.job_id).id, typeof args.reason === 'string' ? clip(args.reason, 500) : 'Cancelled by the lead.');
+        case 'hydra_lanes':
+          if (!this.options.lanes) throw new Error('Lanes are not available in this Hydra window.');
+          return this.options.lanes.describe(caller.lane);
       }
     } else {
       const jobId = caller.jobId!;
@@ -140,8 +148,10 @@ export class HelperService {
     if (open >= 16) throw new Error('This window already has 16 unfinished heads. Wait for some to finish or cancel them.');
     const head = (await git(this.options.leadFolder, ['rev-parse', 'HEAD'])).trim();
     const dirty = (await git(this.options.leadFolder, ['status', '--porcelain=v1', '--untracked-files=no'])).trim();
-    const lead = caller?.leadSessionId ? { sessionId: caller.leadSessionId, ...(caller.provider ? { provider: caller.provider } : {}) } : undefined;
-    const { job, created } = await this.options.store.create(this.options.leadKey, input, lead);
+    // A head started from a lane is grouped under it and labelled with the lane's name.
+    const laneName = caller?.lane ? this.options.lanes?.name(caller.lane) : undefined;
+    const lead = caller?.leadSessionId ? { sessionId: caller.leadSessionId, ...(caller.provider ? { provider: caller.provider } : {}), ...(laneName ? { lane: caller.lane } : {}) } : undefined;
+    const { job, created } = await this.options.store.create(this.options.leadKey, lead && laneName ? { ...input, leadLabel: laneName } : input, lead);
     if (created) await this.options.store.update(job.id, { baseCommit: head });
     this.changed();
     void this.dispatch();

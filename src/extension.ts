@@ -32,6 +32,8 @@ import { officialExtensionInfo, openOfficialExtension } from './extensionBridge'
 import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { registerLimitOffer } from './extensionLimitOffer';
+import { codexLaneFanout } from './core/limitEvents';
+import { LimitOfferTracker } from './core/limitOffer';
 import { LanesController, isLaneMessage } from './extensionLanes';
 import { HydraTreeProvider } from './extensionTree';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
@@ -90,6 +92,8 @@ class Manager {
    * subscribes with `limitEvents.event(listener)`.
    */
   readonly limitEvents = new vscode.EventEmitter<LimitEvent>();
+  /** Shared by the chat/head notification and every lane's tile banner, so "the other provider is limited too" sees all three (docs/Gates_Plan.md, section 2). */
+  private readonly limitOfferTracker = new LimitOfferTracker();
   // ---- Lanes (docs/Lanes_And_Planner_Plan.md): state; the methods are in the Lanes block below ----
   private readonly lanes: LanesController;
   /** The Hydra activity-bar panel (section 3): one TreeView over lanes, heads and plans. */
@@ -117,7 +121,7 @@ class Manager {
       openAgents: () => this.openAgents(), webviewReady: () => !!this.panel && this.readyPanel === this.panel,
       helperServerSpec: provider => this.helperServerSpec(provider), runningHeads: id => this.laneHeads(id),
       changed: () => this.laneFoldersChanged(),
-    });
+    }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
   }
   async initialize(): Promise<void> {
@@ -182,10 +186,12 @@ class Manager {
     command('hydra.overview.mergeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'merge', true));
     command('hydra.overview.closeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'close', true));
     // Not in the palette: fires a made-up limit event, for the handoff UI and smoke tests.
-    command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat') => {
-      if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat" or "head".');
+    // A lane id (its own 12-hex id, source becomes "lane") simulates the limit for that lane's tile.
+    command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat', laneId?: unknown) => {
+      if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head' && source !== 'lane')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat", "head" or "lane".');
+      if (source === 'lane' && (typeof laneId !== 'string' || !this.lanes.exists(laneId))) throw new Error('simulateLimit with source "lane" needs the id of a lane open in this window.');
       const folder = vscode.workspace.workspaceFolders?.[0];
-      const event: LimitEvent = { provider, source, at: new Date().toISOString(), message: 'Simulated usage limit (hydra.debug.simulateLimit).', ...(folder ? { cwd: folder.uri.fsPath } : {}) };
+      const event: LimitEvent = { provider, source, at: new Date().toISOString(), message: 'Simulated usage limit (hydra.debug.simulateLimit).', ...(folder ? { cwd: folder.uri.fsPath } : {}), ...(source === 'lane' ? { laneId: laneId as string } : {}) };
       this.limitEvents.fire(event);
       return event;
     });
@@ -232,7 +238,10 @@ class Manager {
         await this.helpers.service.continueWith(jobId, provider, markdown);
       },
       log: line => this.output.appendLine(line),
+      tracker: this.limitOfferTracker,
     }));
+    // Lanes (docs/Gates_Plan.md, section 2): a lane's own tile banner, never a notification.
+    this.context.subscriptions.push(this.limitEvents.event(event => { void this.lanes.onLimitEvent(event).catch(error => this.output.appendLine(`[lanes] limit offer: ${this.describe(error)}`)); }));
     await this.publish();
   }
   private get limitEventsDirectory(): string { return path.join(this.context.globalStorageUri.fsPath, 'limit-events'); }
@@ -251,12 +260,20 @@ class Manager {
   private startLimitDetection(): void {
     if (this.handoff || !vscode.workspace.isTrusted || vscode.env.remoteName) return;
     const fire = (event: LimitEvent) => this.limitEvents.fire(event);
-    const claude = new ClaudeChatLimits(this.limitEventsDirectory, providerPaths().claudeProjects, fire);
+    // Lanes (docs/Gates_Plan.md, section 2): Claude's hook already tags its own lane's
+    // events with HYDRA_LANE_ID; its worktree also counts as an owned folder like any
+    // workspace folder. Codex has no per-session hook, so its account-limit event is
+    // fanned out here to one lane event per running Codex lane.
+    const claude = new ClaudeChatLimits(this.limitEventsDirectory, providerPaths().claudeProjects, fire, () => this.lanes.laneWorktreeEntries());
     this.context.subscriptions.push(claude);
     void claude.start().catch(error => this.output.appendLine(`[limits] Claude chat limits not watched: ${this.describe(error)}`));
+    const fireCodex = (event: LimitEvent) => {
+      fire(event);
+      for (const laneEvent of codexLaneFanout(event, this.lanes.runningLanes('codex'))) fire(laneEvent);
+    };
     this.context.subscriptions.push(new CodexChatLimits(this.quota, async () =>
       this.settingsImport.available && vscode.workspace.isTrusted && !!vscode.extensions.getExtension('openai.chatgpt') && (await codexStatus(providerPaths().codexConfig, this.helperServerSpec('codex'))).connected,
-    fire, line => this.output.appendLine(line)));
+    fireCodex, line => this.output.appendLine(line)));
   }
   /** How a CLI starts Hydra's stdio bridge: this editor's executable as Node, running dist/hydra-mcp.cjs. */
   helperBridge(provider?: ConnectableProvider): { command: string; args: string[]; env: Record<string, string> } {

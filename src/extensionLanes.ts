@@ -7,7 +7,11 @@ import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePt
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
 import { LaneService } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
-import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneServerMessage, type LaneView, type Provider } from './core/model';
+import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneLimitOfferView, type LaneOfferButtonId, type LaneServerMessage, type LaneView, type Provider } from './core/model';
+import { otherProvider, type LimitEvent } from './core/limitEvents';
+import { buildHandoff } from './core/limitHandoff';
+import { laneOfferButtons, laneOfferMessage, laneSwitchCountdownSeconds, LimitOfferTracker } from './core/limitOffer';
+import { openHandoffPreview, saveHandoff } from './extensionLimitOffer';
 
 /**
  * The editor side of Hydra lanes (docs/Lanes_And_Planner_Plan.md): commands,
@@ -30,7 +34,7 @@ export interface LanesHost {
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
 
-const laneMessages: ReadonlySet<string> = new Set(['laneNew', 'laneAttach', 'laneInput', 'laneResize', 'laneAction', 'view']);
+const laneMessages: ReadonlySet<string> = new Set(['laneNew', 'laneAttach', 'laneInput', 'laneResize', 'laneAction', 'laneLimitAction', 'laneCancelSwitch', 'view']);
 export const isLaneMessage = (message: { type: string }): message is LaneClientMessage => laneMessages.has(message.type);
 const baseScheme = 'hydra-lane';
 const providerLabel = (provider: Provider) => provider === 'codex' ? 'Codex' : 'Claude Code';
@@ -54,7 +58,12 @@ export class LanesController implements vscode.Disposable {
   private view: { view: AgentsView; focus?: string } = { view: 'canvas' };
   private posted = '';
   private readonly disposables: vscode.Disposable[] = [];
-  constructor(private readonly host: LanesHost) {}
+  private storageDirectory?: string;
+  // ---- The usage-limit banner (docs/Gates_Plan.md, section 2), one per lane at most ----
+  private readonly limitOffers = new Map<string, LaneLimitOfferView & { event: LimitEvent }>();
+  private readonly switchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Shared with registerLimitOffer's chat/head notifications, so "the other provider is limited too" sees every source. */
+  constructor(private readonly host: LanesHost, private readonly limitTracker = new LimitOfferTracker()) {}
 
   /** node-pty from the host, loaded once on first use. */
   private ptyModule(): PtyModule | undefined {
@@ -80,6 +89,7 @@ export class LanesController implements vscode.Disposable {
   /** Lanes need the window's lead folder, like heads: started with them. */
   async start(repository: string, storageDirectory: string): Promise<void> {
     if (this.service) return;
+    this.storageDirectory = storageDirectory;
     const store = new LaneStore(storageDirectory, line => this.host.log(line));
     await store.load();
     const config = () => vscode.workspace.getConfiguration('hydra');
@@ -118,6 +128,10 @@ export class LanesController implements vscode.Disposable {
     return this.service.describe(you);
   }
   openWorktrees(): string[] { return this.service?.openWorktrees() ?? []; }
+  /** For ClaudeChatLimits (src/extensionLimits.ts): this window's open lanes, for owning a chat cwd or a lane id. */
+  laneWorktreeEntries(): { id: string; worktree: string }[] { return this.service?.lanes().map(lane => ({ id: lane.id, worktree: lane.worktree })) ?? []; }
+  /** For the Codex account-limit fan-out (src/extension.ts): this window's running lanes of one provider. */
+  runningLanes(provider: Provider): { id: string; worktree: string }[] { return (this.service?.views() ?? []).filter(lane => lane.running && lane.provider === provider).map(lane => ({ id: lane.id, worktree: lane.worktree })); }
 
   // ---- The Agents webview ----
 
@@ -144,6 +158,7 @@ export class LanesController implements vscode.Disposable {
       case 'laneAttach':
         this.postState(true);
         for (const { id, data } of this.service?.replay() ?? []) this.host.post({ type: 'laneReplay', id, data });
+        for (const [id, offer] of this.limitOffers) this.host.post({ type: 'laneLimit', id, offer });
         return;
       case 'laneInput': this.service?.input(message.id, message.data); return;
       case 'laneResize':
@@ -158,7 +173,88 @@ export class LanesController implements vscode.Disposable {
         } catch (error) { this.host.post({ type: 'laneError', message: describe(error) }); }
         return;
       case 'laneAction': await this.action(message.id, message.action, true); return;
+      case 'laneLimitAction': await this.handleLimitAction(message.id, message.action); return;
+      case 'laneCancelSwitch': this.cancelSwitch(message.id); return;
     }
+  }
+
+  // ---- The usage-limit banner (docs/Gates_Plan.md, section 2) ----
+
+  /**
+   * A `source: "lane"` limit event for one of this window's lanes: banner it (or
+   * count down to an automatic switch, for `hydra.lanes.onLimit: "switch"`).
+   * Events for other windows' lanes, or events without a lane, are ignored here.
+   */
+  async onLimitEvent(event: LimitEvent): Promise<void> {
+    if (event.source !== 'lane' || !event.laneId || !this.exists(event.laneId)) return;
+    const laneId = event.laneId;
+    const considered = this.limitTracker.consider(event, new Date());
+    if (!considered) return; // a repeat of the same lane within the dedupe window
+    if (considered.otherAlsoLimited) { this.setOffer(laneId, event, true); return; }
+    const onLimit = vscode.workspace.getConfiguration('hydra').get<string>('lanes.onLimit', 'ask');
+    if (onLimit === 'switch') { this.startSwitchCountdown(laneId, event); return; }
+    this.setOffer(laneId, event, false);
+  }
+
+  private setOffer(laneId: string, event: LimitEvent, otherAlsoLimited: boolean): void {
+    const offer: LaneLimitOfferView = { provider: event.provider, message: laneOfferMessage(event, new Date()), buttons: laneOfferButtons(otherAlsoLimited) };
+    this.limitOffers.set(laneId, { ...offer, event });
+    this.host.post({ type: 'laneLimit', id: laneId, offer });
+  }
+  private clearOffer(laneId: string): void {
+    if (!this.limitOffers.delete(laneId)) return;
+    this.host.post({ type: 'laneLimit', id: laneId });
+  }
+
+  private startSwitchCountdown(laneId: string, event: LimitEvent): void {
+    this.switchTimers.get(laneId) && this.cancelSwitch(laneId);
+    const to = otherProvider(event.provider);
+    const deadline = Date.now() + laneSwitchCountdownSeconds * 1000;
+    this.host.post({ type: 'laneSwitchCountdown', id: laneId, to, deadline });
+    const timer = setTimeout(() => {
+      this.switchTimers.delete(laneId);
+      this.host.post({ type: 'laneSwitchCancelled', id: laneId }); // the countdown ended (successfully or not); either way, stop showing it
+      void this.performSwitch(laneId, 'limit', event).catch(error => this.host.log(`[lanes] ${laneId} auto-switch: ${describe(error)}`));
+    }, laneSwitchCountdownSeconds * 1000);
+    this.switchTimers.set(laneId, timer);
+  }
+  /** `hydra.lanes.onLimit: "switch"`'s Cancel button on the countdown. */
+  cancelSwitch(laneId: string): void {
+    const timer = this.switchTimers.get(laneId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.switchTimers.delete(laneId);
+    this.host.post({ type: 'laneSwitchCancelled', id: laneId });
+  }
+
+  private async handleLimitAction(laneId: string, action: LaneOfferButtonId): Promise<void> {
+    const offer = this.limitOffers.get(laneId);
+    try {
+      switch (action) {
+        case 'wait': this.clearOffer(laneId); return;
+        case 'viewHandoff': {
+          const event = offer?.event ?? { provider: offer?.provider ?? 'claude', source: 'lane' as const, laneId, at: new Date().toISOString(), cwd: this.service?.get(laneId)?.worktree };
+          const handoff = await buildHandoff({ event });
+          const file = await saveHandoff(this.storageDirectory ?? '', event, handoff.markdown);
+          await openHandoffPreview(file);
+          return;
+        }
+        case 'continueOther':
+          this.clearOffer(laneId);
+          await this.performSwitch(laneId, 'limit', offer?.event);
+          return;
+      }
+    } catch (error) {
+      this.host.log(`[lanes] ${laneId} ${action}: ${describe(error)}`);
+      void vscode.window.showErrorMessage(`Hydra: ${describe(error)}`);
+    }
+  }
+
+  /** The actual switch, whether from the banner, the countdown, or "⋯ → Switch to <Other>". */
+  private async performSwitch(laneId: string, reason: 'limit' | 'manual', event?: LimitEvent): Promise<void> {
+    this.clearOffer(laneId);
+    await this.requireService().switchProvider(laneId, reason, event);
+    this.postState(true);
   }
 
   /** `hydra.openLanes` / `hydra.openCanvas`: open the Agents view on that view, optionally focusing a lane or head. */
@@ -230,6 +326,16 @@ export class LanesController implements vscode.Disposable {
           if (pick !== 'Start fresh') return undefined;
         }
         await service.restart(lane.id);
+        return this.viewOf(lane.id);
+      }
+      case 'switchProvider': {
+        const to = otherProvider(lane.provider);
+        if (interactive) {
+          const label = `Switch to ${providerLabel(to)}`;
+          const pick = await vscode.window.showWarningMessage(`Switch lane ${lane.name} to ${providerLabel(to)}?`, { modal: true, detail: 'Its current session ends and a handoff opens the new CLI in the same worktree. Uncommitted work is untouched.' }, label);
+          if (pick !== label) return undefined;
+        }
+        await this.performSwitch(lane.id, 'manual');
         return this.viewOf(lane.id);
       }
       case 'commit': {
@@ -308,6 +414,7 @@ export class LanesController implements vscode.Disposable {
           mode = pick === 'Keep branch' ? 'keep' : 'delete';
         }
         await service.close(lane.id, mode);
+        this.cancelSwitch(lane.id); this.clearOffer(lane.id);
         if (mode === 'keep') void info(`Closed lane ${lane.name}. Its branch ${lane.branch} is kept.`);
         return { closed: true, mode };
       }
@@ -346,5 +453,9 @@ export class LanesController implements vscode.Disposable {
 
   /** Window closing: stop every lane's terminal. */
   async stop(): Promise<void> { await this.service?.dispose(); }
-  dispose(): void { for (const disposable of this.disposables.splice(0)) disposable.dispose(); }
+  dispose(): void {
+    for (const timer of this.switchTimers.values()) clearTimeout(timer);
+    this.switchTimers.clear();
+    for (const disposable of this.disposables.splice(0)) disposable.dispose();
+  }
 }

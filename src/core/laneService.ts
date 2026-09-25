@@ -6,8 +6,11 @@ import { createWorktree, defaultWorktreeRoot } from './worktrees';
 import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalsUnavailable, type PtyModule } from './lanePty';
 import { LaneSync, syncIntervalMs } from './laneSync';
 import { checkMerge, closeLaneWorktree, commitLane, laneFullyMerged, mergeLane, pushLane, updateLane, type CloseMode, type MergeCheck } from './laneFinish';
-import { isLaneId, isSafeBranchName, laneBranch, laneFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LanePreambleOther, type LaneStore } from './lanes';
+import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LanePreambleOther, type LaneStore, type LaneSwitchReason } from './lanes';
+import { otherProvider } from './limitEvents';
+import { buildHandoff, defaultHandoffDeps, type HandoffDeps } from './limitHandoff';
 import type { HelperServerSpec } from './helperRegistration';
+import type { LimitEvent } from './limitEvents';
 import type { LaneSyncView, LaneView, Provider } from './model';
 
 /**
@@ -139,6 +142,8 @@ export interface LaneServiceOptions {
   env?: () => NodeJS.ProcessEnv;
   syncIntervalMs?: number;
   now?: () => Date;
+  /** For building the "Continue in <Other>" / manual-switch handoff. Defaults to the real filesystem and git. */
+  handoffDeps?: HandoffDeps;
 }
 
 export const maxOpenLanes = 24;
@@ -223,6 +228,33 @@ export class LaneService {
     await this.exclusive(id, async lane => {
       await this.terminals.get(lane.id)?.kill();
       await this.relaunch(this.options.store.get(lane.id)!, false);
+    });
+  }
+
+  /**
+   * "Continue in <Other>" after a usage limit, or the manual "Switch to <Other>"
+   * (docs/Gates_Plan.md, section 2): build the handoff, end the lane's session,
+   * switch `lane.provider` and record the switch, then relaunch the other CLI in
+   * the same worktree and branch, with the lane preamble plus the handoff as its
+   * first prompt. Uncommitted work is untouched — the switch never touches git.
+   */
+  async switchProvider(id: unknown, reason: LaneSwitchReason, event?: LimitEvent): Promise<Lane> {
+    return this.exclusive(id, async lane => {
+      const to = otherProvider(lane.provider);
+      const limitEvent: LimitEvent = event ?? { provider: lane.provider, source: 'lane', laneId: lane.id, at: this.now().toISOString(), cwd: lane.worktree };
+      const handoff = await buildHandoff({ event: limitEvent }, this.options.handoffDeps ?? defaultHandoffDeps(this.options.env?.() ?? process.env));
+      await this.terminals.get(lane.id)?.kill();
+      const switches = [...(lane.switches ?? []), { from: lane.provider, to, at: this.now().toISOString(), reason }];
+      const updated = await this.options.store.update(lane.id, { provider: to, switches, state: 'running', exitCode: undefined, reason: undefined });
+      const prompt = laneContinuePrompt(updated, lane.provider, this.others(lane.id), handoff.markdown);
+      try { await this.launch(updated, false, undefined, prompt); }
+      catch (error) {
+        await this.options.store.update(lane.id, { state: 'exited', reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
+        this.changed();
+        throw error;
+      }
+      this.changed(); this.schedule();
+      return this.options.store.get(lane.id)!;
     });
   }
 
@@ -336,13 +368,13 @@ export class LaneService {
 
   // ---- internals ----
 
-  private async launch(lane: Lane, resume: boolean, executable?: string): Promise<void> {
+  private async launch(lane: Lane, resume: boolean, executable?: string, promptOverride?: string): Promise<void> {
     const pty = this.options.pty;
     if (!pty) throw new Error(terminalsUnavailable);
     const testCommand = this.options.testCommand?.();
     executable ??= testCommand ? '' : await this.options.executable(lane.provider);
     const connected = testCommand ? true : await this.options.connected(lane.provider).catch(() => false);
-    const prompt = !resume && lane.goal ? lanePreamble(lane, this.others(lane.id)) : undefined;
+    const prompt = promptOverride ?? (!resume && lane.goal ? lanePreamble(lane, this.others(lane.id)) : undefined);
     const spec = laneLaunch({ lane, executable, resume, prompt, connected, bridge: this.options.bridge(lane.provider), mcpConfigFile: this.mcpConfigFile(lane.id), helpersDir: this.options.helpersDir, testCommand, env: this.options.env?.() ?? process.env });
     if (spec.mcpConfig) {
       await mkdir(this.options.configDirectory, { recursive: true });

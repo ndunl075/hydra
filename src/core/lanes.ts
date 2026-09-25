@@ -27,7 +27,14 @@ export interface Lane {
   exitCode?: number; mergedAt?: string;
   /** Why Hydra stopped the lane's terminal, when it did (for example "Hydra restarted"). */
   reason?: string;
+  /** Provider switches this lane has made (docs/Gates_Plan.md, section 2: "Continue in <Other>" and the manual "Switch to <Other>"). Oldest first. */
+  switches?: LaneSwitch[];
 }
+
+export type LaneSwitchReason = 'limit' | 'manual';
+export interface LaneSwitch { from: Provider; to: Provider; at: string; reason: LaneSwitchReason }
+export const laneSwitchReasons: readonly LaneSwitchReason[] = ['limit', 'manual'];
+const maxLaneSwitches = 50;
 
 /**
  * The only allowed state changes. A merged lane keeps its state when its
@@ -120,12 +127,29 @@ export function validateLane(value: unknown): Lane {
   if (lane.exitCode !== undefined && !Number.isInteger(lane.exitCode)) throw new Error(`${where} has an invalid exit code.`);
   if (lane.mergedAt !== undefined && !text(lane.mergedAt, 64)) throw new Error(`${where} has an invalid merge time.`);
   if (lane.reason !== undefined && !text(lane.reason, 500)) throw new Error(`${where} has an invalid reason.`);
+  const switches = validateLaneSwitches(lane.switches, where);
   return {
     id: lane.id, name, provider: lane.provider, ...(goal ? { goal } : {}),
     repository: lane.repository!, worktree: lane.worktree!, branch: lane.branch, baseCommit: lane.baseCommit, target: lane.target,
     createdAt: lane.createdAt!, state: lane.state!,
     ...(lane.exitCode !== undefined ? { exitCode: lane.exitCode } : {}), ...(lane.mergedAt ? { mergedAt: lane.mergedAt } : {}), ...(lane.reason ? { reason: lane.reason } : {}),
+    ...(switches ? { switches } : {}),
   };
+}
+
+/** `lane.switches`, field by field; kept short (the newest `maxLaneSwitches`), never guessed at. */
+function validateLaneSwitches(value: unknown, where: string): LaneSwitch[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${where} has an invalid switch history.`);
+  const isProvider = (candidate: unknown): candidate is Provider => candidate === 'claude' || candidate === 'codex';
+  const switches = value.map((entry): LaneSwitch => {
+    const item = entry as Partial<LaneSwitch> | undefined;
+    if (!item || typeof item !== 'object' || !isProvider(item.from) || !isProvider(item.to) || item.from === item.to) throw new Error(`${where} has an invalid switch entry.`);
+    if (typeof item.at !== 'string' || !item.at || item.at.length > 64 || Number.isNaN(Date.parse(item.at))) throw new Error(`${where} has an invalid switch time.`);
+    if (!laneSwitchReasons.includes(item.reason as LaneSwitchReason)) throw new Error(`${where} has an invalid switch reason.`);
+    return { from: item.from, to: item.to, at: item.at, reason: item.reason as LaneSwitchReason };
+  });
+  return switches.slice(-maxLaneSwitches);
 }
 
 export const restartReason = 'Hydra restarted';
@@ -196,7 +220,7 @@ export class LaneStore {
   }
 
   /** Change a lane. A state change must be in the transition table; a closed lane can't change. */
-  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'reason'>>): Promise<Lane> {
+  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'reason' | 'provider' | 'switches'>>): Promise<Lane> {
     return this.serialize(async () => {
       this.assertLoaded();
       const lane = this.lanes.get(id);
@@ -270,4 +294,16 @@ export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'>, other
   const budget = lanePreambleMax - head.length - advice.length - task.length - 3;
   if (middle.length > budget) middle = clip(middle, Math.max(0, budget));
   return clip([head, middle, advice, task].filter(Boolean).join(' '), lanePreambleMax);
+}
+
+/**
+ * The first prompt after a provider switch (docs/Gates_Plan.md, section 2: "Continue
+ * in <Other>" and the manual switch): the lane's usual preamble, plus the handoff
+ * flattened to one line (it is passed as a command-line argument, like the preamble).
+ */
+export const laneContinuePromptMax = lanePreambleMax + 4000;
+export function laneContinuePrompt(lane: Pick<Lane, 'name' | 'branch' | 'goal'>, from: Provider, others: readonly LanePreambleOther[], handoffMarkdown: string): string {
+  const preamble = lanePreamble(lane, others);
+  const handoff = clip(oneLine(handoffMarkdown), laneContinuePromptMax - preamble.length - 40);
+  return clip(`${preamble} You are continuing in this lane after ${providerName(from)} hit its usage limit. Handoff: ${handoff}`, laneContinuePromptMax);
 }

@@ -35,10 +35,15 @@ export async function run(): Promise<void> {
   await extension.activate();
   // The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3): the activity-bar container and its one tree view are
   // contributed. (hydra.openLanes resolving is exercised below, in laneSmoke, alongside a real lane.)
-  const contributes = extension.packageJSON?.contributes as { viewsContainers?: { activitybar?: { id: string }[] }; views?: Record<string, { id: string }[]> } | undefined;
+  const contributes = extension.packageJSON?.contributes as { viewsContainers?: { activitybar?: { id: string }[] }; views?: Record<string, { id: string }[]>; configuration?: { properties?: Record<string, { enum?: string[]; default?: unknown }> } } | undefined;
   assert.ok(contributes?.viewsContainers?.activitybar?.some(container => container.id === 'hydra'), 'The Hydra activity-bar container is contributed');
   assert.ok(contributes?.views?.hydra?.some(view => view.id === 'hydra.overview'), 'The hydra.overview tree view is contributed');
   console.log('PASS: the Hydra activity-bar container and its overview tree view are contributed.');
+  // The lane-aware usage-limit setting (docs/Gates_Plan.md, section 2).
+  const onLimit = contributes?.configuration?.properties?.['hydra.lanes.onLimit'];
+  assert.deepEqual(onLimit?.enum, ['ask', 'switch']);
+  assert.equal(onLimit?.default, 'ask');
+  console.log('PASS: hydra.lanes.onLimit is contributed.');
   const repository = process.env.HYDRA_TEST_REPOSITORY;
   if (process.env.HYDRA_TEST_HANDOFF_PROVIDER) {
     const provider = process.env.HYDRA_TEST_HANDOFF_PROVIDER as 'claude' | 'codex';

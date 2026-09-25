@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildOffer, buildOfferMessage, continuedHistoryReason, formatResetTime, limitEventKey,
+  buildOffer, buildOfferMessage, continuedHistoryReason, formatResetTime, laneOfferButtons, laneOfferMessage, laneSwitchCountdownSeconds, limitEventKey,
   LimitOfferTracker, offerButtons, otherStillLimited, shouldOfferHandoff,
 } from '../src/core/limitOffer';
 import type { LimitEvent } from '../src/core/limitEvents';
@@ -9,12 +9,24 @@ import type { LimitEvent } from '../src/core/limitEvents';
 const at = (iso: string) => new Date(iso);
 const chatEvent = (patch: Partial<LimitEvent> = {}): LimitEvent => ({ provider: 'claude', source: 'chat', at: '2026-09-24T10:00:00.000Z', sessionId: 'sess-1', ...patch });
 const headEvent = (patch: Partial<LimitEvent> = {}): LimitEvent => ({ provider: 'claude', source: 'head', at: '2026-09-24T10:00:00.000Z', jobId: 'abc123abc123', ...patch });
+const laneEvent = (patch: Partial<LimitEvent> = {}): LimitEvent => ({ provider: 'claude', source: 'lane', at: '2026-09-24T10:00:00.000Z', laneId: 'abcdef012345', ...patch });
 
-test('limitEventKey identifies the same chat/head, distinct otherwise', () => {
+test('limitEventKey identifies the same chat/head/lane, distinct otherwise', () => {
   assert.equal(limitEventKey(chatEvent()), limitEventKey(chatEvent({ at: '2026-09-24T10:05:00.000Z' })));
   assert.notEqual(limitEventKey(chatEvent()), limitEventKey(chatEvent({ sessionId: 'sess-2' })));
   assert.notEqual(limitEventKey(chatEvent()), limitEventKey(headEvent()));
   assert.notEqual(limitEventKey(chatEvent()), limitEventKey({ ...chatEvent(), provider: 'codex' }));
+  assert.notEqual(limitEventKey(chatEvent()), limitEventKey(laneEvent()));
+  assert.equal(limitEventKey(laneEvent()), limitEventKey(laneEvent({ at: '2026-09-24T10:05:00.000Z' })));
+  assert.notEqual(limitEventKey(laneEvent()), limitEventKey(laneEvent({ laneId: '112233445566' })), 'two lanes of the same provider never collide');
+});
+
+test('laneOfferMessage/laneOfferButtons build the tile banner: only Wait when the other provider is also limited', () => {
+  assert.equal(laneOfferMessage(laneEvent(), at('2026-09-24T10:00:00.000Z')), 'Claude Code hit its usage limit.');
+  assert.match(laneOfferMessage(laneEvent({ resetsAt: '2026-09-24T15:45:00.000Z' }), at('2026-09-24T10:00:00.000Z')), /^Claude Code hit its usage limit \(resets \d{1,2}:\d{2}.*\)\.$/);
+  assert.deepEqual(laneOfferButtons(false), ['continueOther', 'viewHandoff', 'wait']);
+  assert.deepEqual(laneOfferButtons(true), ['wait']);
+  assert.equal(laneSwitchCountdownSeconds, 10);
 });
 
 test('shouldOfferHandoff dedupes the same chat/head within the window, not after it or for a different one', () => {
@@ -97,4 +109,14 @@ test('LimitOfferTracker: dedupes repeats, tracks the other provider being limite
   const afterCodexResets = tracker.consider(chatEvent({ sessionId: 'sess-later', at: '2026-09-24T12:30:00.000Z' }), at('2026-09-24T12:30:00.000Z'));
   assert.ok(afterCodexResets);
   assert.equal(afterCodexResets!.otherAlsoLimited, false, 'codex has since reset');
+});
+
+test('LimitOfferTracker is shared across chats, heads and lanes: a Codex chat limit shows up for a Claude lane, and vice versa', () => {
+  const tracker = new LimitOfferTracker();
+  const codexChat = tracker.consider(chatEvent({ provider: 'codex', sessionId: 'codex-1', resetsAt: '2026-09-24T12:00:00.000Z', at: '2026-09-24T10:00:00.000Z' }), at('2026-09-24T10:00:00.000Z'));
+  assert.equal(codexChat!.otherAlsoLimited, false);
+  const claudeLane = tracker.consider(laneEvent({ at: '2026-09-24T10:05:00.000Z' }), at('2026-09-24T10:05:00.000Z'));
+  assert.equal(claudeLane!.otherAlsoLimited, true, "Codex's own chat limit is seen by a Claude lane's offer too");
+  const anotherClaudeLane = tracker.consider(laneEvent({ laneId: '112233445566', at: '2026-09-24T10:06:00.000Z' }), at('2026-09-24T10:06:00.000Z'));
+  assert.equal(anotherClaudeLane!.otherAlsoLimited, true, 'a second lane of the same provider is not a dedupe repeat of the first');
 });

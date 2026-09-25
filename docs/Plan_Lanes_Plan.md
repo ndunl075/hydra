@@ -369,15 +369,15 @@ The planner doesn't suggest `runAs`; its jobs are all heads.
 
 **Done** when the local gate passes (check, build, tests, smoke), the live checklist passes, the PR is merged with CI green, the installed app is refreshed, and Nico has the summary.
 
-## Open questions for the owner
+## Decisions (Nico, 2026-09-25)
 
-1. **Should a lane job start working at once?** This plan sends its brief as the first prompt, like New lane with a goal. The alternative is to open the lane with the brief shown but not sent, and wait for you.
-2. **Longer lane briefs:** keep the 2000-character cap, or write the full brief to a file that the lane's first prompt points to?
-3. **Moving a result:** may Mark job done be pressed again, while no dependent has started yet, to move the result forward?
-4. **The planner and lanes:** add the "Suggest lanes" option later, or never?
-5. **Adding jobs to a running plan** from its canvas node? Today **+ Job** exists only on drafts.
-6. **Should the lane's agent be able to ask for "done"?** For example, a `hydra_job_ready` action that shows you a **Mark job done** prompt. It would never mark the job itself.
-7. **Heads queued behind a head that hit its usage limit** are failed at once by `dispatchQueued` today, so **Continue in** can't save them. Make them wait instead? Recommended: yes, as a small fix in phase 1.
+1. **A lane job starts working at once:** its brief is the first prompt, like New lane with a goal. You can type to it at any time.
+2. **Long briefs go in a file.** The full brief is written to a file the lane can read (outside the tracked tree, never committed), and the first prompt points to it. The 2000-character cap goes.
+3. **Mark job done can be pressed again** to move the result forward, while no dependent has started.
+4. **The planner doesn't suggest lanes yet.** Later.
+5. **+ Job works on a running plan** as well as on drafts.
+6. **A lane's agent may ask for done:** a `hydra_job_ready` action shows you a **Mark job done** prompt. It never marks the job itself.
+7. **Heads queued behind a head that hit its usage limit wait** instead of failing, so **Continue in** can still save them. Fixed in phase 1.
 
 ## As built
 

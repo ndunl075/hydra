@@ -3,6 +3,7 @@ import type { SettingsPage } from '../types';
 import { appearancePage } from './appearance';
 import { connectorsPage } from './connectors';
 import { docsPage } from './docs';
+import { gatesPage } from './gates';
 import { generalPage } from './general';
 import { headsPage } from './heads';
 import { mcpServersPage } from './mcpServers';
@@ -12,6 +13,7 @@ const byId: Record<string, SettingsPage> = {
   connectors: connectorsPage,
   mcpServers: mcpServersPage,
   heads: headsPage,
+  gates: gatesPage,
   appearance: appearancePage,
   docs: docsPage,
 };

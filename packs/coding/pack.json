@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "coding",
+  "title": "Coding",
+  "description": "Roles for building and reviewing code, and a review gate that checks each change.",
+  "publisher": "Hydra",
+  "roles": [
+    {
+      "id": "builder", "title": "Builder", "provider": "claude",
+      "description": "Builds a feature with tests, keeps to the brief, and says what it didn't do.",
+      "instructions": "roles/builder.md", "skills": ["test-first"]
+    },
+    {
+      "id": "ui-builder", "title": "UI builder", "provider": "claude",
+      "description": "Frontend work, checked at 390, 768 and 1280 px, by keyboard, and in the console.",
+      "instructions": "roles/ui-builder.md", "skills": ["ui-check"], "mcpServers": ["playwright"]
+    },
+    {
+      "id": "reviewer", "title": "Reviewer", "provider": "codex", "changes": "optional",
+      "description": "Reads the diff against the target and lists findings with file:line and severity.",
+      "instructions": "roles/reviewer.md"
+    }
+  ],
+  "gates": [
+    {
+      "id": "code-review", "type": "review", "reviewer": "other",
+      "focus": "Correctness, missing tests for new behaviour, security (injection, secrets, unsafe paths), and whether the change does what the brief asks. Ignore style."
+    }
+  ],
+  "mcpServers": {
+    "playwright": { "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.82", "--headless", "--isolated"] }
+  }
+}

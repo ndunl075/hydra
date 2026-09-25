@@ -36,6 +36,9 @@ import { codexLaneFanout } from './core/limitEvents';
 import { LimitOfferTracker } from './core/limitOffer';
 import { LanesController, isLaneMessage } from './extensionLanes';
 import { HydraTreeProvider } from './extensionTree';
+// ---- Packs (docs/Packs_Plan.md). Its own block. ----
+import { createPackService } from './extensionPacks';
+import type { PackService } from './core/packs/service';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
 import { createPlan, maxPlanJobs, PlanStore, type Plan, type PlanJob } from './core/plans';
@@ -118,6 +121,8 @@ class Manager {
   // ---- Canvas tidy-up (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): the Finished tray's Clear button, kept across reloads. ----
   private readonly dismissedTrayKey = 'hydra.tray.dismissed.v1';
   private dismissedTrayIds = new Set<string>();
+  // ---- Packs (docs/Packs_Plan.md): gates.json plus the active packs' gates, for heads and lanes ----
+  private readonly packs: PackService;
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
@@ -129,6 +134,7 @@ class Manager {
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
     this.leadKey = key;
+    this.packs = createPackService(context, line => this.output.appendLine(line));
     this.lanes = new LanesController({
       context, log: line => this.output.appendLine(line),
       post: message => { void this.panel?.webview.postMessage(message); },
@@ -141,6 +147,7 @@ class Manager {
       planJob: laneId => this.planJobOfLane(laneId),
       markJobDone: (laneId, result) => this.markPlanJobDone(laneId, result),
       cancelPlanJob: laneId => this.cancelPlanJobOfLane(laneId),
+      gates: this.packs.gates,
     }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
     const storedDismissed = context.workspaceState.get<string[]>(this.dismissedTrayKey);
@@ -370,6 +377,8 @@ class Manager {
         jobReady: (laneId, note) => this.lanes.jobReady(laneId, note) },
       // ---- Gates (docs/Gates_Plan.md) ----
       providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
+      // ---- Packs (docs/Packs_Plan.md) ----
+      gates: this.packs.gates,
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
     this.context.subscriptions.push(this.limitEvents.event(event => { this.latestLimits.set(event.provider, event); }));

@@ -10,7 +10,7 @@ import { checkMerge, closeLaneWorktree, commitLane, laneDirty, laneFullyMerged, 
 import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, laneJobFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LaneGatesRecord, type LanePlanLink, type LanePreambleOther, type LaneStore, type LaneSwitchReason } from './lanes';
 import { otherProvider } from './limitEvents';
 import { buildHandoff, defaultHandoffDeps, type HandoffDeps } from './limitHandoff';
-import { freshDirectory, loadGates, runGates as runGatesCore, type GateContext, type GatesConfig, type GatesOutcome } from './gates';
+import { freshDirectory, loadGates, runGates as runGatesCore, type GateContext, type GatesConfig, type GatesLoader, type GatesOutcome } from './gates';
 import { gateBlocks, type JobCheckResult } from './jobs';
 import type { HelperServerSpec } from './helperRegistration';
 import type { LimitEvent } from './limitEvents';
@@ -155,6 +155,9 @@ export interface LaneServiceOptions {
   // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
   /** The plan job a lane runs, for the hydra_lanes answer: its plan, its job and how many jobs wait on it. */
   planOf?: (laneId: string) => { title: string; job: string; dependents: number } | undefined;
+  // ---- Packs (docs/Packs_Plan.md) ----
+  /** Where the repository's gates come from: gates.json plus the active packs' gates (PackService.gates). Defaults to gates.json only. */
+  gates?: GatesLoader;
 }
 
 /** How a plan lane starts (docs/Plan_Lanes_Plan.md, "Starting a lane job"). */
@@ -379,7 +382,7 @@ export class LaneService {
       // Plan lanes: measured from laneDiffBase, and the commit is recorded when the lane was clean, so Merge can reuse the run.
       const cleanBefore = !await laneDirty(lane).catch(() => true);
       const base = await laneDiffBase(lane, head);
-      const config = await loadGates(lane.repository).catch(() => undefined);
+      const config = await (this.options.gates ?? loadGates)(lane.repository).catch(() => undefined);
       const logDirectory = await freshDirectory(this.options.gatesLogDirectory ?? path.join(this.options.configDirectory, '..', 'gates'), `${lane.id}-${Date.now()}`);
       const outcome = await runGatesCore(lane.repository, lane.worktree, base, {
         author: lane.provider, title: lane.name, brief: lane.goal, logDirectory,
@@ -387,7 +390,7 @@ export class LaneService {
         ...(this.options.gatesLimited ? { limited: this.options.gatesLimited } : {}),
         signal: controller.signal, ...(onProgress ? { onProgress } : {}), ...(this.options.log ? { log: this.options.log } : {}),
         ...(this.options.gatesRuntime ? { runtime: this.options.gatesRuntime } : {}),
-      });
+      }, this.options.gates);
       if (controller.signal.aborted) throw new Error('The gates run was cancelled.');
       const headAfter = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
       const commit = cleanBefore && headAfter === head && /^[a-f0-9]{40,64}$/.test(head) && !await laneDirty(lane).catch(() => true) ? head : undefined;
@@ -409,7 +412,7 @@ export class LaneService {
     if (!record?.commit || !record.config || record.results.some(gateBlocks)) return undefined;
     const head = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
     if (head !== record.commit || await laneDirty(lane).catch(() => true)) return undefined;
-    const config = await loadGates(lane.repository).catch(() => undefined);
+    const config = await (this.options.gates ?? loadGates)(lane.repository).catch(() => undefined);
     return config && gatesFingerprint(config) === record.config ? record : undefined;
   }
 

@@ -7,7 +7,7 @@ import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePt
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
 import { LaneService, maxOpenLanes } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
-import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesOutcome } from './core/gates';
+import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesLoader, type GatesOutcome } from './core/gates';
 import type { JobCheckResult } from './core/jobs';
 import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneLimitOfferView, type LaneOfferButtonId, type LaneServerMessage, type LaneView, type Provider } from './core/model';
 import { otherProvider, type LimitEvent } from './core/limitEvents';
@@ -47,6 +47,8 @@ export interface LanesHost {
   markJobDone?(laneId: string, result: PlanLaneResultInput): Promise<void>;
   /** Cancel job: the job is cancelled and the lane stays open, as an ordinary lane. */
   cancelPlanJob?(laneId: string): Promise<void>;
+  // ---- Packs (docs/Packs_Plan.md): gates.json plus the active packs' gates. Undefined reads gates.json only. ----
+  gates?: GatesLoader;
 }
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
@@ -136,6 +138,7 @@ export class LanesController implements vscode.Disposable {
       gatesLimited: provider => this.host.gatesLimited(provider),
       gatesLogDirectory: path.join(storageDirectory, 'lanes', 'gates'),
       planOf: id => { const job = this.planJobOf(id); return job ? { title: job.planTitle, job: job.jobTitle, dependents: job.dependents } : undefined; },
+      ...(this.host.gates ? { gates: this.host.gates } : {}),
     });
     this.disposables.push(vscode.workspace.registerTextDocumentContentProvider(baseScheme, { provideTextDocumentContent: uri => this.baseContent(uri) }));
     this.service.activate();
@@ -617,8 +620,8 @@ export class LanesController implements vscode.Disposable {
    * work), `anyway`, or Cancel. Undefined means stop; `note` is what the confirmation adds.
    */
   private async gatesBefore(service: LaneService, lane: Lane, interactive: boolean, question: string, anyway: string): Promise<{ note: string } | undefined> {
-    const gatesConfig = await loadGates(lane.repository).catch(() => undefined);
-    if (!gatesConfig || gatesConfig.lanes !== 'onMerge' || !gatesConfig.gates.length) return { note: '' };
+    const gatesConfig = await (this.host.gates ?? loadGates)(lane.repository).catch(() => undefined);
+    if (!gatesConfig || gatesConfig.lanes !== 'onMerge' || !(gatesConfig.gates.length || gatesConfig.notRun?.length)) return { note: '' };
     const reused = await service.reusableGates(lane.id).catch(() => undefined);
     if (reused?.commit) return { note: ` Gates passed on ${reused.commit.slice(0, 7)} at ${new Date(reused.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` };
     const outcome = await this.runGatesFlow(service, lane, interactive);

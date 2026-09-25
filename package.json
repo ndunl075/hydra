@@ -335,6 +335,11 @@
           "default": "",
           "description": "Absolute directory for Hydra head worktrees, outside the repository. Empty uses a sibling <repository>.worktrees folder."
         },
+        "hydra.packs.folder": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute folder that holds your packs, one folder per pack. Empty uses ~/.hydra/packs."
+        },
         "hydra.maxConcurrentHelpers": {
           "type": "integer",
           "minimum": 1,

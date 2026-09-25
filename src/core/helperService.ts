@@ -2,7 +2,7 @@ import path from 'node:path';
 import { git } from './git';
 import { createWorktree } from './worktrees';
 import { defaultMaxAttempts, finalJobStates, gateBlocks, gateKind, gateState, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
-import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig } from './gates';
+import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig, type GatesLoader } from './gates';
 import { dependencyBase, dependencyBrief, dependencyNoun, type DependencyResult } from './headStart';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
@@ -51,6 +51,9 @@ export interface HelperServiceOptions {
   providerLimited?: (provider: Provider) => boolean;
   /** Gates: test seams for the reviewer, the browser and the clock. */
   gateRuntime?: Partial<GateRuntime>;
+  // ---- Packs (docs/Packs_Plan.md) ----
+  /** Where a folder's gates come from: gates.json plus the active packs' gates (PackService.gates). Defaults to gates.json only. */
+  gates?: GatesLoader;
 }
 
 interface Active { run: HelperRun; token: string; startedAt: number; blockedSince?: number; blockedTotal: number; answer?: (reply: string) => void }
@@ -260,8 +263,8 @@ export class HelperService {
     if (commit === base) return { accepted: false, message: 'You have not changed anything yet. Make the changes, then call hydra_done again.' };
     // Gates come from the lead's folder, never the head's worktree. A gates file Hydra can't
     // read is the project's problem, not the head's: no attempt is spent on it.
-    let gates: GatesConfig;
-    try { gates = await loadGates(this.options.leadFolder); }
+    let gates: Awaited<ReturnType<GatesLoader>>;
+    try { gates = await (this.options.gates ?? loadGates)(this.options.leadFolder); }
     catch (error) { return { accepted: false, message: `Hydra can't check your work: ${error instanceof Error ? error.message : String(error)} That isn't your fault. Call hydra_stuck and ask the lead to fix it, then call hydra_done again.` }; }
     const maxAttempts = gates.maxAttempts ?? defaultMaxAttempts;
     const changedFiles = (await git(worktree, ['diff', '--name-only', '-z', '--no-renames', base, commit, '--'])).split('\0').filter(Boolean);
@@ -271,7 +274,8 @@ export class HelperService {
     const attempts = job.attempts + 1;
     if (outside.length) return this.checkFailed(jobId, attempts, maxAttempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`);
     // The scope check first, then the gates in order (docs/Gates_Plan.md, "Heads").
-    const checks = gates.gates.length ? await runGateList(gates.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [];
+    // A listed pack that can't run reports its gates as not run (docs/Packs_Plan.md); those never block.
+    const checks = [...gates.gates.length ? await runGateList(gates.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [], ...gates.notRun ?? []];
     if (this.options.store.get(jobId)?.state !== 'checking') return { accepted: false, message: 'This head was stopped. Stop now.' };
     if (signal?.aborted) {
       // The head's call ended mid-check: not its failure, so no attempt is spent.
@@ -588,6 +592,7 @@ function describeGate(check: JobCheckResult) {
     ...(check.findings?.length ? { findings: check.findings } : {}),
     ...(check.evidence?.length ? { evidence: check.evidence } : {}),
     ...(state !== 'passed' && check.outputTail ? { output_tail: check.outputTail } : {}),
+    ...(check.pack ? { pack: check.pack } : {}),
   };
 }
 

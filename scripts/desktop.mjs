@@ -799,7 +799,7 @@ export async function stageHydra(destination) {
     // defaults this experimental setting to 'some' outside stable builds).
     'workbench.editor.useModal': 'off' };
   await fs.mkdir(destination, { recursive: true });
-  for (const name of ['dist', 'themes', 'media', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
+  for (const name of ['dist', 'themes', 'media', 'packs', 'README.md', 'hydra-logo.png']) await fs.cp(path.join(root, name), path.join(destination, name), { recursive: true });
   // Smoke-test code is a development artifact, not a bundled extension entrypoint.
   await fs.rm(path.join(destination, 'dist', 'smoke.cjs'), { force: true });
   await fs.writeFile(path.join(destination, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');

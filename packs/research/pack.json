@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "research",
+  "title": "Research",
+  "description": "Roles for sourced research in Markdown, and a fact-check gate that checks each claim has a source.",
+  "publisher": "Hydra",
+  "roles": [
+    {
+      "id": "researcher", "title": "Researcher", "provider": "claude", "tools": ["web"],
+      "description": "Writes findings as Markdown, every claim with a source link and date.",
+      "instructions": "roles/researcher.md", "skills": ["cite-sources"]
+    },
+    {
+      "id": "fact-checker", "title": "Fact-checker", "provider": "codex", "tools": ["web"], "changes": "optional",
+      "description": "Checks each claim in the changed Markdown against its source.",
+      "instructions": "roles/fact-checker.md", "skills": ["cite-sources"]
+    }
+  ],
+  "gates": [
+    {
+      "id": "fact-check", "type": "review", "reviewer": "other", "role": "fact-checker",
+      "focus": "Every factual claim in the changed Markdown has a link that supports it. Unsupported or misattributed claims are major."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Gates, and the usage-limit offer in lanes
 
-Status: **plan** (2026-09-25). Agreed with Nico, using the recommended defaults.
+Status: **built** (2026-09-25). See "As built" at the end.
 
 ## Goal
 
@@ -182,3 +182,43 @@ Two gaps found on 2026-09-25, fixed in the same place (`HelperService.startHelpe
   4. A simulated Claude limit in a lane (`hydra.debug.simulateLimit` extended to take a lane) shows the tile banner; Continue in Codex relaunches the lane with Codex in the same worktree.
 
 **Done** when the gate passes (check, build, tests, smoke), the live checks pass, the PR is merged with CI green, the installed app is refreshed, and Nico has the summary.
+
+## As built
+
+**Where it lives**
+- **Gates:** `src/core/gates/` (`config.ts`, `index.ts`, `command.ts`, `review.ts`, `browser.ts`, `screenshots.ts`, `types.ts`).
+- **Head start:** `src/core/headStart.ts`.
+- **Evidence:** `src/core/evidence.ts`.
+- **Settings page:** `src/settings/pages/gates*.ts`.
+- **Lane gates, and the limit offer:** `extensionLanes.ts` and `laneService.ts`.
+- **The hook's lane tag:** `hydraLimitHook.ts` and `limitDetection.ts`.
+
+**Changes from the plan**
+- **The review prompt goes on stdin,** because a 60 KB diff doesn't fit a Windows command line. Codex runs `exec --json [-i png]… --sandbox read-only -`.
+- **Once a required gate fails, the later ones are skipped** ("Skipped: unit failed first."), so you don't pay for a review of work that's going back anyway.
+- **Command names** such as `npm` are looked up on PATH/PATHEXT on Windows.
+- **A browser that can't start** marks the screenshots gate **not run**, like an unavailable reviewer.
+- **Several dependencies are combined** with `git merge-tree` plus `commit-tree`, so a conflict fails the dependent before any worktree exists.
+- **An unreadable `gates.json`** never costs the head an attempt. The head is told to ask with `hydra_stuck`.
+- **View evidence writes a real `.md` file** next to the run's evidence, with relative links and `#L` line anchors. The Markdown preview refuses `file:` links, so a virtual document showed them as raw text.
+- **Lane merges and limits:**
+  - A failed lane merge defaults to **Send to lane**, never **Merge anyway**. If the lane's session has ended, the findings go on the clipboard with a **Resume** offer.
+  - A lane's usage limit also shows a notification naming the lane.
+  - A limit event from the agent a lane has already left is ignored.
+- **Removing a lane worktree** copes with a close that races another close.
+
+**Verified live** (2026-09-25):
+- **Review:** the real `claude -p … --permission-mode plan` and `codex exec --json … -` reviews both returned the JSON verdict and caught a planted bug.
+- **A head's gates:** a Claude head started from a lane passed command, screenshots and a Codex review, with chips on the canvas. The evidence document showed the real screenshots and the review.
+- **A lane merge:** with a failing `unit` gate it offered Send to lane. Send to lane typed the failures without pressing Enter.
+- **Settings → Gates** listed the project's gates.
+- **The limit offer:**
+  - The real Claude hook, run with a lane's id, showed the tile banner and the notification.
+  - Continue in Codex relaunched the lane with Codex in the same worktree, with an uncommitted file intact.
+  - Wait dismissed the banner.
+  - `onLimit: "switch"` counted down and switched.
+
+**Not done, or later**
+- **The screenshots gate** was verified with a static page. A Vite or Next dev server through `npm run dev` wasn't tried live.
+- **Codex limit fan-out** (one account-level event reaching every Codex lane) is covered by unit tests only.
+- **Packs and Freebuff.**

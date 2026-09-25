@@ -33,6 +33,7 @@ import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { registerLimitOffer } from './extensionLimitOffer';
 import { LanesController, isLaneMessage } from './extensionLanes';
+import { HydraTreeProvider } from './extensionTree';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
 import { createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
@@ -89,6 +90,8 @@ class Manager {
   readonly limitEvents = new vscode.EventEmitter<LimitEvent>();
   // ---- Lanes (docs/Lanes_And_Planner_Plan.md): state; the methods are in the Lanes block below ----
   private readonly lanes: LanesController;
+  /** The Hydra activity-bar panel (section 3): one TreeView over lanes, heads and plans. */
+  private readonly tree = new HydraTreeProvider();
   /** The Agents panel whose webview has sent "ready". */
   private readyPanel?: vscode.WebviewPanel;
   /** The window's discovery record lists its folders plus open lanes' worktrees. */
@@ -99,7 +102,7 @@ class Manager {
     this.quota = new ProviderQuota(context, this.settingsImport.available);
     this.settings = new AppearanceSettings(context, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
-    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota, this.limitEvents);
+    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota, this.limitEvents, this.tree);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
@@ -170,6 +173,10 @@ class Manager {
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
     this.lanes.registerCommands(command);
+    // ---- The Hydra panel (docs/Lanes_And_Planner_Plan.md, section 3) ----
+    this.context.subscriptions.push(vscode.window.createTreeView('hydra.overview', { treeDataProvider: this.tree }));
+    command('hydra.overview.mergeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'merge', true));
+    command('hydra.overview.closeLane', (row: { item?: { id?: string } } = {}) => row.item?.id && this.lanes.action(row.item.id, 'close', true));
     // Not in the palette: fires a made-up limit event, for the handoff UI and smoke tests.
     command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat') => {
       if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat" or "head".');
@@ -313,6 +320,7 @@ class Manager {
     const planStore = new PlanStore(path.join(this.storageDirectory, 'plans'));
     await planStore.load();
     this.plans = { store: planStore, planning: new Map() };
+    this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list() });
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
   }
@@ -326,6 +334,7 @@ class Manager {
    * lane's bridge finds this window from inside its worktree. The old record goes.
    */
   private laneFoldersChanged(): void {
+    this.tree.update({ lanes: this.lanes.state().lanes });
     const discovery = this.discovery;
     if (!discovery) return;
     const worktrees = this.lanes.openWorktrees(), key = JSON.stringify(worktrees);
@@ -533,7 +542,9 @@ class Manager {
   }
   /** Head changes go to the webview at once (the Agents canvas animates them); the full snapshot follows, debounced. */
   private headsChanged(): void {
-    void this.broadcast({ type: 'heads', heads: this.headViews() ?? [] }).catch(() => undefined);
+    const heads = this.headViews() ?? [];
+    void this.broadcast({ type: 'heads', heads }).catch(() => undefined);
+    this.tree.update({ heads });
     this.publishSoon();
   }
   private publishSoon(): void {
@@ -556,7 +567,9 @@ class Manager {
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
   /** Plan changes go to the webview at once (mirrors headsChanged); the full snapshot follows, debounced. */
   private plansChanged(): void {
-    void this.broadcast({ type: 'plans', plans: this.plans?.store.list() ?? [] }).catch(() => undefined);
+    const plans = this.plans?.store.list() ?? [];
+    void this.broadcast({ type: 'plans', plans }).catch(() => undefined);
+    this.tree.update({ plans });
     this.publishSoon();
   }
   private requirePlans(): { store: PlanStore; planning: Map<string, AbortController> } {

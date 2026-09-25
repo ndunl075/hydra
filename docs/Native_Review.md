@@ -1,5 +1,7 @@
 # Native task review
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 Stop the task's managed process or terminal before reviewing. If the task is externally owned, stop its official-extension session and acknowledge handback in the original Hydra window. Hydra cannot stop a manually launched external writer.
 
 Refresh **Changes**, then select a layer under a file. Native diffs open in the second editor group with the manager retained in the first. **Open file** still opens an existing worktree file for normal editing; deleted files are available through their diff layers.

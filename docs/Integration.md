@@ -1,5 +1,7 @@
 # Reviewed task integration
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 A reviewed task commit can be merged into a detached candidate beside the task worktrees. Preparing a candidate preserves the task branch and target checkout. Choose acceptance checks as executable/argument JSON; commands run only after an explicit preparation or resolved-candidate acceptance, with a two-minute limit and bounded retained logs. Windows command shims reject shell metacharacters.
 
 Native Git performs the merge and runs its hooks. Conflicts retain the candidate for manual resolution: copy its path, resolve and commit there, review the fixed target-to-candidate diff, then explicitly accept that resolution and rerun the checks. There is no automatic conflict resolution or discarding of edits.

@@ -1,5 +1,7 @@
 # Verified per-task model controls
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 This milestone adds explicit model and reasoning-effort selection for managed Codex tasks. It preserves official provider defaults when no selection is saved. It does not introduce a project-wide override, account entitlement claims, automatic retries, or additional model calls.
 
 Hydra 0.17.0 also provides a candidate Claude CLI control adapter with authoritative pre-prompt settings checks and scoped approvals; see [Claude controls](Claude_Controls.md). Its authenticated and full revision acceptance remain separate gates. The Codex contract below is unchanged.

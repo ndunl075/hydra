@@ -1,5 +1,7 @@
 # Confirmed task discard and recovery
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 Use **Review discard** after stopping a task's writers. Hydra lists commits absent from the recorded target branch and staged, unstaged and untracked saved changes. **Discard task…** opens a native confirmation identifying the title, branch, checkout and counts. Cancelling leaves the task unchanged. A changed task HEAD, target commit, index or saved tracked/untracked content requires a fresh review.
 
 Discard retires the task record and removes it from normal task filters, the agent map and the native task tree. The complete checkout stays at its existing path. Its Git branch, staged state, untracked and ignored files, provider history, handoff notes and integration candidates are retained. This reversible action consumes no model tokens and starts no provider process. It does not reclaim disk space or permanently remove Git worktrees/branches.

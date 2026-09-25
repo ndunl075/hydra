@@ -1,5 +1,7 @@
 # Verified Claude settings and scoped approvals
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 Hydra 0.17.0 adds a candidate adapter for the official Claude Code 2.1.270 CLI. It initializes streaming input and reads provider-applied model/effort before submitting the task prompt. It uses the CLI's existing login and environment; no Agent SDK runtime, API key substitution, account mutation, or settings-file write is introduced. Authenticated edit/test/approval/interruption/resume acceptance is still pending an agreed live-test budget.
 
 ## Model and effort

@@ -1,5 +1,7 @@
 # Worktree archive eligibility and recovery preview
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 `previewTaskArchiveEligibility` provides a local, advisory answer to whether a task checkout may be archived after its reviewed result has been accepted into the recorded integration target. It has no filesystem, Git mutation, process, provider, scheduler, or persistence behavior. In particular, it never deletes, moves, prunes, or removes a worktree or branch.
 
 The caller must supply explicit host observations for the saved checkout (`clean`, `dirty`, `unsaved`, or `unknown`), ownership (`stopped`, `active`, `uncertain`, or `unknown`), and evidence (`complete`, `pending`, or `unknown`). Omitted or unknown evidence blocks eligibility; the preview never assumes that a checkout is clean, a writer stopped, or evidence is complete. It also blocks a running/external/official task, pending scheduler work, a matching task integration that has not reached `promoted`, and active dependent consumers or child writers.

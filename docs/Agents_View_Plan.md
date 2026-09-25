@@ -111,7 +111,7 @@ Not in this plan. A separate lane or tray for work that runs for hours (backgrou
 - **Phase 4:**
   - The Agents page is now the header plus the canvas; the handoff window keeps its view.
   - The task list, "Resources and setup", "Managed CLI", profile slots and the new-task form are gone from it.
-  - `AgentMap` and `HelperDashboard` were deleted; the managed-task components stay in the tree for the follow-up removal.
+  - `AgentMap` and `HelperDashboard` were deleted; the managed-task components stayed in the tree until the follow-up removal (below).
   - Tests moved to `tests/agentsCanvas.test.ts`.
 - **Phase 5:**
   - Verified live in the probe: a real Claude Code lead, run from a terminal inside Hydra, started three heads, one of them Codex, with a dependency.
@@ -132,6 +132,9 @@ Not in this plan. A separate lane or tray for work that runs for hours (backgrou
   - Heads that left weren't always cleared, which kept the empty message hidden. Clearing now runs on the canvas's own clock, not a timer a re-render could cancel.
   - A chat now stays about a second after its last head folds back into it, then fades (the plan's "short grace period").
   - A headless-browser harness drove the real component through empty → two heads → merged → empty and confirmed each step, with no errors.
+- **Follow-up: task code removed (done).** The managed-task system is gone from the tree:
+  - Modules: managed Claude/Codex sessions and their session store, the task store, scheduler, profile slots, resources and setup recipes, soft budgets and usage, review/commit/discard, integration, task context and conversation drafts, model/permission pickers and their protocol code.
+  - Surfaces: the Tasks tree view, the Editor-mode "Agent" conversation view in the secondary sidebar, and their commands (**New Task**, **Open Task**, **Refresh Tasks**, **Create Task**, **Open Agent Conversation**, **Open Task in Claude Code / Codex**) and settings (`hydra.maxConcurrentTasks`, `hydra.maxConcurrentProfileTasks`).
+  - Kept: heads, the Agents canvas, the handoff window's view, onboarding, accounts, quota, settings/import, provider checks and desktop update code. `hydra.newTask` is still registered, uncontributed, because the desktop Get Started walkthrough links it; it opens the Agents view.
 - **Not done:**
-  - Removing the managed-task code from the tree is the planned follow-up.
   - Codex was tested as a head (started by a Claude lead), not as a lead itself: its lead provider tag is covered by unit tests, and in real use comes from the Connect registration.

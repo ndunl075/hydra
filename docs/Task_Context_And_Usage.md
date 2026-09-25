@@ -1,5 +1,7 @@
 # Focused task context and reported usage
 
+> **Removed (2026-09-24).** This described part of Hydra's managed-task system, which was removed once the Agents view became a live canvas of Hydra heads (see [Agents_View_Plan.md](Agents_View_Plan.md), "As built", and [Heads.md](Heads.md)). Kept for history; none of it is in the product any more.
+
 This milestone adds editable task briefs, local handoff notes, and usage accounting. It implements part of roadmap priorities 3 and 4. It does not complete provider acceptance, model controls, budgets, or dependent-task artifact transfer.
 
 ## Briefs and submitted prompts

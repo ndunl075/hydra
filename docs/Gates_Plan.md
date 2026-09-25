@@ -136,11 +136,27 @@ Today's check, unchanged: run in the head's worktree, with its timeout, the outp
 - **⋯ → Switch to <Other>** does the same by hand at any time, for example to go back once the limit resets.
 - **Setting `hydra.lanes.onLimit`:** `"ask"` (the default) or `"switch"`. With `"switch"`, the tile shows "Switching to Codex in 10 s" with **Cancel**, then switches.
 
+## 3. What a head starts from
+
+Two gaps found on 2026-09-25, fixed in the same place (`HelperService.startHelper` / `launch`).
+
+- **Dependent heads build on what they waited for.** Today a head with `depends_on` waits, then still branches from the commit its lead was on when the head was created, and it never hears what its dependencies did. Instead:
+  - **One dependency:** the dependent's worktree starts from that head's result commit (`result.commit`).
+  - **Several:** Hydra starts from the first dependency's result commit and merges the others in its new worktree (`git merge --no-edit`, recorded as one commit by Hydra). If they conflict, the dependent fails before it starts: "The heads it depends on conflict in <files>; merge them first." The lead sees this like any other failure.
+  - **The brief** gains "What the heads you depend on did:", with each dependency's title, summary, branch and changed files (capped at 4 KB).
+  - **`base_commit`** in `hydra_get_head` shows the commit the dependent really started from, so the lead merges it knowing it already contains its dependencies.
+- **Heads started from a lane branch from the lane.** A head started by a lane's agent (the caller has a lane) takes the lane's current `HEAD` as its base, not the main checkout's. As for any lead, uncommitted lane work isn't included, so the lane's agent is told to commit first. Checks and gates still come from the main checkout's `.hydra/`. The lane's agent merges the head's branch into the lane.
+- **Tests:**
+  - A dependent starts from its dependency's commit, and sees its file.
+  - Two dependencies are merged in; conflicting ones fail it with the files named.
+  - The dependency summaries appear in the brief.
+  - A head started from a lane has the lane's commit as its base.
+
 ## Phases
 
 | Phase | Work | Model |
 | --- | --- | --- |
-| 1 | Gates core: `gates.json` schema, loader and compatibility; command, review and screenshot gates (`src/core/gates/`); result model; wiring into `HelperService.accept`; `hydra_get_head` output. Tests with fake runners, a fake browser and real temp repos. | **Opus**: process control, the browser over CDP, the acceptance path |
+| 1 | Gates core: `gates.json` schema, loader and compatibility; command, review and screenshot gates (`src/core/gates/`); result model; wiring into `HelperService.accept`; `hydra_get_head` output. Plus section 3: what a head starts from (dependency commits and summaries, lane base). Tests with fake runners, a fake browser and real temp repos. | **Opus**: process control, the browser over CDP, the acceptance path |
 | 2 | Lane-aware limit offer: hook lane id, event source, watcher claiming, the Codex lane fan-out, the tile banner and switch, `lanes.onLimit`. In parallel with 1. | **Sonnet** |
 | 3 | Gates UI: gate chips on heads and lanes, View evidence, lane Merge and Run gates flow with Send to lane, the Settings → Gates page. After 1. | **Sonnet** |
 | 4 | Live verification in an isolated window (dev extension path), docs (Heads.md, README, this plan's "As built"), gate, PR, merge, light refresh. | **Opus** |

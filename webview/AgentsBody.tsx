@@ -15,12 +15,14 @@ export type AgentsViewName = 'canvas' | 'lanes';
  * No `acquireVsCodeApi` here, unlike index.tsx, so this renders under SSR too.
  */
 export function AgentsBody({
-  view, onViewChange, heads, plans, lanes, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
+  view, onViewChange, heads, dismissedTray, plans, lanes, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
   laneLimits, laneSwitchCountdowns, laneGates, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
 }: {
   view: AgentsViewName;
   onViewChange: (view: AgentsViewName) => void;
   heads: readonly HelperJobView[];
+  /** Finished heads the tray's Clear button has hidden (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"). */
+  dismissedTray?: readonly string[];
   plans?: readonly Plan[];
   lanes?: readonly LaneView[];
   terminals: boolean;
@@ -47,7 +49,7 @@ export function AgentsBody({
       <button role="tab" aria-selected={view === 'lanes'} className={view === 'lanes' ? 'on' : ''} onClick={() => onViewChange('lanes')}>Lanes <span className="agents-view-count">{(lanes || []).length}</span></button>
     </div>
     <div className="agents-view-pane" hidden={view !== 'canvas'}>
-      <AgentsCanvas heads={heads} plans={plans} lanes={lanes} defaultProvider={defaultProvider} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
+      <AgentsCanvas heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} defaultProvider={defaultProvider} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
     </div>
     <div className="agents-view-pane" hidden={view !== 'lanes'}>
       <LanesView lanes={lanes || []} terminals={terminals} defaultProvider={defaultProvider} laneError={laneError} focus={laneFocus} onSend={onSend} onFocused={onLaneFocused}

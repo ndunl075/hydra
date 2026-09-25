@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160" fill="none">
+  <rect width="240" height="160" fill="#141414"/>
+  <rect x="14" y="65" width="60" height="30" rx="15" stroke="#F5F5F5" stroke-width="1.6"/>
+  <text x="44" y="84" font-family="sans-serif" font-size="11" fill="#F5F5F5" text-anchor="middle">Chat</text>
+  <path d="M74 72c26-20 50-30 70-30M74 80h56M74 88c26 20 50 30 70 30" stroke="#3FA266" stroke-width="1.6" stroke-linecap="round"/>
+  <rect x="150" y="26" width="76" height="24" rx="6" stroke="#F5F5F5" stroke-width="1.6"/>
+  <text x="188" y="42" font-family="sans-serif" font-size="10" fill="#F5F5F5" text-anchor="middle">Heads</text>
+  <rect x="150" y="68" width="76" height="24" rx="6" stroke="#F5F5F5" stroke-width="1.6"/>
+  <text x="188" y="84" font-family="sans-serif" font-size="10" fill="#F5F5F5" text-anchor="middle">Lanes</text>
+  <rect x="150" y="110" width="76" height="24" rx="6" stroke="#F5F5F5" stroke-width="1.6" stroke-dasharray="4 3"/>
+  <text x="188" y="126" font-family="sans-serif" font-size="10" fill="#F5F5F5" text-anchor="middle">Plans</text>
+</svg>

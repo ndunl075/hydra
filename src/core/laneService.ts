@@ -258,11 +258,11 @@ export class LaneService {
       const handoff = await buildHandoff({ event: limitEvent }, this.options.handoffDeps ?? defaultHandoffDeps(this.options.env?.() ?? process.env));
       await this.terminals.get(lane.id)?.kill();
       const switches = [...(lane.switches ?? []), { from: lane.provider, to, at: this.now().toISOString(), reason }];
-      const updated = await this.options.store.update(lane.id, { provider: to, switches, state: 'running', exitCode: undefined, reason: undefined });
+      const updated = await this.options.store.update(lane.id, { provider: to, switches, state: 'running', exitCode: undefined, exitedAt: undefined, reason: undefined });
       const prompt = laneContinuePrompt(updated, lane.provider, this.others(lane.id), handoff.markdown);
       try { await this.launch(updated, false, undefined, prompt); }
       catch (error) {
-        await this.options.store.update(lane.id, { state: 'exited', reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
+        await this.options.store.update(lane.id, { state: 'exited', exitedAt: this.now().toISOString(), reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
         this.changed();
         throw error;
       }
@@ -459,10 +459,10 @@ export class LaneService {
   /** Mark the lane running first, so an immediate exit is recorded; undo that if the launch fails. */
   private async relaunch(lane: Lane, resume: boolean): Promise<void> {
     if (!(await stat(lane.worktree).catch(() => undefined))?.isDirectory()) throw new Error(`The worktree of lane ${lane.name} is gone. Close the lane.`);
-    await this.options.store.update(lane.id, { state: 'running', exitCode: undefined, reason: undefined });
+    await this.options.store.update(lane.id, { state: 'running', exitCode: undefined, exitedAt: undefined, reason: undefined });
     try { await this.launch(lane, resume); }
     catch (error) {
-      await this.options.store.update(lane.id, { state: 'exited', reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
+      await this.options.store.update(lane.id, { state: 'exited', exitedAt: this.now().toISOString(), reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
       this.changed();
       throw error;
     }
@@ -473,7 +473,7 @@ export class LaneService {
     if (this.disposed || this.terminals.get(id) !== terminal) return;
     const lane = this.options.store.get(id);
     if (!lane || lane.state === 'closed') return;
-    try { await this.options.store.update(id, lane.state === 'running' ? { state: 'exited', exitCode: code } : { exitCode: code }); }
+    try { await this.options.store.update(id, lane.state === 'running' ? { state: 'exited', exitCode: code, exitedAt: this.now().toISOString() } : { exitCode: code }); }
     catch (error) { this.options.log?.(`[lanes] ${id}: ${describe(error)}`); }
     this.options.log?.(`[lanes] ${id} exited (code ${code})`);
     this.changed();

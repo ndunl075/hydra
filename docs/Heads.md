@@ -125,7 +125,7 @@ Open it with **Ctrl+Alt+A**, or **Agents** in the status bar. It's a live canvas
 - **Blank until a chat starts heads.** Each head grows out of the chat that started it: the **lead**, labelled with its provider, and a name if the chat gave one (`lead_label`).
 - **What each head is doing:** state (Queued, Working, Needs an answer, Checking, Done, Failed), its latest progress note or question, branch and elapsed time. When it finishes: checks passed and files changed.
 - **How heads connect:** a flowing edge from the chat while a head works, and amber dependency edges (`depends_on`) between heads. A dependent sits to the right of what it waits on.
-- **Heads leave when they're merged.** Hydra notices within seconds when a head's commit is in your folder's HEAD, and the head collapses back into its chat. A finished head that isn't merged stays two minutes, then moves to the **Finished** tray.
+- **Heads leave when they're merged.** Hydra notices within seconds when a head's commit is in your folder's HEAD, and the head collapses back into its chat. A finished head that isn't merged stays two minutes, then moves to the **Finished** tray. **Clear** empties the tray; new results still show up. A lane that has been exited for 10 minutes, with no heads running, moves to the **Parked lanes** strip; click it to open the lane.
 - **Actions** (click the ⋯ on a head, right-click, or Shift+F10): **Open diff**, **Open log** (token removed), **Answer question…** for a head waiting on the lead, and **Cancel head**. **Stop all heads** is in the toolbar.
 - **Heads list** on the side: Running, or All today. Selecting a head centres it on the canvas; Enter opens its diff.
 - **Pause motion**, zoom (Ctrl+wheel) and drag to pan. Reduced-motion and high-contrast settings are respected.
@@ -181,6 +181,10 @@ Heads are Hydra's agents. **Lanes** are yours: each lane is a real `claude` or `
 - **On the canvas:** every open lane is a node, heads it started grow from it, and lanes that would conflict are joined by a red dashed line. Click a lane to jump to its terminal.
 
 The **Hydra panel** (the Hydra icon in the activity bar) lists your lanes, running heads and plans, with **New lane**, **New plan** and **Open Agents view** at the top.
+
+In the Lanes view, running lanes come first. Exited lanes are compact rows with Resume, Start fresh, Merge and Close lane; **Show terminal** opens the full tile.
+
+New to all this? **Hydra: Learn Heads, Lanes, Plans and Gates** opens a short walkthrough. It also opens by itself the first time you open the Agents view, and the empty Agents and Lanes views link to it.
 
 ## Security
 

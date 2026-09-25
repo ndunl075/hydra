@@ -29,8 +29,10 @@ const leadGraceMs = 1200;
 interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
 interface JobMenuState { planId: string; job: PlanJob; x: number; y: number }
 
-export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
+export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = [], defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
   heads: readonly HelperJobView[];
+  /** Finished heads the tray's Clear button has hidden (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"). */
+  dismissedTray?: readonly string[];
   plans?: readonly Plan[];
   /** Open lanes (docs/Lanes_And_Planner_Plan.md, section 2): every one is a lead node, even with no heads. */
   lanes?: readonly LaneView[];
@@ -78,7 +80,8 @@ export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, o
 
   // One clock drives elapsed times, the finished-head timeout, and clearing heads that have collapsed away.
   useEffect(() => { const timer = setInterval(() => { setNow(Date.now()); setGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); setLeadGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); }, 250); return () => clearInterval(timer); }, []);
-  const model = useMemo(() => buildCanvas(heads, now, { plans, lanes }), [heads, now, plans, lanes]);
+  const dismissedTraySet = useMemo(() => new Set(dismissedTray), [dismissedTray]);
+  const model = useMemo(() => buildCanvas(heads, now, { plans, lanes, dismissedTray: dismissedTraySet }), [heads, now, plans, lanes, dismissedTraySet]);
   useEffect(() => {
     if (manual || !box.width || !box.height || (!model.heads.length && !model.plans.length)) return;
     const fit = Math.min(1, (box.width - 24) / model.width, (box.height - 24) / model.height);
@@ -188,7 +191,7 @@ export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, o
     .slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const lingering = leadGhosts.filter(ghost => !leadAt.has(ghost.lead.key));
   const laneLeads = model.leads.filter(lead => lead.kind === 'lane');
-  const empty = !model.heads.length && !ghosts.length && !lingering.length && !model.plans.length && !laneLeads.length;
+  const empty = !model.heads.length && !ghosts.length && !lingering.length && !model.plans.length && !laneLeads.length && !model.parkedLanes.length;
 
   return <section className={`agents-canvas${still ? ' still' : ''}`} aria-label="Agents">
     <div className="canvas-stage">
@@ -219,7 +222,7 @@ export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, o
         onPointerMove={event => { const start = drag.current; if (start) setPan({ x: start.panX + event.clientX - start.x, y: start.panY + event.clientY - start.y }); }}
         onPointerUp={() => { drag.current = undefined; }}
         onWheel={event => { if (!event.ctrlKey) return; event.preventDefault(); setManual(true); setZoom(value => Math.min(1.5, Math.max(.4, +(value - Math.sign(event.deltaY) * .1).toFixed(2)))); }}>
-        {empty ? <div className="canvas-empty"><div className="canvas-empty-mark" aria-hidden="true"><i /><i /><i /></div><p>Lanes you open, plans you draft and heads your chats start will appear here.</p><span>Start a task in a chat that splits into independent pieces. Each head grows out of the chat that started it.</span></div>
+        {empty ? <div className="canvas-empty"><div className="canvas-empty-mark" aria-hidden="true"><i /><i /><i /></div><p>Lanes you open, plans you draft and heads your chats start will appear here.</p><span>Start a task in a chat that splits into independent pieces. Each head grows out of the chat that started it. <button className="text-button" onClick={() => onPlan({ type: 'learn' })}>Learn how</button></span></div>
           : <div className="canvas-plane" style={{ width: model.width, height: model.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
             <svg className="canvas-edges" width={model.width} height={model.height}>
               {model.edges.map(edge => {
@@ -281,10 +284,16 @@ export function AgentsCanvas({ heads, plans = [], lanes = [], defaultProvider, o
               onHandleDown={startDependencyDrag(item.planId, item.job.key)} onHandleUp={endDependencyDrag} />))}
           </div>}
       </div>
+        {model.parkedLanes.length > 0 && <div className="canvas-tray canvas-parked" aria-label="Parked lanes">
+          <span className="canvas-tray-label">Parked lanes</span>
+          {model.parkedLanes.map(lane => <button key={lane.id} className={`canvas-chip${lane.conflicts ? ' conflict' : ''}`} title={`${lane.name}${lane.conflicts ? ' · has conflicts' : ''}`} onClick={() => onOpenLane?.(lane.id)}>
+            <i aria-hidden="true" />{lane.name}{lane.conflicts && <span aria-hidden="true"> ⚠</span>}</button>)}
+        </div>}
         {model.tray.length > 0 && <div className="canvas-tray" aria-label="Finished heads">
           <span className="canvas-tray-label">Finished</span>
           {model.tray.slice(0, 8).map(head => <button key={head.id} className={`canvas-chip state-${head.state}`} title={`${head.title} · ${headStatus[head.state] || head.state}${head.reason ? `\n${head.reason}` : ''}`} onClick={() => onAction('helperReview', head.id)} onContextMenu={event => { event.preventDefault(); openMenu(head.id, event.clientX, event.clientY); }}>
             <i aria-hidden="true" />{head.title}</button>)}
+          <button className="canvas-tray-clear text-button" onClick={() => onPlan({ type: 'trayClear', ids: model.tray.map(head => head.id) })}>Clear</button>
         </div>}
     </div>
     <aside className="canvas-list" aria-label="Heads list">

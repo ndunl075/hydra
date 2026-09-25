@@ -24,8 +24,10 @@ test('an SSR render of the Lanes view shows the toolbar, tiles, their chips, and
   assert.match(html, /3 behind main/);
   assert.match(html, /Merges cleanly/);
   assert.match(html, /Merged/);
-  assert.match(html, /Session ended \(code 1\)/);
-  assert.match(html, /Resume/); assert.match(html, /Start fresh/);
+  // An exited lane with no running heads is a compact row (docs/Lanes_And_Planner_Plan.md, "Lanes view"), not a full terminal tile.
+  assert.match(html, /Exited \(code 1\)/);
+  assert.match(html, /class="lane-row"/);
+  assert.match(html, /Resume/); assert.match(html, /Start fresh/); assert.match(html, /Show terminal/);
   assert.match(html, /files? changed/);
   assert.match(html, /class="lane-tile"/);
 });
@@ -93,6 +95,7 @@ test('an empty Lanes view (no lanes yet) still renders the toolbar and a hint, n
   const { LanesView } = await import('../webview/LanesView');
   const html = renderToStaticMarkup(React.createElement(LanesView, { lanes: [], terminals: true, onSend: () => {}, onFocused: () => {} }));
   assert.match(html, /No lanes yet\./);
+  assert.match(html, /Learn how/);
 });
 
 test('an SSR render of the Canvas | Lanes switch shows both tabs, the lane count, and hides the inactive pane (both stay mounted)', async () => {

@@ -109,7 +109,7 @@ test('the Agents view offers only head actions: diff, log, answer, cancel and st
 // ---- Lanes (docs/Lanes_And_Planner_Plan.md, section 2): its own block. ----
 
 test('buildCanvas draws every open lane as a lead node, even with no heads; closed and merged lanes are hidden', () => {
-  const model = buildCanvas([], now, { lanes: [lane('111111111111', 'Lane 1'), lane('222222222222', 'Lane 2', { state: 'exited' }), lane('333333333333', 'Lane 3', { state: 'merged' }), lane('444444444444', 'Lane 4', { state: 'closed' })] });
+  const model = buildCanvas([], now, { lanes: [lane('111111111111', 'Lane 1'), lane('222222222222', 'Lane 2', { state: 'exited', exitedAt: at(60_000) }), lane('333333333333', 'Lane 3', { state: 'merged' }), lane('444444444444', 'Lane 4', { state: 'closed' })] });
   const keys = model.leads.map(item => item.key);
   assert.ok(keys.includes('111111111111') && keys.includes('222222222222'));
   assert.ok(!keys.includes('333333333333') && !keys.includes('444444444444'), 'a merged or closed lane is not drawn');
@@ -134,6 +134,64 @@ test('buildCanvas draws one red dashed conflict edge per conflicting pair of lan
   const conflictEdges = model.edges.filter(edge => edge.kind === 'conflict');
   assert.equal(conflictEdges.length, 1, 'one edge per pair, not one per direction');
   assert.equal(model.leads.find(item => item.key === '111111111111')!.status, 'Conflicts with Lane 2');
+});
+
+test('buildCanvas parks an exited lane with no running heads after 10 minutes; a fresh exit or a running head keeps it a full node', () => {
+  const quiet = lane('111111111111', 'Lane 1', { state: 'exited', exitedAt: at(9 * 60_000) });
+  const parkedYet = buildCanvas([], now, { lanes: [quiet] });
+  assert.equal(parkedYet.parkedLanes.length, 0, 'under 10 minutes: still a full node');
+  assert.ok(parkedYet.leads.some(item => item.key === '111111111111'));
+
+  const stale = lane('111111111111', 'Lane 1', { state: 'exited', exitedAt: at(11 * 60_000) });
+  const parked = buildCanvas([], now, { lanes: [stale] });
+  assert.deepEqual(parked.leads, [], 'over 10 minutes: parked, not a lead node');
+  assert.deepEqual(parked.parkedLanes.map(item => item.id), ['111111111111']);
+  assert.equal(parked.parkedLanes[0]!.conflicts, false);
+
+  // A running head under this lane keeps it a full node even past the window.
+  const withRunningHead = buildCanvas([head('h1', 'running', { lead: { sessionId: 'sess', provider: 'claude', lane: '111111111111' } })], now, { lanes: [stale] });
+  assert.deepEqual(withRunningHead.parkedLanes, []);
+  assert.ok(withRunningHead.leads.some(item => item.key === '111111111111'));
+
+  // A running lane is never parked, however long ago its (stale, ignored) exitedAt claims.
+  const stillRunning = lane('222222222222', 'Lane 2', { state: 'running', exitedAt: at(11 * 60_000) });
+  assert.deepEqual(buildCanvas([], now, { lanes: [stillRunning] }).parkedLanes, []);
+
+  // Conflicts are marked on the chip.
+  const conflicted = lane('333333333333', 'Lane 3', { state: 'exited', exitedAt: at(11 * 60_000), sync: { changedFiles: [], conflicts: [{ laneId: '444444444444', files: ['a.ts'] }], targetConflicts: [], behind: 0, dirty: false, checkedAt: at(0) } });
+  assert.equal(buildCanvas([], now, { lanes: [conflicted] }).parkedLanes[0]!.conflicts, true);
+
+  // A lane that exited before exitedAt was recorded has no time: it exited long ago, so it parks.
+  const unrecorded = lane('555555555555', 'Lane 5', { state: 'exited' });
+  assert.deepEqual(buildCanvas([], now, { lanes: [unrecorded] }).parkedLanes.map(item => item.id), ['555555555555']);
+});
+
+test('buildCanvas filters the tray by dismissed ids; a new finished head still shows up', () => {
+  const finished = [head('e', 'failed', { finishedAt: at(finishedLingerMs + 1) }), head('f', 'done', { finishedAt: at(finishedLingerMs + 5_000) })];
+  const all = buildCanvas(finished, now).tray.map(item => item.id);
+  assert.deepEqual(all, ['e', 'f']);
+  const filtered = buildCanvas(finished, now, { dismissedTray: new Set(['e']) }).tray.map(item => item.id);
+  assert.deepEqual(filtered, ['f'], 'a dismissed id is hidden');
+  const fresh = buildCanvas([...finished, head('g', 'done', { finishedAt: at(finishedLingerMs + 10_000) })], now, { dismissedTray: new Set(['e', 'f']) }).tray.map(item => item.id);
+  assert.deepEqual(fresh, ['g'], 'a newly finished head still shows up');
+});
+
+test('an SSR render shows the Parked lanes strip, the Finished tray Clear button, and the Learn how link', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentsCanvas } = await import('../webview/AgentsCanvas');
+  // AgentsCanvas keeps its own real-time clock (useState(() => Date.now())), so this test's timestamps
+  // must be relative to actual now, unlike buildCanvas's own tests, which pass a fixed `now`.
+  const realNow = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+  const stale = lane('111111111111', 'Lane 1', { state: 'exited', exitedAt: realNow(11 * 60_000) });
+  const withTrayAndParked = renderToStaticMarkup(React.createElement(AgentsCanvas, {
+    heads: [head('a', 'done', { finishedAt: realNow(finishedLingerMs + 10_000) })], lanes: [stale], onAction: () => {},
+  }));
+  assert.match(withTrayAndParked, /Parked lanes/);
+  assert.match(withTrayAndParked, /Lane 1/);
+  assert.match(withTrayAndParked, />Clear</);
+  const idle = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], onAction: () => {} }));
+  assert.match(idle, /Learn how/);
 });
 
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----

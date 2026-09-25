@@ -51,6 +51,8 @@ function initialView(): AgentsViewName {
 function App() {
   const [snapshot, setSnapshot] = useState(initial);
   const [heads, setHeads] = useState<HelperJobView[]>([]);
+  // ---- Canvas tidy-up (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): the Finished tray's Clear button. ----
+  const [dismissedTray, setDismissedTray] = useState<string[]>([]);
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
   const [plans, setPlans] = useState<Plan[]>([]);
   const [newPlanSignal, setNewPlanSignal] = useState(0);
@@ -74,7 +76,7 @@ function App() {
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       const data = event.data;
-      if (data?.type === 'snapshot') { const next = data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); }
+      if (data?.type === 'snapshot') { const next = data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); setDismissedTray(next.dismissedTray || []); }
       if (data?.type === 'heads') setHeads(data.heads as HelperJobView[]);
       if (data?.type === 'plans') setPlans(data.plans as Plan[]);
       if (data?.type === 'showNewPlan') setNewPlanSignal(value => value + 1);
@@ -112,7 +114,7 @@ function App() {
     {(snapshot.error) && <div className="error" role="alert"><strong>Needs attention</strong><p>{snapshot.error}</p><button onClick={() => send({ type: 'refresh' })}>Retry</button></div>}
     {snapshot.handoff
       ? <HandoffView handoff={snapshot.handoff} info={snapshot.officialExtensions?.find(info => info.provider === snapshot.handoff?.task.provider)} busy={snapshot.busy} />
-      : <AgentsBody view={view} onViewChange={changeView} heads={heads} plans={plans} lanes={lanes} terminals={terminals} defaultProvider={snapshot.defaultProvider}
+      : <AgentsBody view={view} onViewChange={changeView} heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} terminals={terminals} defaultProvider={snapshot.defaultProvider}
           laneError={laneError} laneFocus={laneFocus} onLaneFocused={() => setLaneFocus(undefined)} laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} laneGates={laneGates} openNewPlanAt={newPlanSignal} focusHead={headFocus}
           onAction={(type, jobId) => send({ type, jobId })} onPlan={send} onStopAll={() => send({ type: 'helperStopAll' })}
           onOpenLane={id => { setLaneFocus(id); changeView('lanes', id); }} onSend={send} />}

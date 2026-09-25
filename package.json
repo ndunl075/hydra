@@ -63,6 +63,10 @@
         "title": "Hydra: Open Onboarding"
       },
       {
+        "command": "hydra.learn",
+        "title": "Hydra: Learn Heads, Lanes, Plans and Gates"
+      },
+      {
         "command": "hydra.openSettings",
         "title": "Hydra: Open Settings"
       },
@@ -186,7 +190,7 @@
     "viewsWelcome": [
       {
         "view": "hydra.overview",
-        "contents": "Run several agents at once.\n[New lane](command:hydra.newLane)\n[New plan](command:hydra.newPlan)\n[Open Agents view](command:hydra.openAgents)"
+        "contents": "Run several agents at once.\n[New lane](command:hydra.newLane)\n[New plan](command:hydra.newPlan)\n[Open Agents view](command:hydra.openAgents)\n[Learn how](command:hydra.learn)"
       }
     ],
     "keybindings": [
@@ -221,6 +225,80 @@
       "workbench.layoutControl.type": "menu",
       "git.detectWorktrees": false
     },
+    "walkthroughs": [
+      {
+        "id": "hydra.workWithHydra",
+        "title": "Work with Hydra: heads, lanes, plans and gates",
+        "description": "The four ways to run agents in Hydra, and when to reach for each one.",
+        "steps": [
+          {
+            "id": "heads",
+            "title": "Heads",
+            "description": "Ask your chat for something big; it splits the work across Hydra heads that run on their own. Watch them on the Agents canvas.\n[Open Agents](command:hydra.openCanvas)",
+            "media": {
+              "image": {
+                "dark": "media/walkthrough/heads-dark.svg",
+                "light": "media/walkthrough/heads-light.svg",
+                "hc": "media/walkthrough/heads-dark.svg"
+              },
+              "altText": "A chat splitting into three head nodes on the canvas."
+            }
+          },
+          {
+            "id": "lanes",
+            "title": "Lanes",
+            "description": "Want to drive several agents yourself? A lane is a real Claude Code or Codex terminal in its own copy of your project. Hydra warns when lanes would clash, and merges each one for you.\n[New lane](command:hydra.newLane)",
+            "media": {
+              "image": {
+                "dark": "media/walkthrough/lanes-dark.svg",
+                "light": "media/walkthrough/lanes-light.svg",
+                "hc": "media/walkthrough/lanes-dark.svg"
+              },
+              "altText": "Two lane terminals side by side, each in its own worktree."
+            }
+          },
+          {
+            "id": "plans",
+            "title": "Plans",
+            "description": "Draft the jobs first, by hand or from a brief, connect what depends on what, then run them as heads.\n[New plan](command:hydra.newPlan)",
+            "media": {
+              "image": {
+                "dark": "media/walkthrough/plans-dark.svg",
+                "light": "media/walkthrough/plans-light.svg",
+                "hc": "media/walkthrough/plans-dark.svg"
+              },
+              "altText": "Draft job nodes connected by dependency arrows."
+            }
+          },
+          {
+            "id": "gates",
+            "title": "Gates",
+            "description": "No agent grades its own work. Set tests, screenshots and a review by the other agent that must pass before work is accepted.\n[Set up gates](command:hydra.openSettings?%5B%22gates%22%5D)",
+            "media": {
+              "image": {
+                "dark": "media/walkthrough/gates-dark.svg",
+                "light": "media/walkthrough/gates-light.svg",
+                "hc": "media/walkthrough/gates-dark.svg"
+              },
+              "altText": "A checklist of gates: a test, a screenshot and a review, each with a checkmark."
+            }
+          },
+          {
+            "id": "whichToUse",
+            "title": "Which to use",
+            "description": "A small change goes in your chat. A big task: just ask your chat (heads happen by themselves). Several separate things you want to steer: lanes. Jobs you want to lay out first: plans.",
+            "media": {
+              "image": {
+                "dark": "media/walkthrough/which-dark.svg",
+                "light": "media/walkthrough/which-light.svg",
+                "hc": "media/walkthrough/which-dark.svg"
+              },
+              "altText": "A simple decision flow between chat, heads, lanes and plans."
+            }
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "Hydra",
       "properties": {

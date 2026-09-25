@@ -328,7 +328,8 @@ test('Windows env merging and command lookup', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'hydra-mcp-path-'));
   try {
     await writeFile(path.join(directory, 'tool.cmd'), '@echo off');
-    assert.equal(await resolveCommand('tool', { Path: directory, PATHEXT: '.EXE;.CMD' }, 'win32'), path.win32.join(directory, 'tool.cmd'));
+    // The PATH/PATHEXT search needs real Windows paths.
+    if (process.platform === 'win32') assert.equal(await resolveCommand('tool', { Path: directory, PATHEXT: '.EXE;.CMD' }, 'win32'), path.win32.join(directory, 'tool.cmd'));
     assert.equal(await resolveCommand('tool.exe', { Path: directory }, 'win32'), 'tool.exe');
     assert.equal(await resolveCommand('tool', { PATH: directory }, 'linux'), 'tool');
   } finally { await rm(directory, { recursive: true, force: true }); }

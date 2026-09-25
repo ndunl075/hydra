@@ -651,6 +651,7 @@ async function testStdio(spec: McpStdioSpec, timeoutMs: number, options: McpTest
   let child: ChildProcessWithoutNullStreams;
   try { child = spawn(launch.executable, launch.args, { cwd: options.cwd ?? homedir(), env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] }); }
   catch (error) { throw new Error(`Couldn't start "${spec.command}": ${(error as Error).message}`); }
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
   let stderr = '', buffer = '', settled = false;
   const waiting = new Map<number, { resolve: (message: JsonRpc) => void; reject: (error: Error) => void }>();
   let failAll: (error: Error) => void = () => undefined;
@@ -709,6 +710,8 @@ async function testStdio(spec: McpStdioSpec, timeoutMs: number, options: McpTest
     settled = true; clearTimeout(timer);
     child.stdin.end();
     if (child.pid && child.exitCode === null && child.signalCode === null) await terminateProcessTree(child.pid).catch(() => { child.kill('SIGKILL'); });
+    // Wait for the exit to be reaped, so a finished test never leaves the server behind.
+    await Promise.race([closed, new Promise(resolve => setTimeout(resolve, 2000))]);
   }
 }
 

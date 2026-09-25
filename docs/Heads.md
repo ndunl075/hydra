@@ -103,7 +103,20 @@ Open it with **Ctrl+Alt+A**, or **Agents** in the status bar. It's a live canvas
 - **Heads list** on the side: Running, or All today. Selecting a head centres it on the canvas; Enter opens its diff.
 - **Pause motion**, zoom (Ctrl+wheel) and drag to pan. Reduced-motion and high-contrast settings are respected.
 
-The view never starts work itself; everything on it comes from what your Claude Code and Codex chats do.
+Apart from plans (below), the view never starts work itself; everything else on it comes from what your Claude Code and Codex chats do.
+
+### Plans
+
+**New plan** (in the canvas toolbar, or **Hydra: New Plan**) lets you set the jobs up yourself before any head starts ([Lanes_And_Planner_Plan.md](Lanes_And_Planner_Plan.md), section 4):
+
+- **Plan with Claude or Codex:** give a title and a brief. Your default provider reads the repository in read-only mode and splits the brief into 2–8 jobs. **Start empty** adds the jobs by hand instead.
+- **Edit the draft on the canvas:**
+  - Click a job to change its title, brief or provider.
+  - Drag from a job's ⋮ handle onto another job to make that job depend on it.
+  - Right-click an edge, or select it and press Delete, to remove it.
+  - Right-click a job for **Depends on…** and **Delete**.
+- **Cycles are refused.** A plan whose dependencies loop shows the loop, draws it in red, and can't run until you break it.
+- **Run plan** starts one head per job in dependency order, grouped under the plan on the canvas. Running it again after adding jobs starts only the new ones.
 
 ## Security
 

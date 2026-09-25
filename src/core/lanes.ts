@@ -45,7 +45,21 @@ export interface Lane {
   mergedHead?: string;
   /** How the lane was closed, so a plan can say whether its branch was kept. */
   closedAs?: LaneCloseMode;
+  // ---- Packs (docs/Packs_Plan.md, "Lanes") ----
+  /** The role it was started with. Resolved again at every launch; when it is gone, the lane runs without it and its tile says why. */
+  role?: LaneRole;
 }
+/** A lane's role: a pack's id and one of its roles' ids ("coding" and "reviewer"). */
+export interface LaneRole { pack: string; role: string }
+const laneRolePattern = /^([a-z0-9-]{1,24})\/([a-z0-9-]{1,24})$/;
+/** A role as the New lane form, `hydra.lanes.start` and a plan name it: "pack/role". */
+export function parseLaneRole(value: unknown): LaneRole | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const match = typeof value === 'string' ? laneRolePattern.exec(value) : null;
+  if (!match) throw new Error('Name the lane\'s role with its pack, like "coding/reviewer".');
+  return { pack: match[1]!, role: match[2]! };
+}
+export const laneRoleRef = (role: LaneRole): string => `${role.pack}/${role.role}`;
 
 export type LaneCloseMode = 'merged' | 'keep' | 'delete';
 export const laneCloseModes: readonly LaneCloseMode[] = ['merged', 'keep', 'delete'];
@@ -108,7 +122,8 @@ export const laneGoalMax = 2000;
 const laneNamePattern = /^[\p{L}\p{N} _.()#-]+$/u;
 export const laneNameRule = 'A lane name can use letters, numbers, spaces and - _ . ( ) #, up to 40 characters.';
 
-export interface LaneInput { name: string; provider: Provider; goal?: string }
+/** `provider` is the form's choice: a role only sets the form's default (docs/Packs_Plan.md, "Lanes"). */
+export interface LaneInput { name: string; provider: Provider; goal?: string; role?: LaneRole }
 
 export function parseLaneName(value: unknown): string {
   if (typeof value !== 'string') throw new Error('Give the lane a name.');
@@ -130,7 +145,8 @@ export function parseLaneInput(value: unknown): LaneInput {
   const source = value as Record<string, unknown>;
   if (source.provider !== 'claude' && source.provider !== 'codex') throw new Error('Choose Claude Code or Codex for the lane.');
   const goal = parseLaneGoal(source.goal);
-  return { name: parseLaneName(source.name), provider: source.provider, ...(goal ? { goal } : {}) };
+  const role = parseLaneRole(source.role);
+  return { name: parseLaneName(source.name), provider: source.provider, ...(goal ? { goal } : {}), ...(role ? { role } : {}) };
 }
 
 export const newLaneId = (): string => randomBytes(6).toString('hex');
@@ -193,6 +209,12 @@ export function validateLane(value: unknown): Lane {
   const switches = validateLaneSwitches(lane.switches, where);
   const lastGates = validateLastGates(lane.lastGates, where);
   const plan = validatePlanLink(lane.plan, where);
+  let role: LaneRole | undefined;
+  if (lane.role !== undefined) {
+    const stored = lane.role as Partial<LaneRole> | null;
+    try { role = parseLaneRole(stored && typeof stored === 'object' && typeof stored.pack === 'string' && typeof stored.role === 'string' ? laneRoleRef(stored as LaneRole) : '-'); }
+    catch { throw new Error(`${where} has an invalid role.`); }
+  }
   if (lane.mergedHead !== undefined && (typeof lane.mergedHead !== 'string' || !fullSha.test(lane.mergedHead))) throw new Error(`${where} has an invalid merged commit.`);
   if (lane.closedAs !== undefined && !laneCloseModes.includes(lane.closedAs)) throw new Error(`${where} has an invalid close mode.`);
   return {
@@ -203,6 +225,7 @@ export function validateLane(value: unknown): Lane {
     ...(switches ? { switches } : {}),
     ...(lastGates ? { lastGates } : {}),
     ...(plan ? { plan } : {}), ...(lane.mergedHead ? { mergedHead: lane.mergedHead } : {}), ...(lane.closedAs ? { closedAs: lane.closedAs } : {}),
+    ...(role ? { role } : {}),
   };
 }
 
@@ -369,6 +392,18 @@ export class LaneStore {
 
 // ---- The first prompt ----
 
+/**
+ * The role a lane's first prompt names (docs/Packs_Plan.md, "Lanes"): its label and, for a
+ * Codex lane whose developer instructions can't carry the role, its text within `max`
+ * characters (roleFirstPrompt in src/core/packs/launch.ts).
+ */
+export interface LanePromptRole { label: string; text?: (max: number) => string }
+/** A Codex lane with a role but no goal, whose developer instructions can't carry it: the role, then wait (section 5). */
+export function laneRolePrompt(role: LanePromptRole & { text: (max: number) => string }): string {
+  const label = `Your role: ${oneLine(role.label)}.`, end = 'Wait for the user\'s first request.';
+  return clip(`${label} ${oneLine(role.text(lanePreambleMax - label.length - end.length - 2))} ${end}`, lanePreambleMax);
+}
+
 export interface LanePreambleOther { name: string; provider: Provider; goal?: string; files: readonly string[] }
 export const lanePreambleMax = 4000;
 const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -395,12 +430,20 @@ export function lanePlanSentence(plan: LanePlanLink): string {
  * The first prompt of a lane with a goal: one line (it is passed as a command-line
  * argument), capped at lanePreambleMax characters. It says where the lane is,
  * what the other lanes are doing and which files they touch, then the task. A
- * plan lane also says which job it runs (lanePlanSentence).
+ * plan lane also says which job it runs (lanePlanSentence). A lane with a role
+ * says so right after the first sentence: "Your role: Reviewer (Coding pack)."
  */
-export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { plan?: LanePlanLink }, others: readonly LanePreambleOther[]): string {
-  const head = `You are working in Hydra lane "${oneLine(lane.name)}" on branch ${lane.branch}.${lane.plan ? ` ${lanePlanSentence(lane.plan)}` : ''}`;
+export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { plan?: LanePlanLink; promptRole?: LanePromptRole }, others: readonly LanePreambleOther[]): string {
+  const where = `You are working in Hydra lane "${oneLine(lane.name)}" on branch ${lane.branch}.`;
+  const roleSentence = lane.promptRole ? ` Your role: ${oneLine(lane.promptRole.label)}.` : '';
+  const planSentence = lane.plan ? ` ${lanePlanSentence(lane.plan)}` : '';
   const advice = 'Call hydra_lanes to check again before large changes, and avoid editing files other lanes are changing.';
   const task = `Your task: ${clip(oneLine(lane.goal || ''), laneGoalMax) || 'wait for the user.'}`;
+  // A Codex lane's role text, when its developer instructions can't carry it, gets what the task and the plan leave,
+  // keeping room for the other lanes; at the least it says where the instructions are (roleFirstPrompt).
+  const roleRoom = lanePreambleMax - where.length - roleSentence.length - planSentence.length - advice.length - task.length - 300;
+  const roleText = lane.promptRole?.text ? ` ${oneLine(lane.promptRole.text(Math.max(400, roleRoom)))}` : '';
+  const head = `${where}${roleSentence}${roleText}${planSentence}`;
   const listed = others.slice(0, 8).map(other => {
     const files = other.files.slice(0, 5).map(file => clip(oneLine(file), 80));
     const more = other.files.length > files.length ? ` and ${other.files.length - files.length} more` : '';
@@ -419,7 +462,7 @@ export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { pl
  * flattened to one line (it is passed as a command-line argument, like the preamble).
  */
 export const laneContinuePromptMax = lanePreambleMax + 4000;
-export function laneContinuePrompt(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { plan?: LanePlanLink }, from: Provider, others: readonly LanePreambleOther[], handoffMarkdown: string): string {
+export function laneContinuePrompt(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { plan?: LanePlanLink; promptRole?: LanePromptRole }, from: Provider, others: readonly LanePreambleOther[], handoffMarkdown: string): string {
   const preamble = lanePreamble(lane, others);
   const handoff = clip(oneLine(handoffMarkdown), laneContinuePromptMax - preamble.length - 40);
   return clip(`${preamble} You are continuing in this lane after ${providerName(from)} hit its usage limit. Handoff: ${handoff}`, laneContinuePromptMax);

@@ -155,6 +155,8 @@ export interface RoleLaunch {
   skills: { id: string; file: string }[];
   /** The instructions file in the checked copy: a Claude lane's `--append-system-prompt-file` (R1), and where a Codex lane is told to read them. */
   instructionsFile: string;
+  /** Claude lanes: `--append-system-prompt-file` (R1). Left out, with a note, when cmd.exe would misread its path. */
+  systemPromptFile?: string;
   /** Claude: `--plugin-dir` (R5). */
   pluginDir?: string;
   /** Claude: the role's servers for a `--mcp-config` file, by name. */
@@ -316,6 +318,7 @@ export function roleLaunch(role: ResolvedRole, options: RoleLaunchOptions): Role
     return file;
   };
   const pluginDir = provider === 'claude' && role.skills.length ? onCommandLine(role.plugin, 'skills') : undefined;
+  const systemPromptFile = provider === 'claude' && options.target === 'lane' ? onCommandLine(instructionsFile, 'instructions') : undefined;
   if (provider === 'claude' && role.skills.length && !role.plugin) notes.push('The role\'s skills were left out: Hydra couldn\'t build their plugin.');
   return {
     ref: role.ref, title: role.role.title, label, changes: role.role.changes, tools: [...role.role.tools],
@@ -323,6 +326,7 @@ export function roleLaunch(role: ResolvedRole, options: RoleLaunchOptions): Role
     ...(index ? { skillIndex: index } : {}),
     skills: role.skills.map(skill => ({ id: skill.id, file: skillFile(role.copy, skill.id) })),
     instructionsFile,
+    ...(systemPromptFile ? { systemPromptFile } : {}),
     ...(pluginDir ? { pluginDir } : {}),
     mcpServers, codexConfig, env,
     allowedTools: provider === 'claude' ? [...(pluginDir ? ['Skill'] : []), ...Object.keys(mcpServers).map(name => `mcp__${name}`), ...(web ? ['WebSearch', 'WebFetch'] : [])] : [],

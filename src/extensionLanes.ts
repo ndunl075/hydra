@@ -19,6 +19,8 @@ import { laneNameFromTitle, type LanePlanLink } from './core/lanes';
 import type { LanePlanJobView } from './core/model';
 import type { Plan, PlanJob } from './core/plans';
 import { planLaneBrief, type PlanLaneLook, type PlanLaneResultInput, type PlanLaneStart } from './core/planRunner';
+// ---- Packs (docs/Packs_Plan.md) ----
+import type { RoleSource } from './core/packs/launch';
 
 /**
  * The editor side of Hydra lanes (docs/Lanes_And_Planner_Plan.md): commands,
@@ -49,6 +51,8 @@ export interface LanesHost {
   cancelPlanJob?(laneId: string): Promise<void>;
   // ---- Packs (docs/Packs_Plan.md): gates.json plus the active packs' gates. Undefined reads gates.json only. ----
   gates?: GatesLoader;
+  /** The active packs' roles, resolved at each lane launch. Undefined: a lane's role is never available. */
+  roles?: RoleSource;
 }
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
@@ -79,6 +83,8 @@ export class LanesController implements vscode.Disposable {
   private posted = '';
   private readonly disposables: vscode.Disposable[] = [];
   private storageDirectory?: string;
+  /** The main checkout lanes branch from: where the active packs are read. */
+  private repository?: string;
   // ---- The usage-limit banner (docs/Gates_Plan.md, section 2), one per lane at most ----
   private readonly limitOffers = new Map<string, LaneLimitOfferView & { event: LimitEvent }>();
   private readonly switchTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -112,6 +118,7 @@ export class LanesController implements vscode.Disposable {
   async start(repository: string, storageDirectory: string): Promise<void> {
     if (this.service) return;
     this.storageDirectory = storageDirectory;
+    this.repository = repository;
     const store = new LaneStore(storageDirectory, line => this.host.log(line));
     await store.load();
     const config = () => vscode.workspace.getConfiguration('hydra');
@@ -140,6 +147,7 @@ export class LanesController implements vscode.Disposable {
       gatesLogDirectory: path.join(storageDirectory, 'lanes', 'gates'),
       planOf: id => { const job = this.planJobOf(id); return job ? { title: job.planTitle, job: job.jobTitle, dependents: job.dependents } : undefined; },
       ...(this.host.gates ? { gates: this.host.gates } : {}),
+      ...(this.host.roles ? { roles: this.host.roles } : {}),
     });
     this.disposables.push(vscode.workspace.registerTextDocumentContentProvider(baseScheme, { provideTextDocumentContent: uri => this.baseContent(uri) }));
     this.service.activate();
@@ -334,7 +342,10 @@ export class LanesController implements vscode.Disposable {
       ...(job.writeScope?.length ? { writeScope: job.writeScope.slice(0, 32) } : {}),
     };
     const file = planLaneBrief(plan.title, job, start.dependencies);
-    const lane = await service.create({ name: laneNameFromTitle(job.title), provider: job.provider ?? defaultProvider, goal }, { ...(start.baseCommit ? { baseCommit: start.baseCommit } : {}), plan: link, brief: file });
+    // Packs (docs/Packs_Plan.md, "Plans"): the job's provider, then its role's, then hydra.defaultProvider. A role
+    // that isn't active now still goes with the lane, which starts without it and says why on its tile.
+    const roleProvider = job.role && !job.provider ? (await this.host.roles?.roles(this.repository ?? '').catch(() => []))?.find(role => role.ref === job.role)?.provider : undefined;
+    const lane = await service.create({ name: laneNameFromTitle(job.title), provider: job.provider ?? roleProvider ?? defaultProvider, goal, ...(job.role ? { role: job.role } : {}) }, { ...(start.baseCommit ? { baseCommit: start.baseCommit } : {}), plan: link, brief: file });
     this.postState(true);
     return { laneId: lane.id };
   }

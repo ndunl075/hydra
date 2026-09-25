@@ -148,7 +148,11 @@ export interface LanePlanJobView {
   commit?: string; dependents: number; dependentsStarted: number;
 }
 /** A lane as the webview shows it: the record, its last sync, whether its terminal is alive and, for a plan lane, its job. */
-export type LaneView = Lane & { sync?: LaneSyncView; running: boolean; planJob?: LanePlanJobView };
+export type LaneView = Lane & {
+  sync?: LaneSyncView; running: boolean; planJob?: LanePlanJobView;
+  /** Packs (docs/Packs_Plan.md, "Lanes"): why its role wasn't available at its last start, for the tile. `role` itself is the record's. */
+  roleNote?: string;
+};
 export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh' | 'switchProvider' | 'runGates' | 'evidence'
   // ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 5) ----
   | 'markJobDone' | 'cancelJob' | 'showPlan';
@@ -161,7 +165,8 @@ export interface LaneLimitOfferView { provider: Provider; message: string; butto
 
 /** Webview to extension. */
 export type LaneClientMessage =
-  | { type: 'laneNew'; name: string; provider: Provider; goal?: string }
+  /** `role` is "pack/role" (docs/Packs_Plan.md, "Lanes"); `provider` is still the form's choice. */
+  | { type: 'laneNew'; name: string; provider: Provider; goal?: string; role?: string }
   /** After the Lanes view mounts: the extension replays every terminal's buffer. */
   | { type: 'laneAttach' }
   | { type: 'laneInput'; id: string; data: string }
@@ -213,11 +218,12 @@ export function parseLaneMessage(message: Record<string, unknown>, type: string)
   };
   switch (type) {
     case 'laneNew': {
-      const { name, provider, goal } = message;
+      const { name, provider, goal, role } = message;
       if (typeof name !== 'string' || /[\u0000-\u001f\u007f]/.test(name) || !name.trim() || name.trim().length > 40) throw new Error('Invalid lane name.');
       if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
       if (goal !== undefined && (typeof goal !== 'string' || goal.length > 2000 || goal.includes('\0'))) throw new Error('Invalid lane goal.');
-      return { type, name: name.trim(), provider, ...(typeof goal === 'string' && goal.trim() ? { goal } : {}) };
+      if (role !== undefined && (typeof role !== 'string' || !/^[a-z0-9-]{1,24}[/][a-z0-9-]{1,24}$/.test(role))) throw new Error('Invalid lane role.');
+      return { type, name: name.trim(), provider, ...(typeof goal === 'string' && goal.trim() ? { goal } : {}), ...(role ? { role } : {}) };
     }
     case 'laneAttach': return { type };
     case 'laneInput': {

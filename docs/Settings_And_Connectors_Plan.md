@@ -1,6 +1,6 @@
 # Hydra Settings, connectors and MCP servers
 
-Status: **plan** (2026-09-24).
+Status: **built** (2026-09-24) on `feat/hydra-settings`, phases 1–5. The Freebuff section at the end is still research only.
 
 ## Goal
 
@@ -104,6 +104,15 @@ Verified (installed `anthropic.claude-code` 2.1.274, `package.json`, and `openai
 | 5 | Gear menu, keybinding, docs (README, Heads guide), and the full gate. | **Sonnet** |
 
 Phases 1–3 can run in parallel (separate files); phase 4 after 1. Each goes through the local gate, a PR, and Nico's OK before merge.
+
+## As built
+
+- **Code:** `src/settings/` holds the shell (`shell.ts`, `styles.ts`, `search.ts`) and one module per page in `src/settings/pages/`. `src/extensionSettings.ts` re-exports the shell.
+- **New settings:** `hydra.chatLocation`, `hydra.startupLayout` (the Window layout tiles), and `hydra.heads.defaultMinutes`, `hydra.heads.defaultMaxTurns` and `hydra.heads.defaultBudgetUsd`. The caps have the same defaults as before (30 / 60 / 5), and new heads read them live.
+- **Reset "Don't ask again":** today this clears Hydra's one dismissed-prompt flag (`hydra.firstRunLayout.v1`). New flags go in `src/settings/dismissedPrompts.ts`.
+- **Chat location, Codex:** Hydra's own open-chat action opens a Codex tab in Tabs mode. Codex's own side bar icon always opens its side bar, because Codex has no setting for it. For Claude, Hydra only writes `claudeCode.preferredLocation` once you pick a mode.
+- **MCP servers:** `src/core/mcpServers.ts`. Claude servers are read from `~/.claude.json` and changed only through `claude mcp add-json/remove -s user`. Codex servers are marked `# >>> Hydra MCP: <name>` blocks, checked to round-trip byte-exactly before every write.
+- **Entry points:** the title bar gear menu entry is registered in `desktop/workbench/hydraProfile.ts` (`MenuId.GlobalActivity`, so it needs a desktop build). `Ctrl+Shift+,` replaces VS Code's rarely used "Replace with previous value".
 
 ## Later: "Switch to Hydra Agent" when a provider hits its limit (Freebuff)
 

@@ -135,3 +135,19 @@ export function gateFailureMessage(results: readonly JobCheckResult[]): string {
   lines.push('Fix them, commit, and call hydra_done again.');
   return lines.join('\n');
 }
+
+/** The failed gates, one short line each — for a lane's merge/run-gates modal, which has its own detail area and doesn't need gateFailureMessage's full output tails. */
+export function summarizeGateFailures(results: readonly JobCheckResult[]): string {
+  return results.filter(gateBlocks).map(result => {
+    const kind = gateKind(result);
+    const detail = kind === 'command' ? `exit ${result.exitCode ?? 'none'}`
+      : kind === 'review' ? (result.findings?.length ? `${result.findings.length} finding${result.findings.length === 1 ? '' : 's'}` : result.summary || 'failed')
+      : result.summary || 'failed';
+    return `${result.id} (${kind}): ${detail}`;
+  }).join('\n');
+}
+/** "Send to lane" (docs/Gates_Plan.md, "Merge"): gateFailureMessage flattened to one line, capped at ~1500 characters, so it fits a terminal's input line. */
+export function flattenGateFailureMessage(results: readonly JobCheckResult[], max = 1500): string {
+  const flat = gateFailureMessage(results).replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}

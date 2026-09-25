@@ -1,6 +1,7 @@
 import type { Lane } from './lanes';
 import type { Plan } from './plans';
-import type { GateFinding, GateKind, GateState, JobCheckResult } from './jobs';
+import type { HeadCheckView, JobCheckResult } from './jobs';
+export type { HeadCheckView } from './jobs';
 
 export type Provider = 'claude' | 'codex';
 export interface ProviderInfo { provider: Provider; executable?: string; available: boolean }
@@ -13,13 +14,6 @@ export interface ProviderDiagnostic {
 export interface HandoffTask { id: string; title: string; prompt: string; repository: string; worktree: string; branch: string; baseCommit: string; provider: Provider }
 export interface Handoff { version: 1; task: HandoffTask }
 export interface OfficialExtensionInfo { provider: Provider; extensionId: string; installed: boolean; version?: string; commandAvailable: boolean; commandTitle: string }
-/**
- * One gate's result as the dashboard shows it (docs/Gates_Plan.md, "Seeing
- * results"): enough to draw a chip (kind, state, whether it blocks) and to
- * open View evidence (summary, findings, evidence files) without refetching
- * the whole JobCheckResult.
- */
-export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[] }
 /** One Hydra helper as the dashboard shows it (docs/Official_Extensions_Plan.md, Phase 6). */
 export interface HelperJobView {
   id: string; title: string; state: string; provider: Provider; createdAt: string; finishedAt?: string;

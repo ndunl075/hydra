@@ -42,7 +42,7 @@ import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, ty
 import { planBrief } from './core/planner';
 // ---- Gates (docs/Gates_Plan.md). Their own block. ----
 import { otherStillLimited } from './core/limitOffer';
-import { gateBlocks, gateKind, gateState } from './core/jobs';
+import { toHeadCheckView } from './core/jobs';
 import { buildEvidenceMarkdown, evidenceScheme } from './core/evidence';
 
 let manager: Manager | undefined;
@@ -594,10 +594,7 @@ class Manager {
       id: job.id, title: job.title, state: job.state, provider: job.provider, createdAt: job.createdAt, finishedAt: job.finishedAt,
       progress: job.progress, question: job.state === 'blocked' ? job.question : undefined, reason: job.state === 'running' ? undefined : job.reason,
       branch: job.branch, commit: job.result?.commit, summary: job.result?.summary, changedFiles: job.result?.changedFiles.length ?? 0,
-      checks: job.result?.checks.map(check => ({
-        id: check.id, passed: check.passed, kind: gateKind(check), state: gateState(check), required: check.required,
-        ...(check.summary ? { summary: check.summary } : {}), ...(check.findings?.length ? { findings: check.findings } : {}), ...(check.evidence?.length ? { evidence: check.evidence } : {}),
-      })) ?? [],
+      checks: job.result?.checks.map(toHeadCheckView) ?? [],
       repository: service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
       lead: job.lead, merged: service.isMerged(job.id), startedAt: job.startedAt, writeScope: job.writeScope,
     })).reverse();

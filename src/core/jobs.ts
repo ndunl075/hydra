@@ -82,6 +82,24 @@ export const gateState = (check: JobCheckResult): GateState => check.state ?? (c
 export const gateBlocks = (check: JobCheckResult): boolean => check.required && gateState(check) === 'failed';
 
 /**
+ * One gate's result as the dashboard shows it (docs/Gates_Plan.md, "Seeing
+ * results"): enough to draw a chip and to open View evidence without
+ * refetching the whole JobCheckResult. src/core/model.ts's HelperJobView
+ * re-exports this type; it lives here so toHeadCheckView (below) and its unit
+ * test never need model.ts.
+ */
+export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[] }
+/** A stored JobCheckResult, as extension.ts's headViews sends it to the dashboard. Pure, so the mapping is unit tested directly. */
+export function toHeadCheckView(check: JobCheckResult): HeadCheckView {
+  return {
+    id: check.id, passed: check.passed, kind: gateKind(check), state: gateState(check), required: check.required,
+    ...(check.summary ? { summary: check.summary } : {}),
+    ...(check.findings?.length ? { findings: check.findings } : {}),
+    ...(check.evidence?.length ? { evidence: check.evidence } : {}),
+  };
+}
+
+/**
  * A gate chip (docs/Gates_Plan.md, "Seeing results"): "✓ unit · ✓ review · ✗
  * ui", plus a not-run style with the reason on hover. Text as well as colour,
  * never colour alone — `tone` only ever adds colour on top of `label`'s icon.

@@ -7,8 +7,8 @@ import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePt
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
 import { LaneService } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
-import { gateFailureMessage, loadGates, type GatesOutcome } from './core/gates';
-import { gateBlocks, gateKind, type JobCheckResult } from './core/jobs';
+import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesOutcome } from './core/gates';
+import type { JobCheckResult } from './core/jobs';
 import { evidenceScheme } from './core/evidence';
 import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneLimitOfferView, type LaneOfferButtonId, type LaneServerMessage, type LaneView, type Provider } from './core/model';
 import { otherProvider, type LimitEvent } from './core/limitEvents';
@@ -46,24 +46,6 @@ const baseScheme = 'hydra-lane';
 const providerLabel = (provider: Provider) => provider === 'codex' ? 'Codex' : 'Claude Code';
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
-
-// ---- Gates (docs/Gates_Plan.md, "Lanes") ----
-
-/** The failed gates, one short line each, for the merge/run-gates modal's detail. */
-function summarizeGateFailures(results: readonly JobCheckResult[]): string {
-  return results.filter(gateBlocks).map(result => {
-    const kind = gateKind(result);
-    const detail = kind === 'command' ? `exit ${result.exitCode ?? 'none'}`
-      : kind === 'review' ? (result.findings?.length ? `${result.findings.length} finding${result.findings.length === 1 ? '' : 's'}` : result.summary || 'failed')
-      : result.summary || 'failed';
-    return `${result.id} (${kind}): ${detail}`;
-  }).join('\n');
-}
-/** "Send to lane": gateFailureMessage flattened to one line, capped at ~1500 characters, so it fits a terminal's input line. */
-function flattenGateFailureMessage(results: readonly JobCheckResult[], max = 1500): string {
-  const flat = gateFailureMessage(results).replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 function parseActionOptions(value: unknown): LaneActionOptions {
   if (value === undefined || value === null) return {};

@@ -85,6 +85,7 @@ export const connectorsPage: SettingsPage = {
     if (claudeBox) writtenList(claudeBox, [
       { label: 'claude mcp server (~/.claude.json)', text: entries.claude.server },
       { label: 'Allow rule (~/.claude/settings.json)', text: entries.claude.allowRule },
+      { label: 'Usage-limit hook, StopFailure (~/.claude/settings.json)', text: entries.claude.limitHook },
     ]);
     const codexBox = document.querySelector('[data-written="codex"]');
     if (codexBox) writtenList(codexBox, [

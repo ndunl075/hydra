@@ -10,9 +10,11 @@ import { HelperService, inScope, loadHelperChecks, helperPrompt } from '../src/c
 import type { HelperRun, HelperRunSpec } from '../src/core/helperRunner';
 import { claudeHelperArguments, codexHelperArguments } from '../src/core/helperRunner';
 import { supportedCliVersion, supportedCliVersionIn } from '../src/core/cliVersions';
+import type { HeadLimit } from '../src/core/limitDetection';
+import type { LimitEvent } from '../src/core/limitEvents';
 
 /** A scripted stand-in for a helper process. It talks to Hydra only through the real endpoint, with its own token. */
-type Script = (helper: { spec: HelperRunSpec; call: (tool: string, args?: Record<string, unknown>) => Promise<{ ok: boolean; result?: any; error?: string }>; endTurn: () => void; nextMessage: () => Promise<string>; exit: (code: number) => void; commit: (file: string, text: string) => Promise<void> }) => Promise<void>;
+type Script = (helper: { spec: HelperRunSpec; call: (tool: string, args?: Record<string, unknown>) => Promise<{ ok: boolean; result?: any; error?: string }>; endTurn: () => void; nextMessage: () => Promise<string>; exit: (code: number) => void; limit: (hit: HeadLimit | undefined) => void; commit: (file: string, text: string) => Promise<void> }) => Promise<void>;
 
 async function fixture(options: { script: Script; checks?: unknown; now?: () => number; maxConcurrent?: number }) {
   const root = await mkdtemp(path.join(tmpdir(), 'hydra-helpers-'));
@@ -35,17 +37,18 @@ async function fixture(options: { script: Script; checks?: unknown; now?: () => 
     startRun: spec => {
       runs.push(spec);
       const listeners: (() => void)[] = [], inbox: string[] = [], readers: ((message: string) => void)[] = [];
-      let exit!: (code: number) => void; let stopped = false;
+      let exit!: (code: number) => void; let stopped = false; let limit: HeadLimit | undefined;
       const exited = new Promise<{ code: number | null }>(resolve => { exit = code => { if (!stopped) { stopped = true; resolve({ code }); } }; });
       const run: HelperRun = {
         onTurnEnd: listener => { listeners.push(listener); }, exited,
         send: async message => { if (stopped) return false; const reader = readers.shift(); if (reader) reader(message); else inbox.push(message); return true; },
         stop: async () => exit(137),
+        limitHit: () => limit,
       };
       const token = spec.bridge.env.HYDRA_HELPER_TOKEN!;
       // A real helper takes seconds to start; the fake one starts on the next tick.
       setTimeout(() => void options.script({
-        spec, exit,
+        spec, exit, limit: hit => { limit = hit; },
         call: (tool, args = {}) => callHelperEndpoint(Number(spec.bridge.env.HYDRA_HELPER_PORT), token, tool, args),
         endTurn: () => { for (const listener of listeners) listener(); },
         nextMessage: () => inbox.length ? Promise.resolve(inbox.shift()!) : new Promise(resolve => readers.push(resolve)),
@@ -158,6 +161,36 @@ test('a head that stops without reporting is nudged once, then failed; one that 
     const [helper] = (await crash.wait([job_id])).heads;
     assert.equal(helper.state, 'failed'); assert.match(helper.reason, /exited \(code 3\)/);
   } finally { await crash.close(); }
+});
+
+test('a head that hits a usage limit fails at once with the reason, uses no nudge, and is reported', async () => {
+  let nudged = false;
+  const f = await fixture({ script: async helper => {
+    void helper.nextMessage().then(() => { nudged = true; });
+    helper.limit({ message: 'Claude AI usage limit reached|1790000000', resetsAt: new Date(1790000000 * 1000).toISOString() });
+    helper.endTurn();
+  } });
+  const events: LimitEvent[] = [];
+  f.service.onLimit(event => events.push(event));
+  try {
+    const { job_id } = await f.start('limited');
+    const [helper] = (await f.wait([job_id])).heads;
+    assert.equal(helper.state, 'failed'); assert.match(helper.reason, /^Claude usage limit reached \(resets 2026-/);
+    assert.equal(nudged, false, 'no nudge was spent on it');
+    assert.equal(f.store.get(job_id)!.attempts, 0);
+    assert.equal(events.length, 1);
+    assert.deepEqual({ ...events[0], at: undefined }, { provider: 'claude', source: 'head', at: undefined, jobId: job_id, message: 'Claude AI usage limit reached|1790000000', resetsAt: new Date(1790000000 * 1000).toISOString(), cwd: f.store.get(job_id)!.worktree });
+  } finally { await f.close(); }
+  // A Codex exec that fails on its limit exits non-zero instead of ending a turn.
+  const exits = await fixture({ script: async helper => { helper.limit({ message: "You've hit your usage limit." }); helper.exit(1); } });
+  const codexEvents: LimitEvent[] = [];
+  exits.service.onLimit(event => codexEvents.push(event));
+  try {
+    const { job_id } = await exits.start('limited-exit', { provider: 'codex' });
+    const [helper] = (await exits.wait([job_id])).heads;
+    assert.equal(helper.state, 'failed'); assert.match(helper.reason, /^Codex usage limit reached: You've hit your usage limit\.$/);
+    assert.equal(codexEvents[0]?.provider, 'codex');
+  } finally { await exits.close(); }
 });
 
 test('the time limit stops a head, and time spent waiting for an answer does not count', async () => {

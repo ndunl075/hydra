@@ -3,6 +3,7 @@ import { appendFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { processLaunch, terminateProcessTree } from './process';
 import type { Provider } from './model';
+import { claudeHeadLimit, codexHeadLimit, type HeadLimit } from './limitDetection';
 
 /**
  * Runs one Hydra helper process unattended (docs/Official_Extensions_Plan.md,
@@ -40,6 +41,8 @@ export interface HelperRun {
   /** Send a follow-up message (a nudge). False if the helper can no longer take one. */
   send(message: string): Promise<boolean>;
   stop(): Promise<void>;
+  /** The usage limit the CLI reported for its latest turn, if that turn hit one. */
+  limitHit?(): HeadLimit | undefined;
 }
 export type StartHelperRun = (spec: HelperRunSpec) => HelperRun;
 
@@ -102,7 +105,12 @@ function stopper(child: () => ChildProcess | undefined) {
 function startClaude(spec: HelperRunSpec): HelperRun {
   const log = logger(spec.logFile, spec.bridge.env.HYDRA_HELPER_TOKEN), listeners: (() => void)[] = [];
   log('start', { provider: 'claude', worktree: spec.worktree, args: claudeHelperArguments(spec) });
-  const child = spawnLogged(spec, claudeHelperArguments(spec), log, message => { if (message.type === 'result') for (const listener of listeners) listener(); });
+  let limit: HeadLimit | undefined;
+  const child = spawnLogged(spec, claudeHelperArguments(spec), log, message => {
+    // A limit counts for the turn it ends; a later good turn clears it.
+    if (message.type === 'assistant' || message.type === 'result') limit = claudeHeadLimit(message) ?? (message.type === 'result' && message.is_error !== true ? undefined : limit);
+    if (message.type === 'result') for (const listener of listeners) listener();
+  });
   const exited = new Promise<{ code: number | null }>(resolve => child.on('close', code => { log('exit', { code }); resolve({ code }); }));
   child.on('error', error => log('error', error.message));
   const write = (value: unknown) => new Promise<boolean>(resolve => {
@@ -111,18 +119,24 @@ function startClaude(spec: HelperRunSpec): HelperRun {
   });
   const say = (text: string) => write({ type: 'user', message: { role: 'user', content: text } });
   void write({ type: 'control_request', request_id: 'hydra-helper-init', request: { subtype: 'initialize' } }).then(() => say(spec.prompt));
-  return { onTurnEnd: listener => { listeners.push(listener); }, exited, send: say, stop: stopper(() => child) };
+  return { onTurnEnd: listener => { listeners.push(listener); }, exited, send: async text => { limit = undefined; return say(text); }, stop: stopper(() => child), limitHit: () => limit };
 }
 
 function startCodex(spec: HelperRunSpec): HelperRun {
   const log = logger(spec.logFile, spec.bridge.env.HYDRA_HELPER_TOKEN), listeners: (() => void)[] = [];
-  let thread: string | undefined, current: ChildProcess | undefined, finished = false;
+  let thread: string | undefined, current: ChildProcess | undefined, finished = false, limit: HeadLimit | undefined;
   let resolveExit!: (value: { code: number | null }) => void;
   const exited = new Promise<{ code: number | null }>(resolve => { resolveExit = resolve; });
   const run = (prompt: string, resumeThread?: string) => {
     const args = codexHelperArguments(spec, resumeThread);
     log('start', { provider: 'codex', worktree: spec.worktree, resume: resumeThread, args });
-    const child = spawnLogged(spec, args, log, message => { if (message.type === 'thread.started' && typeof message.thread_id === 'string') thread = message.thread_id; });
+    limit = undefined;
+    const child = spawnLogged(spec, args, log, message => {
+      if (message.type === 'thread.started' && typeof message.thread_id === 'string') thread = message.thread_id;
+      // An error line can be a retry notice; a completed turn clears it.
+      if (message.type === 'turn.completed') limit = undefined;
+      else limit = codexHeadLimit(message) ?? limit;
+    });
     current = child;
     child.stdin!.end(prompt);
     child.on('error', error => log('error', error.message));
@@ -139,6 +153,7 @@ function startCodex(spec: HelperRunSpec): HelperRun {
     onTurnEnd: listener => { listeners.push(listener); },
     exited,
     send: async text => { if (finished || !thread || (current && current.exitCode === null)) return false; run(text, thread); return true; },
+    limitHit: () => limit,
     stop: async () => { const wasFinished = finished; finished = true; await stopper(() => current)(); if (!wasFinished) resolveExit({ code: current?.exitCode ?? null }); },
   };
 }

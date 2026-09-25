@@ -7,6 +7,8 @@ import { finalJobStates, parseJobInput, type Job, type JobCheckResult, type JobS
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
 import type { Provider } from './model';
+import { headLimitReason } from './limitDetection';
+import type { LimitEvent } from './limitEvents';
 
 /**
  * Hydra helpers, end to end (docs/Official_Extensions_Plan.md, Phases 4 and 6).
@@ -45,6 +47,7 @@ export class HelperService {
   private readonly helperPids = new Set<number>();
   private readonly waiters = new Set<() => void>();
   private readonly merged = new Set<string>();
+  private readonly limitListeners = new Set<(event: LimitEvent) => void>();
   private dispatching = false;
   private dispatchAgain = false;
   private dispatchRun: Promise<void> = Promise.resolve();
@@ -106,6 +109,11 @@ export class HelperService {
     if (changed) this.changed();
   }
   helperProcessIds(): ReadonlySet<number> { return this.helperPids; }
+  /** A head stopped because its provider hit a usage limit. */
+  onLimit(listener: (event: LimitEvent) => void): { dispose(): void } {
+    this.limitListeners.add(listener);
+    return { dispose: () => { this.limitListeners.delete(listener); } };
+  }
   get leadFolder(): string { return this.options.leadFolder; }
 
   async stopAll(reason = 'Stopped with "Stop all heads".'): Promise<number> {
@@ -335,6 +343,8 @@ export class HelperService {
     if (!job || !active) return;
     if (finalJobStates.has(job.state)) { await this.stopRun(id); return; }
     if (job.state !== 'running') return;
+    // A usage limit isn't the head's fault and a nudge would only hit it again.
+    if (await this.limitReached(id)) return;
     if (!job.nudged) {
       await this.options.store.update(id, { nudged: true });
       const sent = await active.run.send('You stopped without reporting to Hydra. Commit your work and call hydra_done with a summary, or call hydra_stuck with one clear question. Do it now.');
@@ -346,6 +356,7 @@ export class HelperService {
   private async exited(id: string, code: number | null): Promise<void> {
     const active = this.active.get(id);
     if (!active) return;
+    if (await this.limitReached(id)) { this.active.delete(id); this.changed(); void this.dispatch(); return; }
     active.answer?.(undefined as unknown as string);
     this.active.delete(id);
     this.options.endpoint.revokeJob(id);
@@ -355,6 +366,17 @@ export class HelperService {
     }
     this.changed();
     void this.dispatch();
+  }
+
+  /** If the head's last turn hit a usage limit: fail it with that reason (no nudge, no attempt used) and report it. */
+  private async limitReached(id: string): Promise<boolean> {
+    const job = this.options.store.get(id), limit = this.active.get(id)?.run.limitHit?.();
+    if (!job || !limit || finalJobStates.has(job.state)) return false;
+    await this.finish(id, 'failed', headLimitReason(job.provider, limit));
+    const event: LimitEvent = { provider: job.provider, source: 'head', at: new Date(this.now()).toISOString(), jobId: id, message: limit.message, ...(limit.resetsAt ? { resetsAt: limit.resetsAt } : {}), ...(job.worktree ? { cwd: job.worktree } : {}) };
+    this.options.log?.(`[heads] ${id} stopped: ${headLimitReason(job.provider, limit)}`);
+    for (const listener of [...this.limitListeners]) { try { listener(event); } catch { /* the listener's problem */ } }
+    return true;
   }
 
   private async enforceLimits(): Promise<void> {

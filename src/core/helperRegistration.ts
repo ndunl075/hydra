@@ -5,6 +5,7 @@ import path from 'node:path';
 import { replaceAtomic } from './atomicFile';
 import { leadGuidanceMarkdown } from './helperTools';
 import { processLaunch } from './process';
+import { addClaudeLimitHook, readClaudeLimitHooks, removeClaudeLimitHook, type LimitHookGroup } from './claudeLimitHook';
 
 /**
  * Connecting Claude Code and Codex to Hydra (docs/Official_Extensions_Plan.md,
@@ -14,7 +15,8 @@ import { processLaunch } from './process';
  *
  * - Claude: registered through Claude's own `claude mcp add-json -s user`
  *   (Claude rewrites ~/.claude.json itself all the time), plus one "mcp__hydra"
- *   allow rule inserted into ~/.claude/settings.json without reformatting it.
+ *   allow rule and one StopFailure hook (claudeLimitHook.ts) inserted into
+ *   ~/.claude/settings.json without reformatting it.
  * - Codex: one clearly marked block appended to ~/.codex/config.toml. `codex mcp
  *   add` reformats the whole file, so Hydra writes and removes only its block;
  *   the rest of the file stays byte-identical.
@@ -28,10 +30,11 @@ export const claudeAllowRule = 'mcp__hydra';
 const blockStart = '# >>> Hydra helpers (managed by Hydra: connect or disconnect in Hydra Settings)';
 const blockEnd = '# <<< Hydra helpers';
 
-export interface ProviderPaths { claudeJson: string; claudeSettings: string; codexConfig: string }
+export interface ProviderPaths { claudeJson: string; claudeSettings: string; codexConfig: string; claudeProjects: string }
 export function providerPaths(env: NodeJS.ProcessEnv = process.env): ProviderPaths {
   const claudeDir = env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude');
   return {
+    claudeProjects: path.join(claudeDir, 'projects'),
     claudeJson: env.CLAUDE_CONFIG_DIR ? path.join(env.CLAUDE_CONFIG_DIR, '.claude.json') : path.join(homedir(), '.claude.json'),
     claudeSettings: path.join(claudeDir, 'settings.json'),
     codexConfig: path.join(env.CODEX_HOME || path.join(homedir(), '.codex'), 'config.toml'),
@@ -205,7 +208,14 @@ export function runClaude(executable: string, args: string[]): Promise<{ code: n
     });
   });
 }
-export async function connectClaude(executable: string, paths: ProviderPaths, spec: HelperServerSpec): Promise<void> {
+/** Add, upgrade (`group`) or remove (undefined) Hydra's StopFailure hook, touching only its bytes. */
+export async function setClaudeLimitHook(paths: ProviderPaths, group: LimitHookGroup | undefined): Promise<void> {
+  const settings = await read(paths.claudeSettings);
+  const updated = group ? addClaudeLimitHook(settings, group) : removeClaudeLimitHook(settings).text;
+  if (updated !== undefined && updated !== settings) await writeAtomic(paths.claudeSettings, updated);
+}
+/** `limitHook`: the StopFailure hook to install, when this Claude supports it (claudeSupportsLimitHook). */
+export async function connectClaude(executable: string, paths: ProviderPaths, spec: HelperServerSpec, limitHook?: LimitHookGroup): Promise<void> {
   const add = () => runClaude(executable, ['mcp', 'add-json', '-s', 'user', serverName, JSON.stringify({ type: 'stdio', command: spec.command, args: spec.args, env: spec.env, timeout: 3_600_000 })]);
   await runClaude(executable, ['mcp', 'remove', '-s', 'user', serverName]);
   let added = await add();
@@ -213,13 +223,14 @@ export async function connectClaude(executable: string, paths: ProviderPaths, sp
   if (added.code !== 0 && /already exists/i.test(added.output)) { await runClaude(executable, ['mcp', 'remove', '-s', 'user', serverName]); added = await add(); }
   if (added.code !== 0) throw new Error(`Claude Code could not add Hydra: ${added.output.trim().slice(0, 300)}`);
   const settings = await read(paths.claudeSettings);
-  const updated = addClaudeAllowRule(settings);
+  const allowed = addClaudeAllowRule(settings);
+  const updated = limitHook ? addClaudeLimitHook(allowed, limitHook) : allowed;
   if (updated !== settings) await writeAtomic(paths.claudeSettings, updated);
 }
 export async function disconnectClaude(executable: string | undefined, paths: ProviderPaths): Promise<void> {
   if (executable) await runClaude(executable, ['mcp', 'remove', '-s', 'user', serverName]);
   const settings = await read(paths.claudeSettings);
-  const updated = removeClaudeAllowRule(settings);
+  const updated = removeClaudeAllowRule(removeClaudeLimitHook(settings).text);
   if (settings !== undefined && updated !== settings) await writeAtomic(paths.claudeSettings, updated!);
 }
 
@@ -257,6 +268,11 @@ export async function claudeWrittenAllowRule(paths: ProviderPaths): Promise<stri
     return Array.isArray(allow) && allow.includes(claudeAllowRule) ? `"${claudeAllowRule}"` : undefined;
   } catch { return undefined; }
 }
+/** The StopFailure hook group(s) Hydra inserted into ~/.claude/settings.json. Undefined when there are none. */
+export async function claudeWrittenLimitHook(paths: ProviderPaths): Promise<string | undefined> {
+  const groups = readClaudeLimitHooks(await read(paths.claudeSettings).catch(() => undefined));
+  return groups.length ? groups.map(group => JSON.stringify(group, null, 2)).join('\n') : undefined;
+}
 /** The exact `[mcp_servers.hydra]` block in ~/.codex/config.toml now, env values masked. Undefined when it isn't there. */
 export async function codexWrittenBlock(file: string, mask: (key: string, value: string) => string): Promise<string | undefined> {
   const text = await read(file);
@@ -268,12 +284,12 @@ export async function codexWrittenGuidance(file: string): Promise<string | undef
   const agents = await read(codexAgentsFile(file));
   return agents ? readMarkedBlock(agents, guidanceStart, guidanceEnd) : undefined;
 }
-export interface WrittenEntries { claude: { server?: string; allowRule?: string }; codex: { config?: string; agents?: string } }
+export interface WrittenEntries { claude: { server?: string; allowRule?: string; limitHook?: string }; codex: { config?: string; agents?: string } }
 /** Everything Hydra has written for both providers, read straight off disk. */
 export async function helperWrittenEntries(paths: ProviderPaths, mask: (key: string | undefined, value: string) => string): Promise<WrittenEntries> {
-  const [server, allowRule, config, agents] = await Promise.all([
-    claudeWrittenServer(paths, mask), claudeWrittenAllowRule(paths),
+  const [server, allowRule, limitHook, config, agents] = await Promise.all([
+    claudeWrittenServer(paths, mask), claudeWrittenAllowRule(paths), claudeWrittenLimitHook(paths),
     codexWrittenBlock(paths.codexConfig, mask), codexWrittenGuidance(paths.codexConfig),
   ]);
-  return { claude: { server, allowRule }, codex: { config, agents } };
+  return { claude: { server, allowRule, ...(limitHook ? { limitHook } : {}) }, codex: { config, agents } };
 }

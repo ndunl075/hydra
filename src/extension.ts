@@ -83,8 +83,8 @@ class Manager {
       Promise.resolve().then(() => callback(...args)).catch(error => { this.report(error); throw error; })));
     command('hydra.toggleMode', () => this.mode === 'editor' ? this.openAgents() : this.openEditor());
     command('hydra.openAgents', () => this.openAgents());
-    // Not contributed: the desktop Get Started walkthrough still links "New Task"
-    // here (scripts/desktop.mjs), so it opens the Agents view.
+    // Not contributed: desktop builds made before the walkthrough change still link "New Task"
+    // here, so it opens the Agents view.
     command('hydra.newTask', () => this.openAgents());
     command('hydra.openSettings', (pageId?: string) => this.settings.show(pageId));
     command('hydra.setChatLocation', (mode?: 'docked' | 'tabs') => setChatLocation(mode));

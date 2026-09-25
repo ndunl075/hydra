@@ -243,6 +243,7 @@ test('standalone staging embeds the real Hydra runtime and themes with an app-on
     assert.equal(staged.contributes.configurationDefaults['vsicons.dontShowNewVersionMessage'], true);
     assert.equal(staged.contributes.configurationDefaults['chat.disableAIFeatures'], true, 'the built-in Copilot chat is hidden');
     assert.equal(staged.contributes.configurationDefaults['workbench.editor.useModal'], 'off', 'Settings opens as a tab');
+    assert.equal(staged.contributes.configurationDefaults['git.detectWorktrees'], false, 'lane and head worktrees stay out of Source Control');
     assert.equal(original.contributes.configurationDefaults?.['workbench.secondarySideBar.defaultVisibility'], undefined);
     assert.equal(original.contributes.configurationDefaults?.['workbench.colorTheme'], undefined);
     assert.deepEqual(await fs.readFile(path.join(fixture, 'dist', 'extension.cjs')), await fs.readFile(path.join(root, 'dist', 'extension.cjs')));

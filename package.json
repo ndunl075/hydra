@@ -218,7 +218,8 @@
       "workbench.startupEditor": "none",
       "workbench.editor.tabHeight": "compact",
       "window.commandCenter": false,
-      "workbench.layoutControl.type": "menu"
+      "workbench.layoutControl.type": "menu",
+      "git.detectWorktrees": false
     },
     "configuration": {
       "title": "Hydra",

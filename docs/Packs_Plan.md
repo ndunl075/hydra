@@ -472,15 +472,15 @@ Each item is tried live with Claude Code 2.1.282 and Codex 0.154.0. What was run
 
 **Done** when the local gate passes (check, build, tests, smoke), the live checklist passes, the PR is merged with CI green, the installed app is refreshed, and Nico has the summary.
 
-## Open questions for the owner
+## Decisions (Nico, 2026-09-25)
 
-1. **Packs folder:** `~/.hydra/packs` (visible, easy to share) or Hydra's global storage (hidden)? And should a project be able to carry its own packs in `.hydra/packs/<id>/`, treated as third-party and pinned by hash?
-2. **Built-in packs in a committed `packs.json`:** ask once per project, as this plan does, or trust them the way a committed `gates.json` is trusted today?
-3. **Playwright MCP in Coding:** ship it for the UI builder, pinned to a version? It downloads from npm on first use, which built-in packs otherwise never do.
-4. **A model per role:** add an optional `model` to roles?
-5. **Servers per role or per pack:** this plan gives a server only to the roles that list it. Should a pack be able to give a server to every lane in the project?
-6. **How a lead learns the roles:** put the active roles in its instructions, let it learn them from the error when it guesses wrong, or add a `hydra_roles` action?
-7. **Pack scripts and Node:** `["node", "{pack}/…"]` needs Node on PATH. Add a `{node}` placeholder that runs Hydra's own executable as Node?
+1. **User packs live in `~/.hydra/packs`.** It's visible and easy to share. A project may also carry packs in `.hydra/packs/<id>/`: they're treated as third-party, pinned by content hash, and need your review before anything runs.
+2. **A committed `packs.json` asks once per project**, built-in packs included, through the review panel, because packs can run commands.
+3. **The Coding pack ships Playwright MCP** for the UI builder, pinned to one version. The review panel says it downloads from npm on first use.
+4. **Roles may set an optional `model`.**
+5. **A pack's MCP servers go only to the roles that list them.**
+6. **Leads learn the active roles from their instructions,** plus the `role` enum on `hydra_start_head`.
+7. **A `{node}` placeholder** runs Hydra's own executable as Node (`ELECTRON_RUN_AS_NODE`), so pack scripts don't need Node on PATH.
 
 ## As built
 

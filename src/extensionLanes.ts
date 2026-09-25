@@ -53,6 +53,13 @@ export interface LanesHost {
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
 
+/** The confirmation's note for gates that didn't fail. Packs (docs/Packs_Plan.md): a gate that didn't run is named, never counted as passed. */
+export function gatesPassNote(results: readonly JobCheckResult[], when = ''): string {
+  const skipped = results.filter(result => result.state === 'notRun').map(result => result.id);
+  if (!skipped.length) return ` Gates passed${when}.`;
+  return skipped.length === results.length ? ` Gates not run: ${skipped.join(', ')}.` : ` Gates passed${when}; not run: ${skipped.join(', ')}.`;
+}
+
 const laneMessages: ReadonlySet<string> = new Set(['laneNew', 'laneAttach', 'laneInput', 'laneResize', 'laneAction', 'laneLimitAction', 'laneCancelSwitch', 'view']);
 export const isLaneMessage = (message: { type: string }): message is LaneClientMessage => laneMessages.has(message.type);
 const baseScheme = 'hydra-lane';
@@ -620,13 +627,15 @@ export class LanesController implements vscode.Disposable {
    * work), `anyway`, or Cancel. Undefined means stop; `note` is what the confirmation adds.
    */
   private async gatesBefore(service: LaneService, lane: Lane, interactive: boolean, question: string, anyway: string): Promise<{ note: string } | undefined> {
-    const gatesConfig = await (this.host.gates ?? loadGates)(lane.repository).catch(() => undefined);
+    // With packs, a listed pack that can't run still shows its gates as not run (docs/Packs_Plan.md).
+    const load: GatesLoader = this.host.gates ?? loadGates;
+    const gatesConfig = await load(lane.repository).catch(() => undefined);
     if (!gatesConfig || gatesConfig.lanes !== 'onMerge' || !(gatesConfig.gates.length || gatesConfig.notRun?.length)) return { note: '' };
     const reused = await service.reusableGates(lane.id).catch(() => undefined);
-    if (reused?.commit) return { note: ` Gates passed on ${reused.commit.slice(0, 7)} at ${new Date(reused.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` };
+    if (reused?.commit) return { note: gatesPassNote(reused.results, ` on ${reused.commit.slice(0, 7)} at ${new Date(reused.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`) };
     const outcome = await this.runGatesFlow(service, lane, interactive);
     if (!outcome) return undefined; // cancelled, or gates couldn't run and this was interactive
-    if (!outcome.failed.length) return { note: ' Gates passed.' };
+    if (!outcome.failed.length) return { note: gatesPassNote(outcome.results) };
     if (!interactive) throw new Error(`Gates failed for lane ${lane.name}:\n${summarizeGateFailures(outcome.results)}`);
     const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. ${question}`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Send to lane', anyway);
     if (choice === 'Send to lane') { this.sendGatesToLane(service, lane, outcome.results); return undefined; }

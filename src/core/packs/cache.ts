@@ -53,12 +53,23 @@ export async function copyMatches(folder: string, hash: string): Promise<boolean
   try { return (await readPackFolder(folder)).hash === hash; } catch { return false; }
 }
 
+// One placement at a time per cache entry in this window: two heads finishing at
+// once must not both rebuild a copy, or one could remove the other's while it runs.
+const placing = new Map<string, Promise<unknown>>();
+
 /**
  * Put checked bytes in the cache as `name`: written to a fresh temporary
  * folder, checked there, then renamed into place. Another window may finish
  * first; its copy is used when it checks out.
  */
-async function place(cacheRoot: string, name: string, files: ReadonlyMap<string, Uint8Array>, hash: string): Promise<string> {
+function place(cacheRoot: string, name: string, files: ReadonlyMap<string, Uint8Array>, hash: string): Promise<string> {
+  const key = path.join(cacheRoot, name).toLowerCase();
+  const next = (placing.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => placeNow(cacheRoot, name, files, hash));
+  placing.set(key, next);
+  void next.finally(() => { if (placing.get(key) === next) placing.delete(key); }).catch(() => undefined);
+  return next;
+}
+async function placeNow(cacheRoot: string, name: string, files: ReadonlyMap<string, Uint8Array>, hash: string): Promise<string> {
   const final = path.join(cacheRoot, name);
   if (await copyMatches(final, hash)) return final;
   await mkdir(cacheRoot, { recursive: true });
@@ -66,6 +77,8 @@ async function place(cacheRoot: string, name: string, files: ReadonlyMap<string,
   try {
     await writeFiles(path.join(cacheRoot, temporary), files);
     if (!await copyMatches(path.join(cacheRoot, temporary), hash)) throw new Error('Its copy didn\'t match what Hydra checked.');
+    // Another window may have placed a good copy meanwhile; only a bad one is replaced.
+    if (await copyMatches(final, hash)) return final;
     await removeCacheEntry(cacheRoot, name);
     try { await rename(path.join(cacheRoot, temporary), final); }
     catch (error) { if (!await copyMatches(final, hash)) throw error; }

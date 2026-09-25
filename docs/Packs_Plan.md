@@ -170,7 +170,7 @@ A pack's hash is SHA-256 over its files: the sorted relative paths, then each fi
 | Gate | `code-review`: review, reviewer `other`, required | Focus: correctness, missing tests for new behaviour, security (injection, secrets, unsafe paths), and whether the change does what the brief asks. Ignores style. |
 | Skill | `test-first` | Write a failing test, make it pass, then tidy. |
 | Skill | `ui-check` | How to run the project's dev server, check a page at three widths, and read the screenshots gate's report. |
-| MCP servers | None | See open question 3. |
+| MCP server | `playwright`: `npx -y @playwright/mcp@0.0.82 --headless --isolated` | Decisions 3 and 5: pinned to one exact version, and only the UI builder lists it. The review panel says it downloads from npm on first use. |
 
 **Research** (`research`)
 
@@ -373,12 +373,14 @@ A text that can't pass as one argument (a `'`, or more than the cap after flatte
 | File | What |
 | --- | --- |
 | `src/core/packs/format.ts` | Pure: `parsePackManifest`, `parsePacksFile`, the caps, `{pack}`, and the env and Codex-safety rules |
-| `src/core/packs/registry.ts` | Finds built-in and user packs, validates and hashes them, and lists their problems |
+| `src/core/packs/files.ts` | Reads a pack folder once, refusing links, and hashes it |
+| `src/core/packs/registry.ts` | Finds built-in, user and project packs, validates and hashes them, and lists their problems |
 | `src/core/packs/allowed.ts` | The local record (`globalStorage/packs/allowed.json`), with atomic writes |
 | `src/core/packs/cache.ts` | The copy each pack runs from, the per-role Claude plugin folders, and the role files |
 | `src/core/packs/project.ts` | Reading and writing `.hydra/packs.json`; `activePacks(folder)` |
 | `src/core/packs/gates.ts` | `effectiveGates` |
 | `src/core/packs/launch.ts` | Pure `roleLaunch(role, provider, paths)` for heads and lanes |
+| `src/core/packs/service.ts` | `PackService`: each project's state, the gates loader, and the Packs page's writes, with no editor API |
 | `src/extensionPacks.ts` | The pack service in the window: commands, watchers on `packs.json` and the packs folder, the notification, and `Snapshot.roles` |
 | `src/settings/pages/packs.ts`, `packsHelpers.ts` | The page, and its pure helpers |
 | `packs/coding/`, `packs/research/` | The built-in packs |
@@ -492,4 +494,32 @@ Tried live on 2026-09-25 with Claude Code 2.1.282 and Codex 0.154.0.
 
 ## As built
 
-Not built yet. When it is, record where it lives, the changes from the plan, what was verified live, and what's not done.
+Not finished. When it is, record where it lives, the changes from the plan, what was verified live, and what's not done.
+
+### Phase 1 (2026-09-25)
+
+**Where it lives:**
+- `src/core/packs/`: `format.ts`, `files.ts`, `registry.ts`, `allowed.ts`, `cache.ts`, `project.ts`, `gates.ts` and `service.ts`.
+- `src/extensionPacks.ts` builds the `PackService`.
+- `packs/coding/` and `packs/research/` hold the built-in skeletons: ids, roles, minimal instructions and skills, the review gates, and Coding's Playwright server. Phase 3 writes the real content.
+- Tests are in `tests/packs.test.ts`.
+
+**Changes from the plan:**
+- **Project packs** (decision 1) are read from `<lead>/.hydra/packs/<id>/`. They're pinned by hash like your packs. A project pack wins over one of yours with the same id, and yours says so. The allow record keeps each entry's source, so a switch between them asks again.
+- **The cache is checked at every use.** Research R8 showed heads can write outside their worktree. So each use re-hashes the copy, and a copy that doesn't match is rebuilt from the bytes that were checked. Copies are written from the bytes the registry read and hashed, never re-read from the pack's folder. Role plugins sit beside a copy, in `<id>-<hash12>.plugins/<role>/`, so they don't change its hash.
+- **Allowing needs the hash you reviewed.** `PackService.allow` and `turnOn` take the hash the review panel showed, and refuse if the pack changed since.
+- **`{node}`** can only be a whole command (the first entry). `{pack}` can only start an argument, alone or after `--name=`, followed by a path that must exist in the pack. Both also work in a stdio server's command and args; phase 2 resolves them there.
+- **Pack skills' front matter** may have only `name`, `description` and `license`. `allowed-tools`, hooks and anything else are refused, because they could widen what an agent may do.
+- **A secret-sounding name with a short plain value** (`SESSION_TIMEOUT: "30"`, `AUTH_ENABLED: "true"`) is allowed. `${HYDRA_*}` references are refused.
+- **`model`** (decision 4) is parsed and checked: a safe model-name pattern. It applies when a role runs on its own provider; phase 2 wires it.
+- **A `packs.json` Hydra can't use** throws, as a broken `gates.json` does. A head then gets "Hydra can't check your work", and no attempt is spent.
+- **The lane Merge confirmation** names gates that didn't run ("Gates passed; not run: fact-check.") instead of saying only "Gates passed."
+
+**For later phases:**
+- **Phase 2:** `resolvePlaceholders`, `codexProblem`, `buildRolePlugin`, `PackServerInfo.variables`, and `ProjectPack.copy`.
+- **Phase 4:**
+  - `PackService.state`, `turnOn(folder, id, reviewedHash)`, `setEnabled`, `skipGate`, `forget` and `effectiveGates` (its `dropped` list is the "From packs" group).
+  - `ProjectPack` carries the pack's file bytes (`pack.files`). Never post it to a webview as it is.
+  - Allowing must come from the review panel's own button, never from a public command, since any extension can run commands.
+
+**Not done in phase 1:** the launch effects (phase 2), the real pack content (phase 3), the UI and its commands (phase 4), and live checks.

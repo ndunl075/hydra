@@ -175,8 +175,10 @@ export type LaneHandOn =
   | { ok: false; reason: 'dirty' | 'nothing'; message: string };
 
 /** A fingerprint of a gates file's contents: a passing run is reused only while this is unchanged. */
-export function gatesFingerprint(config: Pick<GatesConfig, 'source' | 'gates' | 'maxAttempts'>): string {
-  return createHash('sha256').update(JSON.stringify({ source: config.source, maxAttempts: config.maxAttempts ?? null, gates: config.gates })).digest('hex').slice(0, 16);
+export function gatesFingerprint(config: Pick<GatesConfig, 'source' | 'gates' | 'maxAttempts'> & { notRun?: JobCheckResult[] }): string {
+  // Packs: a listed pack that can't run changes what a run means, so its not-run gates count too.
+  const notRun = config.notRun?.length ? { notRun: config.notRun.map(result => result.id) } : {};
+  return createHash('sha256').update(JSON.stringify({ source: config.source, maxAttempts: config.maxAttempts ?? null, gates: config.gates, ...notRun })).digest('hex').slice(0, 16);
 }
 
 /**

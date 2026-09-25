@@ -683,3 +683,14 @@ test('a pack review gate\'s role reaches the reviewer\'s prompt, and pack reache
   assert.equal(toHeadCheckView({ id: 'code-review', required: true, passed: true, exitCode: 0, durationMs: 1, outputTail: '', kind: 'review', state: 'passed', pack: 'coding' }).pack, 'coding');
   assert.equal('pack' in toHeadCheckView({ id: 'unit', required: true, passed: true, exitCode: 0, durationMs: 1, outputTail: '' }), false);
 });
+
+test('cache: heads finishing at once share one copy; none removes another\'s', async () => {
+  const { root, close } = await tempRoot();
+  try {
+    const cacheRoot = path.join(root, 'cache'), files = seoFiles(), hash = packHash(files);
+    const copies = await Promise.all(Array.from({ length: 4 }, () => ensureCached(cacheRoot, { id: 'seo', hash, files })));
+    assert.equal(new Set(copies).size, 1);
+    assert.equal((await readPackFolder(copies[0]!)).hash, hash);
+    assert.deepEqual(await readdir(cacheRoot), [cacheName('seo', hash)]);
+  } finally { await close(); }
+});

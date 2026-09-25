@@ -398,3 +398,16 @@ test('an SSR render of a running plan shows its progress, a head slot, a lane ca
   assert.match(html, /Waiting for Job build/, 'the not-yet-started job shows its reason');
   assert.match(html, /Delete plan/);
 });
+
+test('an SSR render of a skipped plan job is prefixed "Skipped:"', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { AgentsCanvas } = await import('../webview/AgentsCanvas');
+  const incomplete = plan('incomplete', [planJob('a', { outcome: { state: 'failed', reason: 'boom', at: new Date().toISOString() } }), planJob('b', { dependsOn: ['a'] })]);
+  const views = { [incomplete.id]: [
+    { key: 'a', runAs: 'head' as const, status: 'failed' as const, reason: 'boom' },
+    { key: 'b', runAs: 'head' as const, status: 'skipped' as const, reason: 'Job a did not finish.' },
+  ] };
+  const html = renderToStaticMarkup(React.createElement(AgentsCanvas, { heads: [], plans: [incomplete], planJobs: views, onAction: () => {} }));
+  assert.match(html, /Skipped: Job a did not finish\./);
+});

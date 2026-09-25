@@ -503,7 +503,9 @@ function PlanRunningJobSlot({ item, onOpenMenu, onOpenLane, onPlan }: {
       </div>
     </div>;
   }
-  const detail = view.status === 'done' ? `Job done${view.commit ? ` · ${view.commit.slice(0, 7)}` : ''}` : view.reason || planJobStatusLabel[view.status];
+  const detail = view.status === 'done' ? `Job done${view.commit ? ` · ${view.commit.slice(0, 7)}` : ''}`
+    : view.status === 'skipped' ? `Skipped: ${view.reason || 'a job it depends on did not finish.'}`
+    : view.reason || planJobStatusLabel[view.status];
   return <div className={`canvas-node canvas-plan-job canvas-plan-status status-${view.status}`} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
     role="button" tabIndex={0} aria-label={`${job.title}, ${planJobStatusLabel[view.status]}. ${detail}. Shift+F10 for more.`}
     onClick={openMenuFromClick}

@@ -145,6 +145,32 @@ Apart from plans (below), the view never starts work itself; everything else on 
 - **Cycles are refused.** A plan whose dependencies loop shows the loop, draws it in red, and can't run until you break it.
 - **Run plan** starts one head per job in dependency order, grouped under the plan on the canvas. Running it again after adding jobs starts only the new ones.
 
+**Jobs you drive yourself** ([Plan_Lanes_Plan.md](Plan_Lanes_Plan.md)):
+- **Run as:** a job's popover has **Head** (Hydra drives it) or **Lane** (you drive it in a terminal). A lane job's card says "Draft job · Lane".
+- **Starting:** a lane job opens as a lane as soon as the jobs it depends on are done, named after the job, with its brief as the goal.
+  - The lane starts from their work.
+  - Its first prompt names the plan and the job.
+  - The full brief, with what the jobs before it did, is in `.hydra-job/brief.md` in its worktree, which is never committed.
+- **Finishing:** commit in the lane, then press **Mark job done** on its tile (or on its card's ⋯ on the canvas).
+  - Hydra runs the gates, or reuses a passing run on the same commit.
+  - It asks for an optional note for the next jobs, then hands the lane's commit on: the jobs after it start from there.
+  - **Merge** finishes the job too.
+  - The lane's agent can call **`hydra_job_ready`**, which asks you; it never marks the job itself.
+  - Until a job after it has started, you can press **Mark job done again**.
+- **Heads after a lane job** wait until it's done. Heads after heads start as they did before.
+- **On the canvas:**
+  - A running plan shows its progress: "2 of 4 done · waiting for you in Build API".
+  - Each job is its head card, its lane card, or a small node saying what it waits for, why it was skipped, or that it's done.
+  - A lane card opens its lane. Its ⋯ has **Open lane**, **Mark job done**, **Cancel job** and **Diff**.
+- **Failures:** when a head fails, or a lane is closed before its job is done, the jobs after it are skipped and the plan is **Incomplete**.
+  - **Retry failed jobs** starts them again, with a new lane for a lane job.
+  - **Cancel job…** (in a lane's ⋯, or a job's ⋯ on the canvas) ends one job.
+- **+ Job** works on a running plan too. The new job stays a draft you can edit until you press **Run plan**.
+- **Limits and restarts:**
+  - A plan lane that continues in the other agent stays under its plan.
+  - A head that hit its limit holds the jobs after it until it goes on.
+  - After Hydra restarts, a plan's lanes show Exited under the plan and nothing starts by itself. A lane job that was ready shows **Start lane**.
+
 ### Lanes
 
 Heads are Hydra's agents. **Lanes** are yours: each lane is a real `claude` or `codex` terminal, signed in with your own account, working in its own git worktree and branch ([Lanes_And_Planner_Plan.md](Lanes_And_Planner_Plan.md), section 1). The Agents tab has two views, **Canvas | Lanes**.
@@ -177,10 +203,10 @@ Heads are Hydra's agents. **Lanes** are yours: each lane is a real `claude` or `
   - **Continue** restarts the same lane with the other agent, in the same worktree, with a handoff. Uncommitted work is untouched.
   - **⋯ → Switch to…** does the same whenever you like.
   - With `hydra.lanes.onLimit: "switch"`, the lane switches by itself after a 10-second countdown you can cancel.
-- **Restarting Hydra** ends the lanes' terminal sessions but keeps their worktrees. **Resume** continues the conversation (`claude --continue`, `codex resume --last`); **Start fresh** begins a new one.
+- **Restarting Hydra** ends the lanes' terminal sessions but keeps their worktrees. **Resume** continues the conversation (`claude --continue`, `codex resume --last`); **Start fresh** begins a new one. If the CLI never began a conversation (it stopped at its own update or folder-trust prompt), Resume opens an empty one; use **Start fresh**.
 - **On the canvas:** every open lane is a node, heads it started grow from it, and lanes that would conflict are joined by a red dashed line. Click a lane to jump to its terminal.
 
-The **Hydra panel** (the Hydra icon in the activity bar) lists your lanes, running heads and plans, with **New lane**, **New plan** and **Open Agents view** at the top.
+The **Hydra panel** (the Hydra icon in the activity bar) lists your lanes, running heads and plans, with **New lane**, **New plan** and **Open Agents view** at the top. A plan shows its progress ("Running · 2 of 4 done · 1 lane waiting"), and a plan lane names its plan.
 
 In the Lanes view, running lanes come first. Exited lanes are compact rows with Resume, Start fresh, Merge and Close lane; **Show terminal** opens the full tile.
 

@@ -91,6 +91,20 @@ export async function branchTip(repository: string, branch: string): Promise<str
   return result.code === 0 && sha.test(result.stdout.trim()) ? result.stdout.trim() : undefined;
 }
 
+/**
+ * Where a lane's own work is measured from (docs/Plan_Lanes_Plan.md, section 3): where
+ * `head` meets the target, as always; but while the lane's base commit isn't in the
+ * target yet (a plan lane that started from unmerged dependency work), the base commit
+ * itself, so the diff, the changed-files count and the gates see only this job's work.
+ */
+export async function laneDiffBase(lane: Pick<Lane, 'repository' | 'target' | 'baseCommit'>, head: string): Promise<string> {
+  const tip = await branchTip(lane.repository, lane.target);
+  if (!tip) return lane.baseCommit;
+  if ((await gitRun(lane.repository, ['merge-base', '--is-ancestor', lane.baseCommit, tip])).code === 1) return lane.baseCommit;
+  const merged = (await gitRun(lane.repository, ['merge-base', tip, head])).stdout.trim();
+  return sha.test(merged) ? merged : lane.baseCommit;
+}
+
 export const syncIntervalMs = 10_000;
 /** The most changed files a lane reports; a lane touching more is summarised by the first ones. */
 export const changedFilesMax = 1000;
@@ -118,9 +132,8 @@ export class LaneSync {
         const tip = await branchTip(lane.repository, lane.target);
         snapshots.set(lane.id, { head, snapshot, tip });
         // Measured from where the lane meets its target, so work brought in by
-        // "Update from target" doesn't count as the lane's own.
-        const base = tip ? (await gitRun(lane.repository, ['merge-base', tip, snapshot])).stdout.trim() : '';
-        const files = await changedFiles(lane.repository, sha.test(base) ? base : lane.baseCommit, snapshot);
+        // "Update from target" doesn't count as the lane's own (laneDiffBase).
+        const files = await changedFiles(lane.repository, await laneDiffBase(lane, snapshot), snapshot);
         result.changedFiles = files.slice(0, changedFilesMax);
         if (!tip) { result.error = `The target branch ${lane.target} no longer exists.`; continue; }
         result.behind = await behindCount(lane.repository, head, tip);

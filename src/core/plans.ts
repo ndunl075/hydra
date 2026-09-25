@@ -6,19 +6,25 @@ import type { Provider } from './model';
 
 /**
  * Hydra plans (docs/Lanes_And_Planner_Plan.md, section 4). A plan is a small,
- * hand- or brief-drafted graph of jobs; running it starts each job as a Hydra
- * head, in dependency order, under one lead (`plan-<id>`) so the heads group
- * together on the canvas. Pure model and storage; nothing here starts a
- * process or knows about HelperService, so it is trivial to unit test.
+ * hand- or brief-drafted graph of jobs; running it starts each job, in
+ * dependency order, as a Hydra head under one lead (`plan-<id>`) so the heads
+ * group together on the canvas, or as a lane you drive (docs/Plan_Lanes_Plan.md).
+ * Pure model and storage; nothing here starts a process or knows about
+ * HelperService, so it is trivial to unit test. src/core/planRunner.ts runs plans.
  */
-export type PlanState = 'planning' | 'draft' | 'running' | 'done' | 'failed';
-export const planStates: readonly PlanState[] = ['planning', 'draft', 'running', 'done', 'failed'];
-/** The only allowed plan state changes. "planning" is the brief being drafted; "failed" also covers a cancelled draft. */
+export type PlanState = 'planning' | 'draft' | 'running' | 'incomplete' | 'done' | 'failed';
+export const planStates: readonly PlanState[] = ['planning', 'draft', 'running', 'incomplete', 'done', 'failed'];
+/**
+ * The only allowed plan state changes. "planning" is the brief being drafted; "failed" also covers a cancelled draft.
+ * A running plan is "incomplete" once nothing is left to wait for but some job didn't finish; Retry failed jobs, or
+ * Run plan after adding jobs, runs it again.
+ */
 export const planTransitions: Readonly<Record<PlanState, readonly PlanState[]>> = {
   planning: ['draft', 'failed'],
   draft: ['planning', 'running'],
-  failed: ['planning', 'draft'],
-  running: ['done'],
+  failed: ['planning', 'draft', 'running'],
+  running: ['done', 'incomplete'],
+  incomplete: ['running'],
   done: [],
 };
 export const canTransitionPlan = (from: PlanState, to: PlanState): boolean => planTransitions[from].includes(to);
@@ -30,12 +36,34 @@ export const planJobTitleMax = 80;
 export const planJobBriefMax = 4000;
 export const planIdPattern = /^[a-f0-9]{12}$/;
 export const planJobKeyPattern = /^[a-z0-9-]{1,24}$/;
+/** A lane job's handed-on result (docs/Plan_Lanes_Plan.md, section 1): at most this many changed files, and a note this long. */
+export const planResultFilesMax = 300;
+export const planResultNoteMax = 2000;
+export const planOutcomeReasonMax = 500;
+
+// ---- Plan jobs that run as lanes (docs/Plan_Lanes_Plan.md, section 1) ----
+export type PlanJobRunAs = 'head' | 'lane';
+/** What a lane job handed on: the lane's HEAD when it merged or was marked done. It never moves afterwards. */
+export interface PlanJobResult { commit: string; via: 'merged' | 'marked'; at: string; note?: string; changedFiles: string[] }
+/** A job that won't finish. */
+export interface PlanJobOutcome { state: 'failed' | 'cancelled' | 'skipped'; reason: string; at: string }
 
 export interface PlanJob {
   key: string; title: string; brief: string; provider?: Provider;
   dependsOn: string[]; writeScope?: string[];
-  /** Set once this job has started as a head; makes running the plan again idempotent. */
+  /** Who drives it. Missing means 'head', as in every plan saved before lanes could run jobs. */
+  runAs?: PlanJobRunAs;
+  /** runAs 'head': the head's job id, once started; makes running the plan again idempotent. */
   jobId?: string;
+  /** runAs 'lane': the lane's id, once started. */
+  laneId?: string;
+  /** runAs 'lane': the work it handed on. */
+  result?: PlanJobResult;
+  outcome?: PlanJobOutcome;
+  /** How many times Retry failed jobs has restarted it. */
+  attempt?: number;
+  /** Added with + Job after the plan ran (decision 5): it waits for Run plan, so a half-written job never starts by itself. */
+  draft?: boolean;
 }
 export interface Plan {
   version: 1; id: string; title: string; brief?: string; createdAt: string; updatedAt: string;
@@ -43,6 +71,39 @@ export interface Plan {
 }
 
 const trimmed = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const fullSha = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
+const hexId = /^[a-f0-9]{12}$/;
+const isTime = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64 && !Number.isNaN(Date.parse(value));
+/** A job has started once it has a head, a lane, a result or an outcome. */
+export const jobStarted = (job: Pick<PlanJob, 'jobId' | 'laneId' | 'result' | 'outcome'>): boolean => !!(job.jobId || job.laneId || job.result || job.outcome);
+export const jobRunAs = (job: Pick<PlanJob, 'runAs'>): PlanJobRunAs => job.runAs ?? 'head';
+
+/** The lane-job fields (docs/Plan_Lanes_Plan.md, section 1), for one job. Throws the first problem found. */
+function validateRunFields(job: PlanJob): void {
+  const where = `Job "${job.key}"`;
+  if (job.runAs !== undefined && job.runAs !== 'head' && job.runAs !== 'lane') throw new Error(`${where} must run as a head or a lane.`);
+  const lane = job.runAs === 'lane';
+  if (job.jobId !== undefined && (lane || typeof job.jobId !== 'string' || !hexId.test(job.jobId))) throw new Error(`${where} can't have a head id.`);
+  if (job.laneId !== undefined && (!lane || typeof job.laneId !== 'string' || !hexId.test(job.laneId))) throw new Error(`${where} can't have a lane id.`);
+  if (job.result !== undefined) {
+    const result = job.result as Partial<PlanJobResult>;
+    if (!lane || !result || typeof result !== 'object') throw new Error(`${where} can't have a result.`);
+    if (typeof result.commit !== 'string' || !fullSha.test(result.commit)) throw new Error(`${where} has a result without a full commit id.`);
+    if (result.via !== 'merged' && result.via !== 'marked') throw new Error(`${where} has a result of an unknown kind.`);
+    if (!isTime(result.at)) throw new Error(`${where} has a result with an invalid time.`);
+    if (result.note !== undefined && (typeof result.note !== 'string' || result.note.length > planResultNoteMax || result.note.includes('\0'))) throw new Error(`${where} has a note longer than ${planResultNoteMax} characters.`);
+    if (!Array.isArray(result.changedFiles) || result.changedFiles.length > planResultFilesMax || result.changedFiles.some(file => typeof file !== 'string' || !file || file.length > 1000)) throw new Error(`${where} has a result with at most ${planResultFilesMax} changed files.`);
+  }
+  if (job.outcome !== undefined) {
+    const outcome = job.outcome as Partial<PlanJobOutcome>;
+    if (!outcome || typeof outcome !== 'object' || (outcome.state !== 'failed' && outcome.state !== 'cancelled' && outcome.state !== 'skipped')) throw new Error(`${where} has an unknown outcome.`);
+    if (typeof outcome.reason !== 'string' || !outcome.reason.trim() || outcome.reason.length > planOutcomeReasonMax) throw new Error(`${where} needs a reason of 1-${planOutcomeReasonMax} characters.`);
+    if (!isTime(outcome.at)) throw new Error(`${where} has an outcome with an invalid time.`);
+  }
+  if (job.result !== undefined && job.outcome !== undefined) throw new Error(`${where} can't have both a result and an outcome.`);
+  if (job.attempt !== undefined && (!Number.isInteger(job.attempt) || job.attempt < 0 || job.attempt > 1000)) throw new Error(`${where} has an invalid attempt count.`);
+  if (job.draft !== undefined && typeof job.draft !== 'boolean') throw new Error(`${where} has an invalid draft flag.`);
+}
 
 /** Unique keys that exist, dependencies that resolve, and the plan's size and text limits. Throws the first problem found. */
 export function validatePlanJobs(jobs: readonly PlanJob[]): void {
@@ -54,9 +115,11 @@ export function validatePlanJobs(jobs: readonly PlanJob[]): void {
     if (keys.has(job.key)) throw new Error(`Duplicate job key "${job.key}".`);
     keys.add(job.key);
     if (!trimmed(job.title) || job.title.length > planJobTitleMax) throw new Error(`Job "${job.key}" title must be 1-${planJobTitleMax} characters.`);
+    // A lane job's brief has the same limit as a head's: the lane reads the whole brief from a file (decision 2).
     if (!trimmed(job.brief) || job.brief.length > planJobBriefMax) throw new Error(`Job "${job.key}" brief must be 1-${planJobBriefMax} characters.`);
     if (job.provider !== undefined && job.provider !== 'claude' && job.provider !== 'codex') throw new Error(`Job "${job.key}" has an unknown provider.`);
     if (!Array.isArray(job.dependsOn)) throw new Error(`Job "${job.key}" dependsOn must be a list.`);
+    validateRunFields(job);
   }
   for (const job of jobs) {
     for (const dependency of job.dependsOn) {
@@ -129,37 +192,14 @@ export function topologicalOrder(jobs: readonly PlanJob[]): string[] {
   return order;
 }
 
-/** The jobs still to start, in dependency order, skipping ones that already have a jobId: running a plan again after adding jobs starts only the new ones. */
-export function jobsToStart(plan: Pick<Plan, 'jobs'>): PlanJob[] {
-  const order = topologicalOrder(plan.jobs);
-  const byKey = new Map(plan.jobs.map(job => [job.key, job]));
-  return order.map(key => byKey.get(key)!).filter(job => !job.jobId);
-}
-
-/** True once every job has started and its head is done. A plan with no jobs is never "done" on its own. */
-export function allJobsDone(plan: Pick<Plan, 'jobs'>, headState: (jobId: string) => string | undefined): boolean {
-  return plan.jobs.length > 0 && plan.jobs.every(job => !!job.jobId && headState(job.jobId) === 'done');
-}
-
-/** Starts one plan job as a head; returns the id HelperService gave it. Dependencies are already-started head ids, resolved by the caller. */
-export type PlanHeadStarter = (job: PlanJob, dependsOn: readonly string[]) => Promise<{ jobId: string }>;
-
-/**
- * Run a plan: start every not-yet-started job, in dependency order, mapping
- * each job's `dependsOn` keys to the real head ids already recorded on this
- * plan. Refuses (without starting anything) if the jobs have a cycle.
- */
-export async function runPlan(plan: Plan, start: PlanHeadStarter): Promise<Plan> {
-  const cycle = findCycle(plan.jobs);
-  if (cycle) throw new Error(cycleMessage(plan.jobs, cycle));
-  const byKey = new Map(plan.jobs.map(job => [job.key, { ...job }]));
-  for (const job of jobsToStart({ jobs: [...byKey.values()] })) {
-    const current = byKey.get(job.key)!;
-    const dependsOn = current.dependsOn.map(key => byKey.get(key)?.jobId).filter((id): id is string => !!id);
-    const { jobId } = await start(current, dependsOn);
-    current.jobId = jobId;
+/** Every job that depends on `key`, directly or through others. */
+export function dependentsOf(jobs: readonly PlanJob[], key: string): PlanJob[] {
+  const found = new Set<string>(), queue = [key];
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const job of jobs) if (job.dependsOn.includes(current) && !found.has(job.key)) { found.add(job.key); queue.push(job.key); }
   }
-  return { ...plan, jobs: [...byKey.values()], state: 'running' };
+  return jobs.filter(job => found.has(job.key));
 }
 
 // ---- The planner-output parser (docs/Lanes_And_Planner_Plan.md, "Planning a brief") ----
@@ -277,6 +317,29 @@ export class PlanStore {
       const previous = this.plans.get(plan.id);
       this.plans.set(plan.id, next);
       try { await this.write(); } catch (error) { if (previous) this.plans.set(plan.id, previous); else this.plans.delete(plan.id); throw error; }
+      return structuredClone(next);
+    });
+  }
+
+  /**
+   * Change a stored plan in place: `change` gets the plan as it is when this
+   * write's turn comes, so two edits queued at once never undo each other (the
+   * plan runner starts jobs while you edit others). Returning undefined leaves it
+   * as it is. Undefined when there is no such plan.
+   */
+  async update(id: string, change: (plan: Plan) => Plan | undefined): Promise<Plan | undefined> {
+    return this.serialize(async () => {
+      this.assertLoaded();
+      const previous = this.plans.get(id);
+      if (!previous) return undefined;
+      const changed = change(structuredClone(previous));
+      if (!changed) return structuredClone(previous);
+      if (changed.id !== id) throw new Error('A plan update can\'t change its id.');
+      validatePlan(changed);
+      const next = structuredClone(changed);
+      next.updatedAt = this.now().toISOString();
+      this.plans.set(id, next);
+      try { await this.write(); } catch (error) { this.plans.set(id, previous); throw error; }
       return structuredClone(next);
     });
   }

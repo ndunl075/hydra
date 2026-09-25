@@ -1,6 +1,6 @@
 # Send plan jobs to lanes
 
-Status: **plan** (2026-09-25).
+Status: **built** (2026-09-25). See "As built" at the end.
 
 ## Goal
 
@@ -369,17 +369,66 @@ The planner doesn't suggest `runAs`; its jobs are all heads.
 
 **Done** when the local gate passes (check, build, tests, smoke), the live checklist passes, the PR is merged with CI green, the installed app is refreshed, and Nico has the summary.
 
-## Open questions for the owner
+## Decisions (Nico, 2026-09-25)
 
-1. **Should a lane job start working at once?** This plan sends its brief as the first prompt, like New lane with a goal. The alternative is to open the lane with the brief shown but not sent, and wait for you.
-2. **Longer lane briefs:** keep the 2000-character cap, or write the full brief to a file that the lane's first prompt points to?
-3. **Moving a result:** may Mark job done be pressed again, while no dependent has started yet, to move the result forward?
-4. **The planner and lanes:** add the "Suggest lanes" option later, or never?
-5. **Adding jobs to a running plan** from its canvas node? Today **+ Job** exists only on drafts.
-6. **Should the lane's agent be able to ask for "done"?** For example, a `hydra_job_ready` action that shows you a **Mark job done** prompt. It would never mark the job itself.
-7. **Heads queued behind a head that hit its usage limit** are failed at once by `dispatchQueued` today, so **Continue in** can't save them. Make them wait instead? Recommended: yes, as a small fix in phase 1.
+1. **A lane job starts working at once:** its brief is the first prompt, like New lane with a goal. You can type to it at any time.
+2. **Long briefs go in a file.** The full brief is written to a file the lane can read (outside the tracked tree, never committed), and the first prompt points to it. The 2000-character cap goes.
+3. **Mark job done can be pressed again** to move the result forward, while no dependent has started.
+4. **The planner doesn't suggest lanes yet.** Later.
+5. **+ Job works on a running plan** as well as on drafts.
+6. **A lane's agent may ask for done:** a `hydra_job_ready` action shows you a **Mark job done** prompt. It never marks the job itself.
+7. **Heads queued behind a head that hit its usage limit wait** instead of failing, so **Continue in** can still save them. Fixed in phase 1.
 
 ## As built
 
-Not built yet. When it is, record where it lives, the changes from the plan, what was verified live, and what's not done.
+Built on 2026-09-25.
+
+**Where it lives:**
+- **Model:** `src/core/plans.ts` (`runAs`, `laneId`, `result`, `outcome`, `attempt`, `draft`, and the `incomplete` state).
+- **Runner:** `src/core/planRunner.ts` (`planSteps`, `PlanRunner`, `planLaneBrief`).
+- **Lanes:**
+  - `src/core/lanes.ts`: the plan link and `lanePreamble`'s plan sentence.
+  - `src/core/laneService.ts`: `create` with a base commit, `writeLaneJobBrief`, `handOn` and `reusableGates`.
+  - `src/core/laneSync.ts`: `laneDiffBase`.
+- **Extension and views:**
+  - `src/extensionLanes.ts`: Mark job done, Cancel job, Show plan and `startPlanLane`.
+  - `src/core/agentsCanvas.ts` with `webview/AgentsCanvas.tsx`: the running plan group.
+  - `webview/LanesView.tsx`: the plan chip and Mark job done.
+  - `src/core/hydraTree.ts`: plan progress.
+  - `hydra_job_ready` is in `helperTools.ts` and `mcpBridge.ts`.
+- **Tests:**
+  - Unit: `tests/planRunner.test.ts`, `tests/planLanes.test.ts`, plus canvas, Lanes view and panel cases.
+  - Smoke: the plan-lane case in `tests/smoke.ts`.
+
+**Changes from the plan:**
+- **Lane card status:** a working lane card says "Working". Its branch is on the card's foot, so the status fits the card.
+- **Plan heads keep their own menu:** a head started by a plan keeps its ordinary head card and menu, with no separate job menu.
+- **The lane's `brief.md`** ends with what the jobs before it did (their notes or commit subjects, and files), as a head's brief does. Without this, the Mark job done note never reached a dependent lane.
+- **+ Job on a running plan:** the new job stays an editable draft card until Run plan starts it.
+- **Merged lanes:** a merged lane doesn't offer **Mark job done again**, and the action is refused.
+- **Windows quoting:** `processLaunch` now doubles PowerShell's typographic quotes (‘ ’ ‚ ‛) in `.cmd` launches. A brief with "it’s" used to end the quoted argument. This was found while building Packs.
+
+**Verified live** (2026-09-25, an isolated probe window with the real CLIs, a scratch repository with one command gate):
+1. **Start:**
+   - Greeting (a Claude lane) opened with the plan sentence and the brief file in its first prompt.
+   - Shout (a head) showed "Waiting for Greeting".
+   - Farewell (a Codex lane) showed "Starts as a lane when Greeting is done".
+2. **Mark job done:** after Greeting's agent committed, Mark job done ran the gate and asked for the note.
+   - Shout started from Greeting's commit and finished.
+   - Farewell opened from the same commit, with the plan sentence.
+3. **Close and retry:** closing Farewell with Keep branch failed its job ("Lane closed before its job was done (branch … kept)"), and the plan read "Incomplete · 1 failed".
+   - Retry failed jobs opened a new Farewell lane.
+   - Its `brief.md` carried Greeting's note.
+4. **Merge:** merging the new Farewell finished its job by merge. With the last job marked done, the plan read Done, "4 of 4 done".
+5. **Usage limit:** a Claude limit was simulated in a plan lane, using the real hook script and the probe's own events folder.
+   - The tile offered Continue in Codex.
+   - After continuing, the lane stayed under the plan and the job wasn't failed.
+6. **Reload mid-plan:** the plan's lanes showed Exited under the plan, and nothing started by itself. Resume restarted a lane.
+
+**Not verified live:**
+- **`hydra_job_ready` from a Claude lane:** the probe's Claude was connected to the installed Hydra, whose server predates the tool. It is unit-tested, and the Codex lane's own bridge carried `HYDRA_LANE_PLAN_JOB`.
+
+**Not done:**
+- **Resume without a conversation:** Resume in a lane whose CLI never began one (it stopped at its own update or folder-trust prompt) opens an empty session. **Start fresh** works. This is how lanes already behave.
+- **Planner suggestions:** the planner doesn't suggest Head or Lane (decision 4).
 

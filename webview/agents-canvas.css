@@ -163,15 +163,26 @@ body.vscode-high-contrast .canvas-node-card, body.vscode-high-contrast-light .ca
 }
 .canvas-newplan-actions { display: flex; gap: 8px; }
 .canvas-newplan-actions button, .canvas-newplan .canvas-newplan-actions { flex: none; }
+.canvas-job-popover .canvas-newplan-actions button { width: auto; }
 .canvas-newplan button, .canvas-job-popover button { height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 .canvas-newplan button.primary, .canvas-job-popover button.primary { border-color: var(--canvas-flow); color: var(--canvas-flow); }
 .canvas-newplan button.text-button, .canvas-job-popover button.text-button { border-color: transparent; color: var(--muted); }
 .canvas-newplan button:disabled, .canvas-job-popover button:disabled { opacity: .5; cursor: default; }
 
+/* Run as (docs/Plan_Lanes_Plan.md, section 6): a job's popover field, under Provider. */
+.canvas-job-popover-field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.canvas-job-popover-runas { display: flex; gap: 6px; }
+.canvas-job-popover-runas button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.canvas-job-popover-runas button.on { background: var(--secondary); color: white; border-color: #315541; }
+.canvas-job-popover-readonly, .canvas-job-popover-hint { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+
 /* The plan lead node: like a chat lead, but wider (room for its actions) and dashed while it's still a draft. */
 .canvas-plan-lead { position: absolute; left: 0; top: 0; width: 190px; display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px dashed var(--border); border-left: 3px solid var(--canvas-wait); border-radius: 10px; background: var(--surface); transition: transform .5s cubic-bezier(.2,.8,.2,1); animation: canvas-in .45s cubic-bezier(.2,.8,.2,1); }
 .canvas-plan-lead.state-failed { border-left-color: var(--state-fail); }
 .canvas-plan-lead.state-draft { border-left-color: var(--canvas-flow); }
+.canvas-plan-lead.state-running { border-left-color: var(--canvas-flow); border-style: solid; }
+.canvas-plan-lead.state-incomplete { border-left-color: var(--state-fail); border-style: solid; }
+.canvas-plan-lead.state-done { border-left-color: var(--state-done); border-style: solid; }
 .canvas-plan-lead-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .canvas-plan-lead-head b { min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .canvas-plan-status { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
@@ -186,6 +197,17 @@ body.vscode-high-contrast .canvas-node-card, body.vscode-high-contrast-light .ca
 .canvas-node.canvas-plan-job .canvas-node-card { border-style: dashed; }
 .canvas-plan-handle { position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1; cursor: grab; touch-action: none; }
 .canvas-plan-handle:hover, .canvas-plan-handle:focus-visible { color: var(--text); border-color: var(--text); }
+
+/* A lane card in a plan job slot (docs/Plan_Lanes_Plan.md, section 4): the size of a head card. */
+.canvas-node.canvas-plan-lane-card .canvas-node-card { cursor: pointer; }
+.canvas-node.canvas-plan-lane-card.state-active .canvas-node-card { border-left-color: var(--canvas-flow); }
+.canvas-node.canvas-plan-lane-card .canvas-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* A job that hasn't started, or has ended, sits as a small dashed status node (docs/Plan_Lanes_Plan.md, section 4). */
+.canvas-node.canvas-plan-status .canvas-node-card { border-style: dashed; }
+.canvas-node.canvas-plan-status.status-done .canvas-node-card, .canvas-node.canvas-plan-status.status-cancelled .canvas-node-card { opacity: .85; }
+.canvas-node.canvas-plan-status.status-failed .canvas-node-card, .canvas-node.canvas-plan-status.status-skipped .canvas-node-card { border-left-color: var(--state-fail); }
+.canvas-node.canvas-plan-status.status-done .canvas-node-card { border-left-color: var(--state-done); }
 
 /* A removable dependency edge (between two draft jobs): a wide invisible hit-area, and red while it's part of a cycle. */
 .canvas-edge .hit { stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }

@@ -38,14 +38,46 @@ export interface Lane {
   switches?: LaneSwitch[];
   /** The last gates run on this lane (docs/Gates_Plan.md, "Lanes"): Run gates, or Merge when gates.json says "onMerge". Kept for the tile's chips and View evidence; only the most recent run. */
   lastGates?: LaneGatesRecord;
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md, "Starting a lane job") ----
+  /** The plan job this lane runs. Cancel job removes it; the lane then carries on as an ordinary lane. */
+  plan?: LanePlanLink;
+  /** The lane HEAD that Merge merged: a plan job's result when it is done by merging. */
+  mergedHead?: string;
+  /** How the lane was closed, so a plan can say whether its branch was kept. */
+  closedAs?: LaneCloseMode;
 }
+
+export type LaneCloseMode = 'merged' | 'keep' | 'delete';
+export const laneCloseModes: readonly LaneCloseMode[] = ['merged', 'keep', 'delete'];
 
 export interface LaneGatesRecord {
   /** Where the gates came from (GatesConfig['source']): 'gates' | 'checks' | 'none'. */
   source: 'gates' | 'checks' | 'none';
   at: string;
   results: JobCheckResult[];
+  /**
+   * The lane HEAD the gates ran on, recorded only when the lane was clean before and after
+   * (docs/Plan_Lanes_Plan.md, section 3), so Merge can reuse a passing run on the same commit.
+   */
+  commit?: string;
+  /** A fingerprint of the gates that ran: a passing run is reused only while the gates file says the same. */
+  config?: string;
 }
+
+/**
+ * A lane that runs a plan job (docs/Plan_Lanes_Plan.md): which plan and job, the
+ * titles its first prompt names, what it started from, and its advised write scope.
+ * `attempt` is the job's retry count, so a lane from an earlier try is never adopted.
+ */
+export interface LanePlanLink {
+  planId: string; jobKey: string; planTitle: string; jobTitle: string;
+  attempt?: number;
+  startsFrom?: { title: string; commit: string }[];
+  writeScope?: string[];
+}
+/** Where a plan lane's full brief is written, inside its worktree and ignored by git (decision 2): readable by either CLI, never committed. */
+export const laneJobFolder = '.hydra-job';
+export const laneJobBriefFile = `${laneJobFolder}/brief.md`;
 
 export type LaneSwitchReason = 'limit' | 'manual';
 export interface LaneSwitch { from: Provider; to: Provider; at: string; reason: LaneSwitchReason }
@@ -102,6 +134,20 @@ export function parseLaneInput(value: unknown): LaneInput {
 }
 
 export const newLaneId = (): string => randomBytes(6).toString('hex');
+
+/**
+ * A plan job's title as a lane name (docs/Plan_Lanes_Plan.md, "Starting a lane job"):
+ * characters a lane name can't have become spaces, then it is cut to 40 characters,
+ * falling back to "Plan job" when nothing is left. Always passes parseLaneName.
+ */
+export function laneNameFromTitle(title: string): string {
+  const allowed = /[\p{L}\p{N} _.()#-]/u;
+  const spaced = Array.from(typeof title === 'string' ? title : '').map(char => allowed.test(char) ? char : ' ').join('').replace(/\s+/g, ' ').trim();
+  let name = '';
+  for (const char of Array.from(spaced)) { if (name.length + char.length > laneNameMax) break; name += char; }
+  name = name.trim();
+  try { return parseLaneName(name); } catch { return 'Plan job'; }
+}
 /** The branch-safe part of a lane name: lowercase letters, digits and dashes, never empty. */
 export function laneSlug(name: string): string {
   const slug = name.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
@@ -146,6 +192,9 @@ export function validateLane(value: unknown): Lane {
   if (lane.reason !== undefined && !text(lane.reason, 500)) throw new Error(`${where} has an invalid reason.`);
   const switches = validateLaneSwitches(lane.switches, where);
   const lastGates = validateLastGates(lane.lastGates, where);
+  const plan = validatePlanLink(lane.plan, where);
+  if (lane.mergedHead !== undefined && (typeof lane.mergedHead !== 'string' || !fullSha.test(lane.mergedHead))) throw new Error(`${where} has an invalid merged commit.`);
+  if (lane.closedAs !== undefined && !laneCloseModes.includes(lane.closedAs)) throw new Error(`${where} has an invalid close mode.`);
   return {
     id: lane.id, name, provider: lane.provider, ...(goal ? { goal } : {}),
     repository: lane.repository!, worktree: lane.worktree!, branch: lane.branch, baseCommit: lane.baseCommit, target: lane.target,
@@ -153,6 +202,25 @@ export function validateLane(value: unknown): Lane {
     ...(lane.exitCode !== undefined ? { exitCode: lane.exitCode } : {}), ...(lane.mergedAt ? { mergedAt: lane.mergedAt } : {}), ...(lane.exitedAt ? { exitedAt: lane.exitedAt } : {}), ...(lane.reason ? { reason: lane.reason } : {}),
     ...(switches ? { switches } : {}),
     ...(lastGates ? { lastGates } : {}),
+    ...(plan ? { plan } : {}), ...(lane.mergedHead ? { mergedHead: lane.mergedHead } : {}), ...(lane.closedAs ? { closedAs: lane.closedAs } : {}),
+  };
+}
+
+/** `lane.plan`, field by field (docs/Plan_Lanes_Plan.md): ids and keys by pattern, titles and scope by length. */
+function validatePlanLink(value: unknown, where: string): LanePlanLink | undefined {
+  if (value === undefined) return undefined;
+  const link = value as Partial<LanePlanLink> | undefined;
+  const text = (field: unknown, max: number): field is string => typeof field === 'string' && field.trim().length > 0 && field.length <= max && !field.includes('\0');
+  if (!link || typeof link !== 'object' || typeof link.planId !== 'string' || !laneIdPattern.test(link.planId) || typeof link.jobKey !== 'string' || !/^[a-z0-9-]{1,24}$/.test(link.jobKey)) throw new Error(`${where} has an invalid plan link.`);
+  if (!text(link.planTitle, 200) || !text(link.jobTitle, 80)) throw new Error(`${where} has an invalid plan title.`);
+  if (link.attempt !== undefined && (!Number.isInteger(link.attempt) || link.attempt < 0 || link.attempt > 1000)) throw new Error(`${where} has an invalid plan attempt.`);
+  if (link.startsFrom !== undefined && (!Array.isArray(link.startsFrom) || link.startsFrom.length > 12 || link.startsFrom.some(item => !item || !text(item.title, 80) || typeof item.commit !== 'string' || !fullSha.test(item.commit)))) throw new Error(`${where} has an invalid plan start.`);
+  if (link.writeScope !== undefined && (!Array.isArray(link.writeScope) || link.writeScope.length > 32 || link.writeScope.some(entry => typeof entry !== 'string' || entry.length > 300 || entry.includes('\0')))) throw new Error(`${where} has an invalid plan write scope.`);
+  return {
+    planId: link.planId, jobKey: link.jobKey, planTitle: link.planTitle, jobTitle: link.jobTitle,
+    ...(link.attempt ? { attempt: link.attempt } : {}),
+    ...(link.startsFrom?.length ? { startsFrom: link.startsFrom.map(item => ({ title: item.title, commit: item.commit })) } : {}),
+    ...(link.writeScope?.length ? { writeScope: [...link.writeScope] } : {}),
   };
 }
 
@@ -164,7 +232,9 @@ function validateLastGates(value: unknown, where: string): LaneGatesRecord | und
   if (record.source !== 'gates' && record.source !== 'checks' && record.source !== 'none') throw new Error(`${where} has an invalid gates source.`);
   if (typeof record.at !== 'string' || !record.at || Number.isNaN(Date.parse(record.at))) throw new Error(`${where} has an invalid gates time.`);
   if (!Array.isArray(record.results)) throw new Error(`${where} has an invalid gates result list.`);
-  return { source: record.source, at: record.at, results: record.results as JobCheckResult[] };
+  if (record.commit !== undefined && (typeof record.commit !== 'string' || !fullSha.test(record.commit))) throw new Error(`${where} has an invalid gates commit.`);
+  if (record.config !== undefined && (typeof record.config !== 'string' || !/^[a-f0-9]{16,64}$/.test(record.config))) throw new Error(`${where} has an invalid gates fingerprint.`);
+  return { source: record.source, at: record.at, results: record.results as JobCheckResult[], ...(record.commit ? { commit: record.commit } : {}), ...(record.config ? { config: record.config } : {}) };
 }
 
 /** `lane.switches`, field by field; kept short (the newest `maxLaneSwitches`), never guessed at. */
@@ -250,7 +320,7 @@ export class LaneStore {
   }
 
   /** Change a lane. A state change must be in the transition table; a closed lane can't change. */
-  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'exitedAt' | 'reason' | 'provider' | 'switches' | 'lastGates'>>): Promise<Lane> {
+  async update(id: string, patch: Partial<Pick<Lane, 'state' | 'exitCode' | 'mergedAt' | 'exitedAt' | 'reason' | 'provider' | 'switches' | 'lastGates' | 'plan' | 'mergedHead' | 'closedAs'>>): Promise<Lane> {
     return this.serialize(async () => {
       this.assertLoaded();
       const lane = this.lanes.get(id);
@@ -306,12 +376,29 @@ const clip = (text: string, max: number) => text.length > max ? `${text.slice(0,
 const providerName = (provider: Provider) => provider === 'codex' ? 'Codex' : 'Claude Code';
 
 /**
+ * The sentence a plan lane's first prompt adds (docs/Plan_Lanes_Plan.md, "The first prompt"):
+ * which job of which plan, what it starts from, the advised scope, where the full brief is,
+ * and how the job ends. One line, at most 1500 characters.
+ */
+export function lanePlanSentence(plan: LanePlanLink): string {
+  const intro = `This lane runs job "${clip(oneLine(plan.jobTitle), 80)}" of Hydra plan "${clip(oneLine(plan.planTitle), 120)}".`;
+  // Where the brief is and how the job ends always survive; what it starts from and its scope get what is left.
+  const end = ` The job's full brief is in ${laneJobBriefFile} (never committed); read it first. When the work is ready, commit it and call hydra_job_ready; the user marks the job done or merges the lane.`;
+  const starts = plan.startsFrom?.length ? ` It starts from the work of ${plan.startsFrom.slice(0, 6).map(item => `${clip(oneLine(item.title), 60)} (${item.commit.slice(0, 12)})`).join(', ')}${plan.startsFrom.length > 6 ? ` and ${plan.startsFrom.length - 6} more` : ''}.` : '';
+  const scope = plan.writeScope?.length ? ` Stay within ${plan.writeScope.slice(0, 8).map(entry => clip(oneLine(entry), 60) || 'the whole repository').join(', ')}${plan.writeScope.length > 8 ? ' and the rest of its scope' : ''} if you can.` : '';
+  const middle = `${starts}${scope}`;
+  const budget = 1500 - intro.length - end.length;
+  return `${intro}${middle.length > budget ? clip(middle, Math.max(0, budget)) : middle}${end}`;
+}
+
+/**
  * The first prompt of a lane with a goal: one line (it is passed as a command-line
  * argument), capped at lanePreambleMax characters. It says where the lane is,
- * what the other lanes are doing and which files they touch, then the task.
+ * what the other lanes are doing and which files they touch, then the task. A
+ * plan lane also says which job it runs (lanePlanSentence).
  */
-export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'>, others: readonly LanePreambleOther[]): string {
-  const head = `You are working in Hydra lane "${oneLine(lane.name)}" on branch ${lane.branch}.`;
+export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { plan?: LanePlanLink }, others: readonly LanePreambleOther[]): string {
+  const head = `You are working in Hydra lane "${oneLine(lane.name)}" on branch ${lane.branch}.${lane.plan ? ` ${lanePlanSentence(lane.plan)}` : ''}`;
   const advice = 'Call hydra_lanes to check again before large changes, and avoid editing files other lanes are changing.';
   const task = `Your task: ${clip(oneLine(lane.goal || ''), laneGoalMax) || 'wait for the user.'}`;
   const listed = others.slice(0, 8).map(other => {
@@ -332,7 +419,7 @@ export function lanePreamble(lane: Pick<Lane, 'name' | 'branch' | 'goal'>, other
  * flattened to one line (it is passed as a command-line argument, like the preamble).
  */
 export const laneContinuePromptMax = lanePreambleMax + 4000;
-export function laneContinuePrompt(lane: Pick<Lane, 'name' | 'branch' | 'goal'>, from: Provider, others: readonly LanePreambleOther[], handoffMarkdown: string): string {
+export function laneContinuePrompt(lane: Pick<Lane, 'name' | 'branch' | 'goal'> & { plan?: LanePlanLink }, from: Provider, others: readonly LanePreambleOther[], handoffMarkdown: string): string {
   const preamble = lanePreamble(lane, others);
   const handoff = clip(oneLine(handoffMarkdown), laneContinuePromptMax - preamble.length - 40);
   return clip(`${preamble} You are continuing in this lane after ${providerName(from)} hit its usage limit. Handoff: ${handoff}`, laneContinuePromptMax);

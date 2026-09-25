@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { buildHydraTree, type HydraTree, type TreeHeadItem, type TreeLaneItem, type TreePlanItem } from './core/hydraTree';
 import type { HelperJobView, LaneView } from './core/model';
 import type { Plan } from './core/plans';
+import type { PlanJobView } from './core/planRunner';
 
 /**
  * The Hydra activity-bar panel (docs/Lanes_And_Planner_Plan.md, section 3): one
@@ -20,14 +21,16 @@ export class HydraTreeProvider implements vscode.TreeDataProvider<Row>, vscode.D
   private lanes: readonly LaneView[] = [];
   private heads: readonly HelperJobView[] = [];
   private plans: readonly Plan[] = [];
+  private planJobs: Readonly<Record<string, readonly PlanJobView[]>> = {};
 
-  update(next: { lanes?: readonly LaneView[]; heads?: readonly HelperJobView[]; plans?: readonly Plan[] }): void {
+  update(next: { lanes?: readonly LaneView[]; heads?: readonly HelperJobView[]; plans?: readonly Plan[]; planJobs?: Readonly<Record<string, readonly PlanJobView[]>> }): void {
     if (next.lanes) this.lanes = next.lanes;
     if (next.heads) this.heads = next.heads;
     if (next.plans) this.plans = next.plans;
+    if (next.planJobs) this.planJobs = next.planJobs;
     this.emitter.fire(undefined);
   }
-  private tree(): HydraTree { return buildHydraTree(this.lanes, this.heads, this.plans); }
+  private tree(): HydraTree { return buildHydraTree(this.lanes, this.heads, this.plans, this.planJobs); }
 
   getTreeItem(row: Row): vscode.TreeItem {
     if (row.kind === 'group') {

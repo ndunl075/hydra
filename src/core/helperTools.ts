@@ -4,6 +4,8 @@
  * accepts). A caller's role comes from its token, never from the call.
  */
 export type HelperRole = 'lead' | 'helper';
+/** The one lead action only a plan lane's agent sees (docs/Plan_Lanes_Plan.md, decision 6). */
+export const jobReadyTool = 'hydra_job_ready';
 export interface HelperToolDefinition { name: string; description: string; inputSchema: Record<string, unknown> }
 
 const string = (description: string, extra: Record<string, unknown> = {}) => ({ type: 'string', description, ...extra });
@@ -39,8 +41,14 @@ export const leadTools: readonly HelperToolDefinition[] = [
   { name: 'hydra_cancel_head', description: 'Stop a head and mark it cancelled. Its branch is kept.', inputSchema: { type: 'object', additionalProperties: false, required: ['job_id'], properties: { job_id: jobId, reason: string('Why, for the record.') } } },
   {
     name: 'hydra_lanes',
-    description: 'List the Hydra lanes open in this window. A lane is a Claude Code or Codex terminal the user drives, in its own git worktree and branch. For each lane: its goal, branch and state, the files it is changing, the lanes it would conflict with (and in which files), files that would conflict with its target branch, how many commits it is behind, and its running heads. `you` is your own lane, if you are in one. Checks fresh before answering. Call it before you start and before large changes, and avoid editing files other lanes are changing.',
+    description: 'List the Hydra lanes open in this window. A lane is a Claude Code or Codex terminal the user drives, in its own git worktree and branch. For each lane: its goal, branch and state, the files it is changing, the lanes it would conflict with (and in which files), files that would conflict with its target branch, how many commits it is behind, its running heads, and the plan job it runs, if any. `you` is your own lane, if you are in one. Checks fresh before answering. Call it before you start and before large changes, and avoid editing files other lanes are changing.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md, decision 6). Listed only in a lane that runs a plan job (see the bridge). ----
+  {
+    name: jobReadyTool,
+    description: 'Only in a Hydra lane that runs a job of a Hydra plan: tell the user the job is ready to be marked done. Commit your work first. Hydra shows the user a "Mark job done" prompt; it never marks the job itself, and the user may merge the lane instead. The jobs that depend on this one start from your last commit once the user marks it done.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { note: string('Optional: what the jobs that depend on this one should know, under 2000 characters. It is offered to the user as the note.') } },
   },
 ];
 
@@ -63,10 +71,13 @@ const laneAdvice = 'Call hydra_lanes before you start and before large changes; 
 /**
  * Added to the lead instructions when the bridge runs in a Hydra lane
  * (HYDRA_LANE_ID set); the lane's name and branch come from its environment.
+ * A lane that runs a plan job (HYDRA_LANE_PLAN_JOB) also hears how its job ends.
  */
-export function laneGuidance(name?: string, branch?: string): string {
-  return `${name && branch ? `You are in Hydra lane "${name}" on branch ${branch}.` : 'You are in a Hydra lane.'} ${laneAdvice}`;
+export function laneGuidance(name?: string, branch?: string, planJob = false): string {
+  return `${name && branch ? `You are in Hydra lane "${name}" on branch ${branch}.` : 'You are in a Hydra lane.'} ${laneAdvice}${planJob ? ` ${planJobAdvice}` : ''}`;
 }
+/** A plan lane's part of the lane guidance (docs/Plan_Lanes_Plan.md, decision 6). */
+export const planJobAdvice = 'This lane runs a job of a Hydra plan; its full brief is in .hydra-job/brief.md (never committed). When the work is ready, commit it and call hydra_job_ready: the user then marks the job done, or merges the lane. Never mark the job done yourself.';
 /**
  * The same guidance for agents that don't read MCP instructions (Codex's AGENTS.md).
  * A lane's name isn't known there, so its branch prefix identifies it.

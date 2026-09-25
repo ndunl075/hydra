@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { replaceAtomic } from './atomicFile';
 import type { Provider } from './model';
+import type { DependencyResult } from './headStart';
 
 /**
  * Hydra helper jobs (docs/Official_Extensions_Plan.md, Phase 2).
@@ -154,6 +155,13 @@ export interface Job {
   progress?: string;
   reason?: string;
   result?: JobResult;
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md, "Heads that depend on a lane job") ----
+  /**
+   * Work it starts from besides its `dependsOn` heads: the results of the plan's lane
+   * jobs it depends on. Set only by Hydra (HelperService.startForPlan), never from a
+   * lead's call; kept with the job so a queued head keeps them across a restart.
+   */
+  inputs?: DependencyResult[];
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -166,6 +174,8 @@ export interface JobInput {
   dependsOn?: string[]; idempotencyKey: string; limits?: Partial<JobLimits>;
   /** Optional name for the chat that started it, shown on the Agents canvas. */
   leadLabel?: string;
+  /** Internal only (HelperService.startForPlan): a plan's lane results it starts from. parseJobInput never sets it. */
+  inputs?: DependencyResult[];
 }
 
 const text = (value: unknown, name: string, max: number, min = 1): string => {
@@ -267,6 +277,7 @@ export class JobStore {
         version: 1, id, leadKey, ...(lead ? { lead: { ...lead, ...(input.leadLabel ? { label: input.leadLabel } : {}) } } : {}),
         idempotencyKey: input.idempotencyKey, title: input.title, brief: input.brief, writeScope: input.writeScope,
         provider: input.provider, model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: defaultMaxAttempts, nudged: false,
+        ...(input.inputs?.length ? { inputs: structuredClone(input.inputs) } : {}),
         replies: [], createdAt: at, updatedAt: at, history: [{ at, from: null, to: 'queued' }],
       };
       this.jobs.set(id, job);
@@ -299,6 +310,27 @@ export class JobStore {
       if (finalJobStates.has(job.state)) throw new Error(`Head job ${id} is ${job.state}.`);
       const previous = structuredClone(job);
       Object.assign(job, patch, { updatedAt: this.now().toISOString() });
+      try { await this.write(); } catch (error) { this.jobs.set(id, previous); throw error; }
+      return structuredClone(job);
+    });
+  }
+
+  /**
+   * Give up on a head that failed on a usage limit (docs/Plan_Lanes_Plan.md, decision 7):
+   * heads queued behind it wait while `limitHit` is set, so Continue in can still save
+   * them; clearing it lets them fail. The job stays failed, with the reason in its history.
+   */
+  async releaseLimit(id: string, reason: string): Promise<Job> {
+    return this.serialize(async () => {
+      this.assertLoaded();
+      const job = this.jobs.get(id);
+      if (!job) throw new Error(`Unknown head job ${id}.`);
+      if (job.state !== 'failed' || !job.limitHit) return structuredClone(job);
+      const previous = structuredClone(job);
+      const at = this.now().toISOString();
+      job.limitHit = false; job.updatedAt = at;
+      job.history.push({ at, from: 'failed', to: 'failed', reason });
+      if (job.history.length > 200) job.history.splice(0, job.history.length - 200);
       try { await this.write(); } catch (error) { this.jobs.set(id, previous); throw error; }
       return structuredClone(job);
     });

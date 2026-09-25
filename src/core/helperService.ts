@@ -3,7 +3,7 @@ import { git } from './git';
 import { createWorktree } from './worktrees';
 import { defaultMaxAttempts, finalJobStates, gateBlocks, gateKind, gateState, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
 import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig } from './gates';
-import { dependencyBase, dependencyBrief, type DependencyResult } from './headStart';
+import { dependencyBase, dependencyBrief, dependencyNoun, type DependencyResult } from './headStart';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
 import type { Provider } from './model';
@@ -44,6 +44,8 @@ export interface HelperServiceOptions {
     describe(you?: string): Promise<unknown>; name(id: string): string | undefined;
     /** An open lane's worktree: a head started from a lane branches from the lane's HEAD (docs/Gates_Plan.md, section 3). */
     worktree?(id: string): string | undefined;
+    /** hydra_job_ready from a lane that runs a plan job (docs/Plan_Lanes_Plan.md, decision 6): ask the user to mark it done. */
+    jobReady?(laneId: string, note?: string): Promise<unknown>;
   };
   /** Gates (docs/Gates_Plan.md): whether a provider is at its usage limit now, so a review uses the other one. */
   providerLimited?: (provider: Provider) => boolean;
@@ -96,6 +98,13 @@ export class HelperService {
         case 'hydra_lanes':
           if (!this.options.lanes) throw new Error('Lanes are not available in this Hydra window.');
           return this.options.lanes.describe(caller.lane);
+        // ---- Plan lanes (docs/Plan_Lanes_Plan.md, decision 6): a lane's agent asks the user; it never marks the job itself ----
+        case 'hydra_job_ready': {
+          if (!caller.lane || !this.options.lanes?.jobReady) throw new Error('hydra_job_ready works only in a Hydra lane that runs a plan job.');
+          const note = args.note;
+          if (note !== undefined && (typeof note !== 'string' || note.length > 2000 || note.includes('\0'))) throw new Error('note must be text of at most 2000 characters.');
+          return this.options.lanes.jobReady(caller.lane, typeof note === 'string' && note.trim() ? note.trim() : undefined);
+        }
       }
     } else {
       const jobId = caller.jobId!;
@@ -149,7 +158,18 @@ export class HelperService {
 
   // ---- lead actions ----
 
-  private async startHelper(args: Record<string, unknown>, caller?: HelperCaller) {
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md, "Heads that depend on a lane job") ----
+  /**
+   * Start a plan job's head: the same arguments as a lead's hydra_start_head, under
+   * the plan's lead (`plan-<id>`), plus `inputs`, the results of the lane jobs it
+   * depends on. Only Hydra passes inputs; a lead's call never can.
+   */
+  async startForPlan(args: Record<string, unknown>, leadSessionId: string, inputs: readonly DependencyResult[] = []) {
+    if (inputs.length > 16 || inputs.some(input => !isDependencyResult(input))) throw new Error('A plan head\'s inputs are malformed.');
+    return this.startHelper(args, { role: 'lead', leadKey: this.options.leadKey, leadSessionId }, inputs);
+  }
+
+  private async startHelper(args: Record<string, unknown>, caller?: HelperCaller, inputs: readonly DependencyResult[] = []) {
     const input = parseJobInput(args);
     const open = this.list().filter(job => !finalJobStates.has(job.state)).length;
     if (open >= 16) throw new Error('This window already has 16 unfinished heads. Wait for some to finish or cancel them.');
@@ -161,17 +181,22 @@ export class HelperService {
     const head = (await git(from, ['rev-parse', 'HEAD'])).trim();
     const dirty = (await git(from, ['status', '--porcelain=v1', '--untracked-files=no'])).trim();
     const lead = caller?.leadSessionId ? { sessionId: caller.leadSessionId, ...(caller.provider ? { provider: caller.provider } : {}), ...(laneName ? { lane: caller.lane } : {}) } : undefined;
-    const { job, created } = await this.options.store.create(this.options.leadKey, lead && laneName ? { ...input, leadLabel: laneName } : input, lead);
+    // A plan head that depends only on lane jobs starts from their results, which never move, so its
+    // base is known now: hydra_get_head shows it at once, and results that conflict refuse the start.
+    const repeated = this.list().some(existing => existing.idempotencyKey === input.idempotencyKey);
+    const inputBase = inputs.length && !input.dependsOn?.length && !repeated ? await dependencyBase(this.options.leadFolder, input.title, inputs) : undefined;
+    const withInputs = inputs.length ? { ...input, inputs: [...inputs] } : input;
+    const { job, created } = await this.options.store.create(this.options.leadKey, lead && laneName ? { ...withInputs, leadLabel: laneName } : withInputs, lead);
     // A dependent starts from what it waits for, so its base is known only when it starts.
-    const dependent = job.dependsOn.length > 0;
-    if (created && !dependent) await this.options.store.update(job.id, { baseCommit: head });
+    const dependent = job.dependsOn.length > 0 || !!job.inputs?.length;
+    if (created && (!dependent || inputBase)) await this.options.store.update(job.id, { baseCommit: inputBase ?? head });
     this.changed();
     void this.dispatch();
-    const base = created ? (dependent ? undefined : head) : this.options.store.get(job.id)?.baseCommit;
+    const base = created ? (dependent ? inputBase : head) : this.options.store.get(job.id)?.baseCommit;
     return {
       job_id: job.id, state: job.state, created,
       ...(base ? { base_commit: base } : {}),
-      ...(dependent && !base ? { starts_from: 'The result of the heads it depends on, merged if there are several. hydra_get_head shows its base_commit once it starts.' } : {}),
+      ...(dependent && !base ? { starts_from: `The result of the ${job.inputs?.length ? 'jobs' : 'heads'} it depends on, merged if there are several. hydra_get_head shows its base_commit once it starts.` } : {}),
       ...(created && dirty ? { warning: laneWorktree
         ? 'Your lane has uncommitted changes. The head starts from the lane\'s last commit and will not see them; commit first if it needs them.'
         : 'Your folder has uncommitted changes. The head starts from the last commit and will not see them; commit first if it needs them.' } : {}),
@@ -208,7 +233,11 @@ export class HelperService {
 
   private async cancel(id: string, reason: string) {
     const job = this.options.store.get(id)!;
-    if (finalJobStates.has(job.state)) return { job_id: id, state: job.state };
+    if (finalJobStates.has(job.state)) {
+      // A head held on a usage limit (decision 7): cancelling it gives up on it, so heads waiting on it fail.
+      if (job.state === 'failed' && job.limitHit) { await this.options.store.releaseLimit(id, reason); this.changed(); void this.dispatch(); }
+      return { job_id: id, state: job.state };
+    }
     if (this.active.has(id)) await this.finish(id, 'cancelled', reason);
     else await this.options.store.transition(id, 'cancelled', reason);
     this.changed();
@@ -344,7 +373,9 @@ export class HelperService {
         if (!job || job.state !== 'queued') continue;
         try {
           const dependencies = job.dependsOn.map(id => this.options.store.get(id));
-          const broken = dependencies.find(dependency => !dependency || dependency.state === 'failed' || dependency.state === 'cancelled');
+          // A dependency that stopped on a usage limit can still be continued in the other provider
+          // (docs/Plan_Lanes_Plan.md, decision 7), so its dependents wait for it instead of failing.
+          const broken = dependencies.find(dependency => !dependency || dependency.state === 'cancelled' || (dependency.state === 'failed' && !dependency.limitHit));
           if (broken) { await this.options.store.transition(job.id, 'failed', `A job it depends on did not finish (${broken?.id ?? 'missing'}).`); this.changed(); continue; }
           if (dependencies.some(dependency => dependency!.state !== 'done')) continue;
           if (this.disposed || this.active.size >= Math.max(1, this.options.maxConcurrent())) continue;
@@ -360,14 +391,15 @@ export class HelperService {
     let token: string | undefined;
     try {
       const executable = await this.options.executable(job.provider);
-      // A dependent starts from its dependencies' result commits (merged, if several) and hears what they did.
-      const dependencies = this.dependencyResults(job);
+      // A dependent starts from its dependencies' result commits (merged, if several) and hears what they did:
+      // the heads it waited on, and a plan's lane jobs it was given as inputs.
+      const dependencies = [...this.dependencyResults(job), ...(job.inputs ?? [])];
       // Continuing after a usage limit (HelperService.continueWith): the job already has
       // its worktree and branch from the earlier run, so reuse them instead of creating
       // a second worktree for the same job id (which "git worktree add" would refuse anyway).
       const created = job.worktree && job.branch && job.baseCommit
         ? { worktree: job.worktree, branch: job.branch, baseCommit: job.baseCommit }
-        : await createWorktree(this.options.leadFolder, job.title, job.id, this.options.worktreeRoot?.(), dependencies.length ? await dependencyBase(this.options.leadFolder, job.title, dependencies) : job.baseCommit);
+        : await createWorktree(this.options.leadFolder, job.title, job.id, this.options.worktreeRoot?.(), job.baseCommit ?? (dependencies.length ? await dependencyBase(this.options.leadFolder, job.title, dependencies) : undefined));
       await this.options.store.update(job.id, { worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit });
       token = this.options.endpoint.issue({ role: 'helper', leadKey: this.options.leadKey, jobId: job.id });
       // The time limit counts from here, before the job is visible as running.
@@ -375,7 +407,7 @@ export class HelperService {
       await this.options.store.transition(job.id, 'running');
       const run = this.options.startRun({
         provider: job.provider, executable, worktree: created.worktree, model: job.model,
-        prompt: helperPrompt({ ...job, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit }, dependencies.length ? dependencyBrief(dependencies) : undefined),
+        prompt: helperPrompt({ ...job, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit }, dependencies.length ? dependencyBrief(dependencies) : undefined, dependencyNoun(dependencies)),
         maxTurns: job.limits.maxTurns, maxBudgetUsd: job.limits.maxBudgetUsd,
         bridge: { command: this.options.bridge.command, args: this.options.bridge.args, env: { ...(this.options.bridge.env || {}), HYDRA_HELPER_PORT: String(this.options.endpoint.port), HYDRA_HELPER_TOKEN: token } },
         logFile: path.join(this.options.logDirectory, `${job.id}.jsonl`),
@@ -491,7 +523,7 @@ export class HelperService {
   private dependencyResults(job: Job): DependencyResult[] {
     return job.dependsOn.flatMap(id => {
       const dependency = this.options.store.get(id);
-      return dependency?.state === 'done' && dependency.result ? [{ id, title: dependency.title, summary: dependency.result.summary, commit: dependency.result.commit, ...(dependency.branch ? { branch: dependency.branch } : {}), changedFiles: dependency.result.changedFiles }] : [];
+      return dependency?.state === 'done' && dependency.result ? [{ id, kind: 'head' as const, title: dependency.title, summary: dependency.result.summary, commit: dependency.result.commit, ...(dependency.branch ? { branch: dependency.branch } : {}), changedFiles: dependency.result.changedFiles }] : [];
     });
   }
 
@@ -529,6 +561,15 @@ async function commitAll(worktree: string, message: string): Promise<void> {
   }
 }
 
+/** A plan head's input, checked before it is stored: Hydra builds these, but they are written to disk and read back. */
+function isDependencyResult(value: unknown): value is DependencyResult {
+  const input = value as Partial<DependencyResult> | undefined;
+  const text = (field: unknown, max: number) => typeof field === 'string' && field.length <= max && !field.includes('\0');
+  return !!input && typeof input === 'object' && (input.kind === 'lane' || input.kind === 'head') && /^[a-f0-9]{12}$/.test(String(input.id))
+    && text(input.title, 200) && !!input.title && text(input.summary, 8000) && typeof input.commit === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(input.commit)
+    && (input.branch === undefined || text(input.branch, 200)) && Array.isArray(input.changedFiles) && input.changedFiles.length <= 1000 && input.changedFiles.every(file => text(file, 1000));
+}
+
 export function inScope(file: string, scope: string[]): boolean {
   const normalized = file.replace(/\\/g, '/');
   return scope.some(entry => {
@@ -552,9 +593,10 @@ function describeGate(check: JobCheckResult) {
 
 /**
  * The head's first message. `dependencies` is "What the heads you depend on did"
- * (dependencyBrief), for a head that starts from their work.
+ * (dependencyBrief), for a head that starts from their work; `noun` is "jobs" when
+ * any of them is a plan's lane job.
  */
-export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeScope' | 'worktree' | 'branch' | 'baseCommit'>, dependencies?: string): string {
+export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeScope' | 'worktree' | 'branch' | 'baseCommit'>, dependencies?: string, noun: 'heads' | 'jobs' = 'heads'): string {
   return [
     `You are a Hydra head (job ${job.id}): ${job.title}`,
     '',
@@ -562,7 +604,7 @@ export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeSco
     ...(dependencies ? ['', dependencies] : []),
     '',
     'How to work:',
-    `- Work only in this git worktree: ${job.worktree}, on branch ${job.branch}. It starts from commit ${job.baseCommit}${dependencies ? ', which already has the work of the heads it depends on' : ''}.`,
+    `- Work only in this git worktree: ${job.worktree}, on branch ${job.branch}. It starts from commit ${job.baseCommit}${dependencies ? `, which already has the work of the ${noun} it depends on` : ''}.`,
     `- You may change only these paths: ${job.writeScope.length ? job.writeScope.map(entry => entry || '(whole repository)').join(', ') : '(whole repository)'}. Changes elsewhere are refused.`,
     '- Nobody will approve anything for you. Tools you are not allowed to use are denied; work around them.',
     '- When you are finished, call the hydra_done tool with a summary. Hydra commits any uncommitted changes for you (you may also commit yourself), runs the project\'s gates on the changes (its checks, and possibly a review by another agent), and tells you if anything must be fixed.',

@@ -1,6 +1,6 @@
 import { callHelperEndpoint, requestLeadSession } from './helperEndpoint';
 import { findWindowFor } from './helperDiscovery';
-import { helperInstructions, laneGuidance, leadInstructions, toolsFor, type HelperRole } from './helperTools';
+import { helperInstructions, jobReadyTool, laneGuidance, leadInstructions, toolsFor, type HelperRole } from './helperTools';
 
 /**
  * The `hydra-mcp` bridge core: a stdio MCP server (newline-delimited JSON-RPC)
@@ -19,17 +19,19 @@ type Message = { jsonrpc?: string; id?: string | number; method?: string; params
  * A lead running in a Hydra lane: Hydra sets HYDRA_LANE_ID (12 hex), and the
  * lane's name and branch, in the lane's terminal. Anything malformed is ignored.
  */
-export function laneFromEnv(env: Record<string, string | undefined>): { id: string; name?: string; branch?: string } | undefined {
+export function laneFromEnv(env: Record<string, string | undefined>): { id: string; name?: string; branch?: string; planJob?: boolean } | undefined {
   const id = env.HYDRA_LANE_ID;
   if (!id || !/^[a-f0-9]{12}$/.test(id)) return undefined;
   const name = (env.HYDRA_LANE_NAME || '').replace(/[\u0000-\u001f\u007f"]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
   const branch = env.HYDRA_LANE_BRANCH || '';
-  return { id, ...(name ? { name } : {}), ...(new RegExp(`^lane/[a-z0-9-]{1,32}-${id}$`).test(branch) ? { branch } : {}) };
+  return { id, ...(name ? { name } : {}), ...(new RegExp(`^lane/[a-z0-9-]{1,32}-${id}$`).test(branch) ? { branch } : {}), ...(env.HYDRA_LANE_PLAN_JOB === '1' ? { planJob: true } : {}) };
 }
 
 export function createBridge(options: BridgeOptions) {
   const role: HelperRole = options.env.HYDRA_HELPER_TOKEN ? 'helper' : 'lead';
   const lane = role === 'lead' ? laneFromEnv(options.env) : undefined;
+  // hydra_job_ready is listed only in a lane that runs a plan job (docs/Plan_Lanes_Plan.md, decision 6).
+  const tools = toolsFor(role).filter(tool => tool.name !== jobReadyTool || !!lane?.planJob);
   const inflight = new Map<string | number, AbortController>();
   const leadTokens = new Map<number, string>();
   const connection = async (): Promise<{ port: number; token: string } | string> => {
@@ -64,14 +66,14 @@ export function createBridge(options: BridgeOptions) {
         protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'hydra', title: 'Hydra heads', version: options.version },
-        instructions: role === 'lead' ? (lane ? `${leadInstructions}\n\n${laneGuidance(lane.name, lane.branch)}` : leadInstructions) : helperInstructions,
+        instructions: role === 'lead' ? (lane ? `${leadInstructions}\n\n${laneGuidance(lane.name, lane.branch, !!lane.planJob)}` : leadInstructions) : helperInstructions,
       });
     }
     if (method === 'ping') return result(id, {});
-    if (method === 'tools/list') return result(id, { tools: toolsFor(role) });
+    if (method === 'tools/list') return result(id, { tools });
     if (method === 'tools/call') {
       const name = String(params.name || '');
-      if (!toolsFor(role).some(tool => tool.name === name)) return result(id, text(`Unknown Hydra action ${name}.`, true));
+      if (!tools.some(tool => tool.name === name)) return result(id, text(`Unknown Hydra action ${name}.`, true));
       const target = await connection();
       if (typeof target === 'string') return result(id, text(target, true));
       const controller = new AbortController(); inflight.set(id, controller);

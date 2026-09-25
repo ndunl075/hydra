@@ -1,16 +1,17 @@
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { gitRun } from './git';
-import { processLaunch } from './process';
+import { git, gitRun } from './git';
+import { processLaunch, shimSafe } from './process';
 import { createWorktree, defaultWorktreeRoot } from './worktrees';
 import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalsUnavailable, type PtyModule } from './lanePty';
-import { LaneSync, branchTip, syncIntervalMs } from './laneSync';
+import { LaneSync, laneDiffBase, syncIntervalMs } from './laneSync';
 import { checkMerge, closeLaneWorktree, commitLane, laneDirty, laneFullyMerged, mergeLane, pushLane, updateLane, type CloseMode, type MergeCheck } from './laneFinish';
-import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LanePreambleOther, type LaneStore, type LaneSwitchReason } from './lanes';
+import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, laneJobFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LaneGatesRecord, type LanePlanLink, type LanePreambleOther, type LaneStore, type LaneSwitchReason } from './lanes';
 import { otherProvider } from './limitEvents';
 import { buildHandoff, defaultHandoffDeps, type HandoffDeps } from './limitHandoff';
-import { freshDirectory, runGates as runGatesCore, type GateContext, type GatesOutcome } from './gates';
-import type { JobCheckResult } from './jobs';
+import { freshDirectory, loadGates, runGates as runGatesCore, type GateContext, type GatesConfig, type GatesOutcome } from './gates';
+import { gateBlocks, type JobCheckResult } from './jobs';
 import type { HelperServerSpec } from './helperRegistration';
 import type { LimitEvent } from './limitEvents';
 import type { LaneSyncView, LaneView, Provider } from './model';
@@ -26,7 +27,7 @@ import type { LaneSyncView, LaneView, Provider } from './model';
 // ---- Launching a lane's CLI ----
 
 export interface LaneLaunchInput {
-  lane: Pick<Lane, 'id' | 'name' | 'branch' | 'provider'>;
+  lane: Pick<Lane, 'id' | 'name' | 'branch' | 'provider'> & { plan?: LanePlanLink };
   /** The CLI from findProvider (ignored when testCommand is set). */
   executable: string;
   /** Continue the lane's last conversation: Claude `--continue`, Codex `resume --last`. */
@@ -51,14 +52,8 @@ export interface LaneLaunch { executable: string; args: string[]; env: Record<st
 /** A TOML literal string. Lane values never contain a quote or line break; refuse rather than mis-quote. */
 const toml = (value: string) => { if (value.includes("'") || /[\r\n]/.test(value)) throw new Error('A lane setting contains a quote or line break.'); return `'${value}'`; };
 
-/**
- * Text passed through a Windows `.cmd` shim is read by cmd.exe, which expands
- * `%` and treats `& | < > ^ !` as syntax. The prompt keeps to characters cmd
- * reads literally: double quotes become single ones, the rest become spaces.
- */
-export function shimSafe(text: string): string {
-  return text.replace(/"/g, '\'').replace(/[%^&|<>!\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/\\+$/, '');
-}
+/** shimSafe lives with processLaunch now; lanes and tests still import it from here. */
+export { shimSafe };
 
 /** HYDRA_TEST_LANE_COMMAND: a JSON array `[executable, ...args]`, or one executable path. */
 export function parseTestCommand(value: string): { executable: string; args: string[] } {
@@ -87,7 +82,9 @@ export function laneLaunch(input: LaneLaunchInput): LaneLaunch {
   const { lane } = input;
   // HYDRA_LANE_HELPERS_DIR names this window even when the user-level server's own
   // HYDRA_HELPERS_DIR (which wins over ours) belongs to another Hydra profile.
-  const laneEnv = { HYDRA_LANE_ID: lane.id, HYDRA_LANE_NAME: lane.name, HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: input.helpersDir };
+  const laneEnv: Record<string, string> = { HYDRA_LANE_ID: lane.id, HYDRA_LANE_NAME: lane.name, HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: input.helpersDir };
+  // A plan lane's bridge offers hydra_job_ready and says so in its instructions (docs/Plan_Lanes_Plan.md, decision 6).
+  if (lane.plan) laneEnv.HYDRA_LANE_PLAN_JOB = '1';
   const env: Record<string, string> = {};
   // The host may run as Node, or have been started from inside a Claude Code session;
   // a lane is a fresh top-level session, so neither reaches it.
@@ -155,6 +152,43 @@ export interface LaneServiceOptions {
   gatesLogDirectory?: string;
   /** Test seam: replaces runGates entirely (fake results, no real process/browser work). */
   gatesRuntime?: GateContext['runtime'];
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
+  /** The plan job a lane runs, for the hydra_lanes answer: its plan, its job and how many jobs wait on it. */
+  planOf?: (laneId: string) => { title: string; job: string; dependents: number } | undefined;
+}
+
+/** How a plan lane starts (docs/Plan_Lanes_Plan.md, "Starting a lane job"). */
+export interface LaneCreateOptions {
+  /** A full commit id to branch from: the work of the jobs it depends on. Missing: the main checkout's HEAD. */
+  baseCommit?: string;
+  /** The plan job the lane runs. */
+  plan?: LanePlanLink;
+  /** The job's full brief, written to .hydra-job/brief.md in the worktree (decision 2). */
+  brief?: string;
+}
+/** What Mark job done hands on, or why it can't (docs/Plan_Lanes_Plan.md, "What done means for a lane job"). */
+export type LaneHandOn =
+  | { ok: true; commit: string; base: string; changedFiles: string[]; subjects: string[] }
+  | { ok: false; reason: 'dirty' | 'nothing'; message: string };
+
+/** A fingerprint of a gates file's contents: a passing run is reused only while this is unchanged. */
+export function gatesFingerprint(config: Pick<GatesConfig, 'source' | 'gates' | 'maxAttempts'>): string {
+  return createHash('sha256').update(JSON.stringify({ source: config.source, maxAttempts: config.maxAttempts ?? null, gates: config.gates })).digest('hex').slice(0, 16);
+}
+
+/**
+ * Write a plan lane's full brief into its fresh worktree, in a folder whose own .gitignore
+ * ignores everything, so git never sees it and no commit can include it. A worktree that
+ * already has that path (tracked, or a link) is refused rather than written through.
+ */
+export async function writeLaneJobBrief(worktree: string, text: string): Promise<string> {
+  const folder = path.join(worktree, laneJobFolder);
+  if (await lstat(folder).then(() => true, () => false)) throw new Error(`The repository already has a ${laneJobFolder} folder, so Hydra can't write the job's brief there.`);
+  await mkdir(folder);
+  await writeFile(path.join(folder, '.gitignore'), '*\n', { encoding: 'utf8', flag: 'wx' });
+  const file = path.join(folder, 'brief.md');
+  await writeFile(file, text, { encoding: 'utf8', flag: 'wx' });
+  return file;
 }
 
 export const maxOpenLanes = 24;
@@ -193,8 +227,8 @@ export class LaneService {
     });
   }
 
-  /** Start a lane: a worktree and branch from the main checkout's HEAD, and its CLI in a terminal. */
-  async create(value: unknown): Promise<Lane> {
+  /** Start a lane: a worktree and branch from the main checkout's HEAD (or a plan job's base commit), and its CLI in a terminal. */
+  async create(value: unknown, options: LaneCreateOptions = {}): Promise<Lane> {
     const input = parseLaneInput(value);
     if (!this.options.pty) throw new Error(terminalsUnavailable);
     if (this.disposed) throw new Error('This Hydra window is closing.');
@@ -207,16 +241,18 @@ export class LaneService {
     if (!current) throw new Error('The main checkout isn\'t on a branch. Check out a branch to start a lane.');
     if (!isSafeBranchName(current)) throw new Error(`Hydra can't start a lane from the branch "${current}". Use a branch named with letters, numbers and . _ / - only.`);
     let id: string; do { id = newLaneId(); } while (this.options.store.get(id));
-    const created = await createWorktree(this.options.repository, input.name, id, this.options.worktreeRoot(), undefined, { branch: laneBranch(input.name, id), folder: laneFolder(id) });
+    const created = await createWorktree(this.options.repository, input.name, id, this.options.worktreeRoot(), options.baseCommit, { branch: laneBranch(input.name, id), folder: laneFolder(id) });
     const lane: Lane = {
       id, name: input.name, provider: input.provider, ...(input.goal ? { goal: input.goal } : {}),
       repository: this.options.repository, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit,
       target: isSafeBranchName(created.integrationTarget) ? created.integrationTarget : current,
       createdAt: this.now().toISOString(), state: 'running',
+      ...(options.plan ? { plan: options.plan } : {}),
     };
     this.busy.add(id);
     try {
       await this.options.store.add(lane);
+      if (options.brief !== undefined) await writeLaneJobBrief(lane.worktree, options.brief);
       // The first prompt lists what the other lanes are changing, so check them first.
       if (lane.goal && this.lanes().length > 1) await this.sync().catch(() => undefined);
       await this.launch(lane, false, executable);
@@ -310,7 +346,9 @@ export class LaneService {
   async merge(id: unknown): Promise<string> {
     return this.exclusive(id, async lane => {
       const commit = await mergeLane(lane);
-      await this.options.store.update(lane.id, { state: 'merged', mergedAt: this.now().toISOString() });
+      // The lane HEAD it merged (the merge commit's second parent): a plan job done by merging hands this on.
+      const mergedHead = (await gitRun(lane.repository, ['rev-parse', '--verify', '--quiet', `${commit}^2`])).stdout.trim();
+      await this.options.store.update(lane.id, { state: 'merged', mergedAt: this.now().toISOString(), ...(/^[a-f0-9]{40,64}$/.test(mergedHead) ? { mergedHead } : {}) });
       this.options.log?.(`[lanes] ${lane.id} merged into ${lane.target} (${commit.slice(0, 12)})`);
       this.afterGit();
       return commit;
@@ -337,10 +375,11 @@ export class LaneService {
     const controller = new AbortController();
     this.gateRuns.set(lane.id, controller);
     try {
-      const tip = await branchTip(lane.repository, lane.target);
       const head = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
-      const merged = tip ? (await gitRun(lane.repository, ['merge-base', tip, head])).stdout.trim() : '';
-      const base = /^[a-f0-9]{40,64}$/.test(merged) ? merged : lane.baseCommit;
+      // Plan lanes: measured from laneDiffBase, and the commit is recorded when the lane was clean, so Merge can reuse the run.
+      const cleanBefore = !await laneDirty(lane).catch(() => true);
+      const base = await laneDiffBase(lane, head);
+      const config = await loadGates(lane.repository).catch(() => undefined);
       const logDirectory = await freshDirectory(this.options.gatesLogDirectory ?? path.join(this.options.configDirectory, '..', 'gates'), `${lane.id}-${Date.now()}`);
       const outcome = await runGatesCore(lane.repository, lane.worktree, base, {
         author: lane.provider, title: lane.name, brief: lane.goal, logDirectory,
@@ -350,13 +389,58 @@ export class LaneService {
         ...(this.options.gatesRuntime ? { runtime: this.options.gatesRuntime } : {}),
       });
       if (controller.signal.aborted) throw new Error('The gates run was cancelled.');
-      await this.options.store.update(lane.id, { lastGates: { source: outcome.source, at: this.now().toISOString(), results: outcome.results } });
+      const headAfter = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
+      const commit = cleanBefore && headAfter === head && /^[a-f0-9]{40,64}$/.test(head) && !await laneDirty(lane).catch(() => true) ? head : undefined;
+      await this.options.store.update(lane.id, { lastGates: { source: outcome.source, at: this.now().toISOString(), results: outcome.results, ...(commit ? { commit } : {}), ...(config ? { config: gatesFingerprint(config) } : {}) } });
       this.changed();
       return outcome;
     } finally {
       if (this.gateRuns.get(lane.id) === controller) this.gateRuns.delete(lane.id);
     }
   }
+  /**
+   * A passing gates run Merge (or Mark job done) can reuse instead of running the gates again
+   * (docs/Plan_Lanes_Plan.md, section 3): recorded on the lane's current HEAD, with the lane
+   * clean now and the gates file unchanged since. Undefined when there is none.
+   */
+  async reusableGates(id: unknown): Promise<LaneGatesRecord | undefined> {
+    const lane = this.openLane(id);
+    const record = lane.lastGates;
+    if (!record?.commit || !record.config || record.results.some(gateBlocks)) return undefined;
+    const head = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
+    if (head !== record.commit || await laneDirty(lane).catch(() => true)) return undefined;
+    const config = await loadGates(lane.repository).catch(() => undefined);
+    return config && gatesFingerprint(config) === record.config ? record : undefined;
+  }
+
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
+
+  /**
+   * What Mark job done hands on: the lane's HEAD, the files it changed since laneDiffBase and its
+   * commit subjects (at most 10). Refused with the reason when the lane has uncommitted changes
+   * (untracked files included) or nothing beyond its base.
+   */
+  async handOn(id: unknown): Promise<LaneHandOn> {
+    return this.exclusive(id, async lane => {
+      const head = (await git(lane.worktree, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+      if (await laneDirty(lane)) return { ok: false, reason: 'dirty', message: `Lane ${lane.name} has uncommitted changes. Commit them first.` };
+      const base = await laneDiffBase(lane, head);
+      const changedFiles = head === lane.baseCommit ? [] : (await git(lane.repository, ['diff', '--name-only', '-z', '--no-renames', base, head, '--'])).split('\0').filter(Boolean);
+      if (!changedFiles.length) return { ok: false, reason: 'nothing', message: 'Nothing to hand on yet.' };
+      const subjects = (await git(lane.repository, ['log', '--format=%s', '-n', '10', `${base}..${head}`])).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      return { ok: true, commit: head, base, changedFiles: changedFiles.slice(0, 300), subjects };
+    });
+  }
+  /** Cancel job: the lane stays open as an ordinary lane, without its plan link. */
+  async unlinkPlan(id: unknown): Promise<void> {
+    const lane = this.openLane(id);
+    if (!lane.plan) return;
+    await this.options.store.update(lane.id, { plan: undefined });
+    this.changed();
+  }
+  /** A lane's record, closed or not, while the store keeps it: a plan reads how its lane ended. */
+  record(id: string): Lane | undefined { return isLaneId(id) ? this.options.store.get(id) : undefined; }
+
   /** Cancel a gates run in progress on this lane, if any: closing the lane, or a fresh Run gates/Merge. */
   cancelGates(id: unknown): void {
     const key = typeof id === 'string' ? id : '';
@@ -379,7 +463,7 @@ export class LaneService {
       await this.terminals.get(lane.id)?.kill();
       const result = await closeLaneWorktree(lane, mode, this.roots(lane), this.lanes().map(open => open.worktree));
       await rm(this.mcpConfigFile(lane.id), { force: true }).catch(() => undefined);
-      await this.options.store.update(lane.id, { state: 'closed' });
+      await this.options.store.update(lane.id, { state: 'closed', closedAs: mode });
       this.terminals.delete(lane.id); this.sizes.delete(lane.id); this.results.delete(lane.id);
       this.options.log?.(`[lanes] ${lane.id} closed (${mode})${result.unlinked.length ? `; unlinked ${result.unlinked.length} link(s) first` : ''}`);
       this.changed(); this.schedule(); void this.sync().catch(() => undefined);
@@ -413,6 +497,8 @@ export class LaneService {
           targetConflicts: sync?.targetConflicts ?? [], behind: sync?.behind ?? 0,
           runningHeads: this.options.runningHeads?.(lane.id) ?? 0,
           ...(sync?.error ? { error: sync.error } : {}),
+          // Plan lanes (docs/Plan_Lanes_Plan.md, section 5): other lanes' agents see which plan job a lane runs.
+          ...this.planOf(lane.id),
         };
       }),
     };
@@ -532,6 +618,7 @@ export class LaneService {
     return lane;
   }
   private mcpConfigFile(id: string): string { return path.join(this.options.configDirectory, `${id}.mcp.json`); }
+  private planOf(id: string): { plan?: { title: string; job: string; dependents: number } } { const plan = this.options.planOf?.(id); return plan ? { plan } : {}; }
   private now(): Date { return this.options.now?.() ?? new Date(); }
   private changed(): void { if (!this.disposed) this.options.onChange?.(); }
 }

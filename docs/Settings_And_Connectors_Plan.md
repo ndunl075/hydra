@@ -129,4 +129,4 @@ Not in the phases above. It needs its own research first:
    - For a head, it's everything Hydra already has: the brief, scope, progress notes and the branch.
 4. **Where the Hydra Agent runs:** as another provider for heads (the simplest path: a head whose provider is `hydra`), then later as a chat of its own.
 
-A separate plan doc once Freebuff's terms are checked.
+Checked: Freebuff's terms forbid driving it from another app, so the plan changed. See [Hydra_Agent_Plan.md](Hydra_Agent_Plan.md).

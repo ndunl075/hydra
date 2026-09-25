@@ -195,7 +195,7 @@ test('gates run in order (commands, screenshots, review), and required: false is
     const pictures = outcome.results[2]!.evidence!.filter(file => file.endsWith('.png'));
     assert.equal(pictures.length, 2);
     for (const picture of pictures) assert.ok(await exists(picture), picture);
-    assert.deepEqual(spec!.args, ['exec', '--json', '-i', pictures[0]!, '-i', pictures[1]!, '--sandbox', 'read-only', '-']);
+    assert.deepEqual(spec!.args, ['exec', '--json', '-c', "web_search='disabled'", '-i', pictures[0]!, '-i', pictures[1]!, '--sandbox', 'read-only', '-']);
     assert.match(spec!.input, /- lint \(command\): failed\. Exited with code 2\./);
     assert.match(spec!.input, /- unit \(command\): passed/);
     assert.match(spec!.input, /They are attached to this message/);
@@ -233,8 +233,11 @@ test('once a required gate fails, the later gates are skipped; the failure messa
 test('review: the exact read-only arguments, and the prompt with the diff cap, the task, earlier results, screenshots and focus', () => {
   assert.deepEqual(reviewArguments('claude'), ['-p', '--output-format', 'json', '--permission-mode', 'plan']);
   assert.deepEqual(reviewArguments('claude', ['a.png']), ['-p', '--output-format', 'json', '--permission-mode', 'plan'], 'Claude reads screenshots by path');
-  assert.deepEqual(reviewArguments('codex'), ['exec', '--json', '--sandbox', 'read-only', '-']);
-  assert.deepEqual(reviewArguments('codex', ['a.png', 'b.png']), ['exec', '--json', '-i', 'a.png', '-i', 'b.png', '--sandbox', 'read-only', '-']);
+  // `codex exec` searches the web by default (research R7): a review has it off unless its pack role has "web" (R9).
+  assert.deepEqual(reviewArguments('codex'), ['exec', '--json', '-c', 'web_search=\'disabled\'', '--sandbox', 'read-only', '-']);
+  assert.deepEqual(reviewArguments('codex', ['a.png', 'b.png']), ['exec', '--json', '-c', 'web_search=\'disabled\'', '-i', 'a.png', '-i', 'b.png', '--sandbox', 'read-only', '-']);
+  assert.deepEqual(reviewArguments('codex', [], true), ['exec', '--json', '-c', 'web_search=\'live\'', '--sandbox', 'read-only', '-']);
+  assert.deepEqual(reviewArguments('claude', [], true), ['-p', '--output-format', 'json', '--permission-mode', 'plan', '--allowedTools', 'WebFetch,WebSearch'], 'still plan mode, with the web tools allowed');
 
   assert.deepEqual(capDiff('small\n'), { text: 'small\n', cut: false });
   const line = `+${'é'.repeat(99)}\n`;

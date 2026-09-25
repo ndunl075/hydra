@@ -28,8 +28,11 @@ export interface ReviewGate extends GateBase {
   type: 'review'; reviewer: ReviewerChoice; focus: string;
   /** A pack's review gate may name one of that pack's roles. gates.json can't. */
   role?: string;
-  /** That role, filled in by the packs loader, so the reviewer's prompt includes its instructions. */
-  reviewerRole?: { title: string; instructions: string };
+  /**
+   * That role, filled in by the packs loader, so the reviewer's prompt includes its instructions.
+   * `web`: its tools include "web", so the read-only reviewer may open pages (research R9).
+   */
+  reviewerRole?: { title: string; instructions: string; web?: boolean };
 }
 export type Gate = CommandGate | ScreenshotsGate | ReviewGate;
 export interface GatesConfig {

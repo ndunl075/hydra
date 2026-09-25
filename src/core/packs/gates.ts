@@ -40,7 +40,7 @@ function packGate(gate: Gate, pack: ProjectPack, nodeExecutable: string): Gate {
   }
   const role = gate.role ? pack.pack?.valid?.manifest.roles.find(candidate => candidate.id === gate.role) : undefined;
   const instructions = role ? pack.pack?.valid?.instructions[role.id] : undefined;
-  return { ...gate, pack: pack.id, ...(role && instructions ? { reviewerRole: { title: `${role.title} (${pack.title} pack)`, instructions } } : {}) };
+  return { ...gate, pack: pack.id, ...(role && instructions ? { reviewerRole: { title: `${role.title} (${pack.title} pack)`, instructions, ...(role.tools.includes('web') ? { web: true } : {}) } } : {}) };
 }
 
 /**

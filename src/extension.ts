@@ -19,7 +19,10 @@ import { createLeadVerifier } from './core/leadVerification';
 import { claudeMemStatus, setupClaudeMem } from './core/claudeMem';
 import { downloadOpenVsx } from './core/openVsx';
 import { selfCheckCli } from './core/cliSelfCheck';
-import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, helperWrittenEntries, providerPaths, type ConnectableProvider, type HelperServerSpec, type WrittenEntries } from './core/helperRegistration';
+import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, helperWrittenEntries, providerPaths, read, runClaude, setClaudeLimitHook, type ConnectableProvider, type HelperServerSpec, type WrittenEntries } from './core/helperRegistration';
+import { claudeSupportsLimitHook, limitHookGroup, limitHookState, type LimitHookGroup } from './core/claudeLimitHook';
+import type { LimitEvent } from './core/limitEvents';
+import { ClaudeChatLimits, CodexChatLimits } from './extensionLimits';
 import type { ProviderConnectionView } from './helperConnectionsView';
 import { addMcpServer, configuredSpec, defaultMcpContext, enableMcpServerFor, listMcpServers, maskSecret, removeMcpServer, testMcpServer, validateServerSpec, type McpAgent } from './core/mcpServers';
 import { checkProvider } from './core/diagnostics';
@@ -67,13 +70,19 @@ class Manager {
   private readonly onboarding: Onboarding;
   private readonly accounts: ProviderAccounts;
   private readonly quota: ProviderQuota;
+  /**
+   * Every usage limit Hydra notices (docs/Hydra_Agent_Plan.md, Phase 1): Claude chats
+   * (StopFailure hook), Codex chats (rate-limit polling) and heads. The handoff UI
+   * subscribes with `limitEvents.event(listener)`.
+   */
+  readonly limitEvents = new vscode.EventEmitter<LimitEvent>();
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
     this.settings = new AppearanceSettings(context, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
-    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota);
+    context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota, this.limitEvents);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16);
     this.storageDirectory = path.join(context.globalStorageUri.fsPath, 'workspaces', key);
@@ -129,6 +138,15 @@ class Manager {
       return structuredClone(this.diagnostics.get(provider as Provider));
     });
     command('hydra.getProviderDiagnostics', () => structuredClone([...this.diagnostics.values()]));
+    // Not in the palette: fires a made-up limit event, for the handoff UI and smoke tests.
+    command('hydra.debug.simulateLimit', (provider: unknown = 'claude', source: unknown = 'chat') => {
+      if ((provider !== 'claude' && provider !== 'codex') || (source !== 'chat' && source !== 'head')) throw new Error('simulateLimit takes provider "claude" or "codex" and source "chat" or "head".');
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      const event: LimitEvent = { provider, source, at: new Date().toISOString(), message: 'Simulated usage limit (hydra.debug.simulateLimit).', ...(folder ? { cwd: folder.uri.fsPath } : {}) };
+      this.limitEvents.fire(event);
+      return event;
+    });
+    this.context.subscriptions.push(this.limitEvents.event(event => this.output.appendLine(`[limits] ${event.provider} ${event.source}${event.jobId ? ` ${event.jobId}` : ''}${event.sessionId ? ` session ${event.sessionId}` : ''}${event.resetsAt ? `, resets ${event.resetsAt}` : ''}: ${event.message ?? 'usage limit reached'}`)));
     this.context.subscriptions.push(this.status, this.output);
     await vscode.commands.executeCommand('setContext', 'hydra.mode', this.mode);
     this.status.command = 'hydra.toggleMode';
@@ -159,7 +177,31 @@ class Manager {
       if (this.handoff) { await this.verifyHandoffWorkspace(); await this.openAgents(); }
     } catch (error) { this.disabled = true; this.report(error); }
     await this.startHelpers().catch(error => { this.output.appendLine(`[heads] not started: ${this.describe(error)}`); });
+    this.startLimitDetection();
     await this.publish();
+  }
+  private get limitEventsDirectory(): string { return path.join(this.context.globalStorageUri.fsPath, 'limit-events'); }
+  /** Claude's StopFailure hook: this editor's executable as Node, running dist/hydra-limit-hook.cjs into the shared events folder. */
+  private limitHook(): LimitHookGroup {
+    return limitHookGroup({ executable: process.execPath, script: path.join(this.context.extensionPath, 'dist', 'hydra-limit-hook.cjs'), eventsDir: this.limitEventsDirectory });
+  }
+  /** The hook, if this Claude runs exec-form hooks (2.1.139+); older ones would run it through a shell. */
+  private async limitHookFor(claude: string): Promise<LimitHookGroup | undefined> {
+    const version = await runClaude(claude, ['--version']);
+    if (version.code === 0 && claudeSupportsLimitHook(version.output)) return this.limitHook();
+    this.output.appendLine('[limits] Claude Code is older than 2.1.139; its usage-limit hook is not installed.');
+    return undefined;
+  }
+  /** Chats in the official extensions: Claude's hook events and Codex's polled limits. Heads report through their service. */
+  private startLimitDetection(): void {
+    if (this.handoff || !vscode.workspace.isTrusted || vscode.env.remoteName) return;
+    const fire = (event: LimitEvent) => this.limitEvents.fire(event);
+    const claude = new ClaudeChatLimits(this.limitEventsDirectory, providerPaths().claudeProjects, fire);
+    this.context.subscriptions.push(claude);
+    void claude.start().catch(error => this.output.appendLine(`[limits] Claude chat limits not watched: ${this.describe(error)}`));
+    this.context.subscriptions.push(new CodexChatLimits(this.quota, async () =>
+      this.settingsImport.available && vscode.workspace.isTrusted && !!vscode.extensions.getExtension('openai.chatgpt') && (await codexStatus(providerPaths().codexConfig, this.helperServerSpec('codex'))).connected,
+    fire, line => this.output.appendLine(line)));
   }
   /** How a CLI starts Hydra's stdio bridge: this editor's executable as Node, running dist/hydra-mcp.cjs. */
   helperBridge(provider?: ConnectableProvider): { command: string; args: string[]; env: Record<string, string> } {
@@ -216,6 +258,7 @@ class Manager {
       maxConcurrent: () => Math.max(1, Math.min(8, vscode.workspace.getConfiguration('hydra').get<number>('maxConcurrentHelpers', 3))),
       onChange: () => this.headsChanged(), log: line => this.output.appendLine(line),
     });
+    this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
     await service.recover();
     const record = await writeWindowRecord(path.join(this.context.globalStorageUri.fsPath, 'helpers'), { port, pid: process.pid, folders });
     this.helpers = { store, endpoint, service, record };
@@ -270,7 +313,7 @@ class Manager {
     else if (provider === 'claude') {
       const claude = await claudeForRegistration();
       if (!claude) throw new Error('Install the Claude Code extension or CLI first; Hydra connects through it.');
-      await connectClaude(claude, paths, spec);
+      await connectClaude(claude, paths, spec, await this.limitHookFor(claude));
       this.output.appendLine('[heads] connected claude to Hydra');
       try {
         const memory = await setupClaudeMem(claude);
@@ -293,8 +336,22 @@ class Manager {
     for (const connection of await this.helperConnections()) {
       if (connection.connected && !connection.current && !connection.error) {
         await this.connectHelpers(connection.provider).catch(error => this.output.appendLine(`[heads] could not refresh ${connection.provider}: ${this.describe(error)}`));
+      } else if (connection.provider === 'claude' && connection.connected && !connection.error) {
+        await this.refreshLimitHook().catch(error => this.output.appendLine(`[limits] could not refresh the Claude hook: ${this.describe(error)}`));
       }
     }
+  }
+  /**
+   * A connected Claude gets the usage-limit hook: rewritten when Hydra's path moved,
+   * added when a Connect from before the hook existed didn't write it.
+   */
+  private async refreshLimitHook(): Promise<void> {
+    const paths = providerPaths(), group = this.limitHook();
+    const state = limitHookState(await read(paths.claudeSettings), group);
+    if (state === 'current') return;
+    if (state === 'missing') { const claude = await claudeForRegistration(); if (!claude || !await this.limitHookFor(claude)) return; }
+    await setClaudeLimitHook(paths, group);
+    this.output.appendLine(`[limits] ${state === 'stale' ? 'updated' : 'added'} the Claude usage-limit hook`);
   }
   /** Dashboard actions: review a helper's changes as a diff, open its log, or cancel it. */
   private async helperAction(action: 'helperReview' | 'helperLog' | 'helperCancel' | 'helperAnswer', jobId: string): Promise<void> {

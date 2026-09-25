@@ -1,10 +1,13 @@
 import type { AccountRpc } from './accountSetup';
 import type { GetAccountRateLimitsResponse } from './generated/codex-0.154.0/v2/GetAccountRateLimitsResponse';
 import type { RateLimitSnapshot } from './generated/codex-0.154.0/v2/RateLimitSnapshot';
+import type { RateLimitReachedType } from './generated/codex-0.154.0/v2/RateLimitReachedType';
+const reachedTypes: readonly RateLimitReachedType[] = ['rate_limit_reached', 'workspace_owner_credits_depleted', 'workspace_member_credits_depleted', 'workspace_owner_usage_limit_reached', 'workspace_member_usage_limit_reached'];
 import type { InitializeParams } from './generated/codex-0.154.0/InitializeParams';
 
 export interface QuotaWindow { usedPercent: number; remainingPercent: number; windowDurationMins?: number; resetsAt?: number }
-export interface QuotaBucket { id?: string; name?: string; primary?: QuotaWindow; secondary?: QuotaWindow }
+/** `reached`: the provider says this bucket's limit is reached (RateLimitSnapshot.rateLimitReachedType), when it says so. */
+export interface QuotaBucket { id?: string; name?: string; primary?: QuotaWindow; secondary?: QuotaWindow; reached?: RateLimitReachedType }
 export interface QuotaSnapshot { fetchedAt: string; ordinaryUsageAllowed?: boolean; buckets: QuotaBucket[] }
 export interface QuotaState { status: 'unchecked' | 'checking' | 'checked' | 'unavailable' | 'error' | 'cancelled'; text: string; snapshot?: QuotaSnapshot }
 const object = (value: unknown): Record<string, unknown> => {
@@ -29,7 +32,7 @@ function bucket(value: unknown, key?: string): QuotaBucket {
   const data = object(value) as unknown as RateLimitSnapshot;
   const id = label(data.limitId);
   if (key && id && key !== id) throw new Error('Quota bucket identity mismatch.');
-  return { ...(id || key ? { id: id || key } : {}), ...(data.limitName === null || data.limitName === undefined ? {} : { name: label(data.limitName) }), primary: window(data.primary), secondary: window(data.secondary) };
+  return { ...(id || key ? { id: id || key } : {}), ...(data.limitName === null || data.limitName === undefined ? {} : { name: label(data.limitName) }), primary: window(data.primary), secondary: window(data.secondary), ...(reachedTypes.includes(data.rateLimitReachedType!) ? { reached: data.rateLimitReachedType! } : {}) };
 }
 /** Extract only window measurements. Identities, credits, purchase banners and reset tokens are not retained. */
 export function publicCodexQuota(value: unknown, fetchedAt = new Date().toISOString()): QuotaSnapshot {

@@ -1,7 +1,8 @@
-import { readdir } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { checkPackContents, packIdPattern, parsePackManifest, type ValidPack } from './format';
 import { readPackFolder } from './files';
+import { writeFiles } from './cache';
 
 /**
  * Where packs come from (docs/Packs_Plan.md, section 2, and decision 1):
@@ -94,6 +95,21 @@ export async function listPacks(roots: PackRoots, options: { only?: ReadonlySet<
     if (pack.source === 'user' && projects.has(pack.id)) return { ...pack, note: `This project has its own ${pack.id} pack, which it uses instead.` };
     return pack;
   });
+}
+
+/**
+ * **Add pack from folder…** (docs/Packs_Plan.md, section 2, "User packs"): validate
+ * a source folder as a pack, then copy its own checked bytes into your packs
+ * folder (never re-read from the source afterwards). Refuses a folder that
+ * isn't a valid pack, or a folder your packs already have.
+ */
+export async function addUserPack(sourceFolder: string, userFolder: string): Promise<InstalledPack> {
+  const staged = await loadPack(sourceFolder, 'user');
+  if (staged.problem) throw new Error(staged.problem);
+  const target = path.join(userFolder, staged.id);
+  if (await lstat(target).catch(() => undefined)) throw new Error(`Your packs folder already has a pack named "${staged.id}". Remove it first, or rename the folder you're adding.`);
+  await writeFiles(target, staged.files!);
+  return { ...staged, folder: target };
 }
 
 /** The pack a project gets for an id: built in, else the project's own, else yours. Undefined when none is installed. */

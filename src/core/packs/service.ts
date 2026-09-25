@@ -3,11 +3,13 @@ import path from 'node:path';
 import { loadGates } from '../gates/config';
 import type { GatesLoader } from '../gates';
 import type { Provider } from '../model';
-import { allowPack, canonicalProject, revokePack } from './allowed';
+import { allowPack, allowState, canonicalProject, readAllowed, revokePack } from './allowed';
 import { buildRolePlugin } from './cache';
 import { effectiveGates, overGateCap, type EffectiveGates } from './gates';
 import { RoleUnavailable, activeRolesSentence, findRole, parseRoleRef, roleRefPattern, roleSummaries, roleUnavailableReason, type ResolvedRole, type RoleSource, type RoleSummary } from './launch';
-import { activePacks, projectPacks, readPacksFile, withPack, withSkipGate, writePacksFile, type PackPlaces, type ProjectPack } from './project';
+import { addUserPack, choosePack, listPacks, type InstalledPack } from './registry';
+import { activePacks, projectPacks, projectPacksFolder, readPacksFile, withPack, withSkipGate, writePacksFile, type PackPlaces, type ProjectPack } from './project';
+import { mkdir } from 'node:fs/promises';
 
 /**
  * Packs for one Hydra window (docs/Packs_Plan.md): where they live, each
@@ -63,6 +65,21 @@ export class PackService implements RoleSource {
     const pack = (await this.state(folder)).packs.find(candidate => candidate.id === id && candidate.pack && candidate.state !== 'invalid' && candidate.state !== 'notInstalled');
     if (!pack?.pack?.valid) throw new Error(`There's no usable pack "${id}".`);
     return pack;
+  }
+
+  /**
+   * Whether a pack is already allowed for this project, by its current
+   * installed copy (docs/Packs_Plan.md, section 3): used only to let
+   * `hydra.packs.setEnabled` turn a pack back on without going through the
+   * review panel again — it must never allow one itself.
+   */
+  async isAllowed(folder: string, id: string): Promise<boolean> {
+    const places = this.places();
+    const installed = await listPacks({ builtin: places.builtin, user: places.user, project: projectPacksFolder(folder) }, { only: new Set([id]) });
+    const pack = choosePack(installed, id);
+    if (!pack?.valid) return false;
+    const [allowed, project] = await Promise.all([readAllowed(places.allowedFile), canonicalProject(folder)]);
+    return allowState(allowed, project, pack, pack.valid.manifest.title, places.version).state === 'allowed';
   }
 
   /** Turn a pack on or off in packs.json. Turning on doesn't allow it: that is `allow`. */
@@ -150,6 +167,18 @@ export class PackService implements RoleSource {
     const pack = (await this.state(folder).catch(() => ({ packs: [] as ProjectPack[] }))).packs.find(candidate => candidate.id === packId);
     const title = pack?.pack?.valid?.manifest.roles.find(candidate => candidate.id === roleId)?.title ?? roleId;
     return new RoleUnavailable(`${packId}/${roleId}`, title, roleUnavailableReason(packId, pack?.pack?.valid ? pack.title : undefined, pack?.state, roleId));
+  }
+
+  /** Your packs folder (decision 1): `hydra.packs.folder`, else `~/.hydra/packs`. Made once, the first time it's opened. */
+  async userFolder(): Promise<string> {
+    const folder = this.options.userFolder();
+    await mkdir(folder, { recursive: true });
+    return folder;
+  }
+
+  /** **Add pack from folder…**: validate a folder as a pack and copy it into your packs folder. */
+  async addFolder(sourceFolder: string): Promise<InstalledPack> {
+    return addUserPack(sourceFolder, await this.userFolder());
   }
 
   /** "Skip in this project" for one pack gate, written to packs.json. */

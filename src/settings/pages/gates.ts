@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadGates, parseGatesConfig, type Gate, type GatesConfig } from '../../core/gates/config';
+import { leadFolder } from '../leadFolder';
 import type { SettingsContext, SettingsPage } from '../types';
 
 /**
@@ -14,17 +15,27 @@ import type { SettingsContext, SettingsPage } from '../types';
  * config.ts's parseGatesConfig before writing, so this page never carries a
  * second copy of its rules — its errors are always config.ts's own.
  */
-function workspaceRoot(): string {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) throw new Error('Open a project folder to edit its gates.');
-  return folder.uri.fsPath;
-}
 const gatesFile = (root: string) => path.join(root, '.hydra', 'gates.json');
 
+/** "From packs" (docs/Packs_Plan.md, "Settings → Gates"): read-only, from the active packs' gates. */
+async function postFromPacks(ctx: SettingsContext, root: string): Promise<void> {
+  try {
+    const [effective, state] = await Promise.all([ctx.packs.effectiveGates(root), ctx.packs.state(root)]);
+    const titleOf = (id: string): string => state.packs.find(pack => pack.id === id)?.title ?? id;
+    const fromPacks = effective.gates.filter(gate => gate.pack);
+    await ctx.post({
+      type: 'gatesFromPacks',
+      gates: fromPacks.map(gate => ({ id: gate.id, pack: titleOf(gate.pack!) })),
+      dropped: effective.dropped.map(gate => ({ id: gate.id, pack: titleOf(gate.pack), reason: gate.reason })),
+    });
+  } catch { await ctx.post({ type: 'gatesFromPacks', gates: [], dropped: [] }); }
+}
 async function postConfig(ctx: SettingsContext): Promise<void> {
   try {
-    const config = await loadGates(workspaceRoot());
+    const root = await leadFolder();
+    const config = await loadGates(root);
     await ctx.post({ type: 'gatesConfig', ...config });
+    await postFromPacks(ctx, root);
   } catch (error) {
     await ctx.post({ type: 'gatesConfig', source: 'none', lanes: 'onMerge', gates: [], error: error instanceof Error ? error.message : String(error) });
   }
@@ -48,6 +59,11 @@ export const gatesPage: SettingsPage = {
       <h2>Gates</h2>
       <div id="gt-list" role="list" aria-label="Gates"></div>
       <p id="gt-empty" class="mcp-empty" hidden>No gates yet. Add one below.</p>
+    </div>
+    <div class="group" id="gt-packs-group" hidden>
+      <h2>From packs</h2>
+      <p class="row-desc">Gates the active packs add to this project. <button class="linklike" id="gt-packs-link" type="button">Settings → Packs</button></p>
+      <div id="gt-packs-list" role="list" aria-label="Gates from packs"></div>
     </div>
     <details class="group mcp-add" id="gt-add">
       <summary><span class="row-title" id="gt-add-title">Add gate</span><span class="row-desc">A command, a screenshots check, or an independent review.</span></summary>
@@ -176,8 +192,27 @@ export const gatesPage: SettingsPage = {
       const lanes = document.getElementById('gt-lanes-policy').value;
       send({ type: 'setGates', maxAttempts, lanes, gates });
     });
+    document.getElementById('gt-packs-link')?.addEventListener('click', () => showPage('packs'));
+    function renderFromPacks(gates, dropped) {
+      const group = document.getElementById('gt-packs-group');
+      const list = document.getElementById('gt-packs-list');
+      if (!group || !list) return;
+      group.hidden = gates.length === 0 && dropped.length === 0;
+      list.innerHTML = '';
+      for (const gate of gates) {
+        const row = document.createElement('div'); row.className = 'row'; row.setAttribute('role', 'listitem');
+        row.innerHTML = '<div class="row-text"><div class="row-title">' + esc(gate.id) + '</div><div class="row-desc">From the ' + esc(gate.pack) + ' pack</div></div>';
+        list.appendChild(row);
+      }
+      for (const gate of dropped) {
+        const row = document.createElement('div'); row.className = 'row'; row.setAttribute('role', 'listitem');
+        row.innerHTML = '<div class="row-text"><div class="row-title">' + esc(gate.id) + ' <span class="row-desc">(from the ' + esc(gate.pack) + ' pack)</span></div><div class="row-desc">' + esc(gate.reason) + '</div></div>';
+        list.appendChild(row);
+      }
+    }
     window.addEventListener('message', event => {
       const message = event.data;
+      if (message?.type === 'gatesFromPacks') renderFromPacks(message.gates || [], message.dropped || []);
       if (message?.type === 'gatesConfig') {
         gates = message.gates || [];
         document.getElementById('gt-max-attempts').value = String(message.maxAttempts || 3);
@@ -202,7 +237,7 @@ export const gatesPage: SettingsPage = {
   async handle(message: Record<string, unknown>, ctx: SettingsContext): Promise<boolean> {
     if (message.type !== 'setGates') return false;
     try {
-      const root = workspaceRoot();
+      const root = await leadFolder();
       const candidate = { maxAttempts: message.maxAttempts, lanes: message.lanes, gates: message.gates };
       const parsed = parseGatesConfig(candidate);
       const file = gatesFile(root);

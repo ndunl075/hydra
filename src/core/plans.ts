@@ -242,7 +242,12 @@ function matchingBrace(text: string, start: number): number {
 }
 const stringList = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
-function parsePlanJobDraft(raw: unknown, index: number): PlanJob {
+/**
+ * `roles` is the active roles' refs (docs/Packs_Plan.md, "Plans and the
+ * planner"): a role the model named that isn't one of them is dropped rather
+ * than refused, since the model may have guessed or misspelled it.
+ */
+function parsePlanJobDraft(raw: unknown, index: number, roles?: ReadonlySet<string>): PlanJob {
   if (!raw || typeof raw !== 'object') throw new Error(`Job ${index + 1} of the planner output must be an object.`);
   const source = raw as Record<string, unknown>;
   if (typeof source.key !== 'string' || !planJobKeyPattern.test(source.key)) throw new Error(`Job ${index + 1} of the planner output has an invalid key.`);
@@ -250,9 +255,10 @@ function parsePlanJobDraft(raw: unknown, index: number): PlanJob {
   if (!trimmed(source.brief)) throw new Error(`Job "${source.key}" of the planner output is missing a brief.`);
   const provider = source.provider === 'claude' || source.provider === 'codex' ? source.provider : undefined;
   const writeScope = stringList(source.writeScope);
+  const role = typeof source.role === 'string' && planJobRolePattern.test(source.role) && roles?.has(source.role) ? source.role : undefined;
   return {
     key: source.key, title: (source.title as string).trim().slice(0, planJobTitleMax), brief: (source.brief as string).trim().slice(0, planJobBriefMax),
-    ...(provider ? { provider } : {}), dependsOn: stringList(source.dependsOn), ...(writeScope.length ? { writeScope } : {}),
+    ...(provider ? { provider } : {}), dependsOn: stringList(source.dependsOn), ...(writeScope.length ? { writeScope } : {}), ...(role ? { role } : {}),
   };
 }
 
@@ -260,14 +266,17 @@ function parsePlanJobDraft(raw: unknown, index: number): PlanJob {
  * Take the first JSON object out of a planner's reply text, validate it as
  * `{ "jobs": [...] }` with 2-8 jobs, and return the draft jobs. Tolerates code
  * fences and surrounding prose; throws with a plain-English reason otherwise.
+ * `roleRefs` are the active roles a job's optional "role" may name
+ * (docs/Packs_Plan.md, "Plans and the planner"); any other value is dropped.
  */
-export function parsePlannerOutput(text: string): PlanJob[] {
+export function parsePlannerOutput(text: string, roleRefs?: readonly string[]): PlanJob[] {
   const object = extractFirstJsonObject(text);
   if (!object) throw new Error('The planner did not return a JSON object.');
   const parsed = JSON.parse(object) as { jobs?: unknown };
   if (!Array.isArray(parsed.jobs)) throw new Error('The planner output must have a "jobs" list.');
   if (parsed.jobs.length < minPlannerJobs || parsed.jobs.length > maxPlannerJobs) throw new Error(`The planner must return ${minPlannerJobs}-${maxPlannerJobs} jobs (it returned ${parsed.jobs.length}).`);
-  const jobs = parsed.jobs.map(parsePlanJobDraft);
+  const roles = roleRefs ? new Set(roleRefs) : undefined;
+  const jobs = parsed.jobs.map((job, index) => parsePlanJobDraft(job, index, roles));
   validatePlanJobs(jobs);
   return jobs;
 }

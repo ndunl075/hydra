@@ -7,6 +7,7 @@ import { gatesPage } from './gates';
 import { generalPage } from './general';
 import { headsPage } from './heads';
 import { mcpServersPage } from './mcpServers';
+import { packsPage } from './packs';
 
 const byId: Record<string, SettingsPage> = {
   general: generalPage,
@@ -14,6 +15,7 @@ const byId: Record<string, SettingsPage> = {
   mcpServers: mcpServersPage,
   heads: headsPage,
   gates: gatesPage,
+  packs: packsPage,
   appearance: appearancePage,
   docs: docsPage,
 };

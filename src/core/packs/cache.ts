@@ -23,7 +23,8 @@ export const pluginsName = (id: string, hash: string): string => `${cacheName(id
 
 export interface CacheSource { id: string; hash: string; files: ReadonlyMap<string, Uint8Array> }
 
-async function writeFiles(folder: string, files: ReadonlyMap<string, Uint8Array>): Promise<void> {
+/** Exported for registry.ts's addUserPack: writing a freshly validated pack's own bytes into a new folder. */
+export async function writeFiles(folder: string, files: ReadonlyMap<string, Uint8Array>): Promise<void> {
   await mkdir(folder, { recursive: true });
   for (const [name, content] of files) {
     const target = path.join(folder, ...name.split('/'));

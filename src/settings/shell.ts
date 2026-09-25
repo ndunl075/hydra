@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import type { SettingsImport } from '../extensionImport';
+import type { PackService } from '../core/packs/service';
 import { settingsStyles } from './styles';
 import type { SettingsContext, SettingsPage } from './types';
 import { settingsPages } from './pages';
@@ -18,7 +19,7 @@ export class AppearanceSettings implements vscode.Disposable {
   private panel?: vscode.WebviewPanel;
   private readonly subscription: vscode.Disposable;
   private readonly pages: SettingsPage[] = settingsPages;
-  constructor(private readonly context: vscode.ExtensionContext, private readonly imports: SettingsImport) {
+  constructor(private readonly context: vscode.ExtensionContext, private readonly imports: SettingsImport, private readonly packs: PackService) {
     this.subscription = vscode.window.onDidChangeActiveColorTheme(() => this.publishAppearance());
   }
   show(pageId?: string): void {
@@ -62,6 +63,7 @@ export class AppearanceSettings implements vscode.Disposable {
       imports: this.imports,
       globalState: this.context.globalState,
       post: value => panel.webview.postMessage(value),
+      packs: this.packs,
     };
   }
   async setAppearance(mode: 'dark' | 'light'): Promise<void> {
@@ -155,7 +157,7 @@ export class AppearanceSettings implements vscode.Disposable {
   }
   /** Page html() only needs extensionUri/imports today (rows are static); webview posts happen on 'ready'. */
   private pageContext0(): SettingsContext {
-    return { extensionUri: this.context.extensionUri, imports: this.imports, globalState: this.context.globalState, post: () => Promise.resolve(true) };
+    return { extensionUri: this.context.extensionUri, imports: this.imports, globalState: this.context.globalState, post: () => Promise.resolve(true), packs: this.packs };
   }
   dispose(): void { this.subscription.dispose(); this.panel?.dispose(); }
 }

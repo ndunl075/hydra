@@ -33,6 +33,11 @@ export interface HelperJobView {
   /** Packs (docs/Packs_Plan.md): the role it works in, "coding/builder", with the titles it started with. */
   role?: { ref: string; title: string; packTitle: string };
 }
+/**
+ * Packs (docs/Packs_Plan.md, "Picking a role"): one active role, for the New
+ * lane card, `hydra.newLane`, and the plan job popover's Role select.
+ */
+export interface SnapshotRole { ref: string; pack: string; packTitle: string; id: string; title: string; description: string; provider: Provider }
 export interface Snapshot {
   mode: 'editor' | 'agents'; busy: boolean; error?: string;
   helpers?: HelperJobView[];
@@ -44,6 +49,8 @@ export interface Snapshot {
   dismissedTray?: string[];
   /** Plan lanes (docs/Plan_Lanes_Plan.md): each plan's job statuses, by plan id, for plans that have run. Also sent with every `plans` message. */
   planJobs?: Record<string, PlanJobView[]>;
+  /** Packs (docs/Packs_Plan.md): the active packs' roles, in packs.json order, refreshed whenever packs change. */
+  roles?: SnapshotRole[];
 }
 export type ClientMessage =
   | LaneClientMessage
@@ -61,7 +68,8 @@ export type ClientMessage =
   | { type: 'planCreate'; title: string; brief: string }
   | { type: 'planCreateEmpty'; title: string }
   | { type: 'planRetry' | 'planCancel' | 'planDelete' | 'planAddJob' | 'planRun' | 'planStartEmpty'; id: string }
-  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider; runAs?: PlanJobRunAs }
+  /** `role` is "pack/role" (docs/Packs_Plan.md, "Picking a role"), or "" to clear it; missing keeps the job's current role. */
+  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider; runAs?: PlanJobRunAs; role?: string }
   | { type: 'planDeleteJob'; id: string; key: string }
   | { type: 'planDependsOn'; id: string; key: string }
   | { type: 'planAddDependency' | 'planRemoveDependency'; id: string; key: string; dependsOn: string }
@@ -110,7 +118,9 @@ export function parseMessage(value: unknown): ClientMessage {
   if (type === 'planSaveJob') {
     const runAs = message.runAs;
     if (runAs !== undefined && runAs !== 'head' && runAs !== 'lane') throw new Error('A job runs as a head or a lane.');
-    return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider(), ...(runAs ? { runAs } : {}) };
+    const role = message.role;
+    if (role !== undefined && (typeof role !== 'string' || (role !== '' && !/^[a-z0-9-]{1,24}\/[a-z0-9-]{1,24}$/.test(role)))) throw new Error('Name the job\'s role as "pack/role".');
+    return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider(), ...(runAs ? { runAs } : {}), ...(role !== undefined ? { role } : {}) };
   }
   if (type === 'planDeleteJob') return { type, id: planId(), key: jobKey() };
   if (type === 'planDependsOn') return { type, id: planId(), key: jobKey() };

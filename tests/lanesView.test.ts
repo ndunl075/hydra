@@ -89,6 +89,45 @@ test('an SSR render shows the usage-limit banner and, separately, the onLimit:"s
   assert.match(countingDown, />Cancel</);
 });
 
+// ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 5): the tile's plan chip, Mark job done, and its ⋯ menu. ----
+
+test('a plan lane\'s tile shows the plan chip, Mark job done, and Show plan/Cancel job in its menu', async () => {
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { LanesView } = await import('../webview/LanesView');
+  const unfinished = lane('111111111111', 'Build API', {
+    sync: { changedFiles: ['a.ts'], conflicts: [], targetConflicts: [], behind: 0, dirty: false, checkedAt: new Date().toISOString() },
+    planJob: { planId: 'p1', planTitle: 'Checkout', jobKey: 'build', jobTitle: 'Build API', state: 'active', dependents: 1, dependentsStarted: 0 },
+  });
+  const html = renderToStaticMarkup(React.createElement(LanesView, { lanes: [unfinished], terminals: true, onSend: () => {}, onFocused: () => {} }));
+  assert.match(html, /Plan · Checkout › Build API/);
+  assert.doesNotMatch(html, /Job done/, 'no "Job done" chip until the job is actually done');
+  assert.match(html, />Mark job done</);
+  // The ⋯ menu's own items (Show plan, Cancel job…) render only once opened; see webview/LanesView.tsx's LaneTile.
+
+  const done = lane('222222222222', 'Build API', {
+    sync: { changedFiles: ['a.ts'], conflicts: [], targetConflicts: [], behind: 0, dirty: false, checkedAt: new Date().toISOString() },
+    planJob: { planId: 'p1', planTitle: 'Checkout', jobKey: 'build', jobTitle: 'Build API', state: 'done', commit: 'a'.repeat(40), dependents: 1, dependentsStarted: 0 },
+  });
+  const doneHtml = renderToStaticMarkup(React.createElement(LanesView, { lanes: [done], terminals: true, onSend: () => {}, onFocused: () => {} }));
+  assert.match(doneHtml, /Job done · aaaaaaa/);
+  assert.match(doneHtml, /Mark job done again/, 'pressing it again is offered while nothing after it has started (decision 3)');
+
+  const started = lane('333333333333', 'Build API', {
+    sync: { changedFiles: ['a.ts'], conflicts: [], targetConflicts: [], behind: 0, dirty: false, checkedAt: new Date().toISOString() },
+    planJob: { planId: 'p1', planTitle: 'Checkout', jobKey: 'build', jobTitle: 'Build API', state: 'done', commit: 'a'.repeat(40), dependents: 1, dependentsStarted: 1 },
+  });
+  const startedHtml = renderToStaticMarkup(React.createElement(LanesView, { lanes: [started], terminals: true, onSend: () => {}, onFocused: () => {} }));
+  assert.doesNotMatch(startedHtml, /Mark job done/, 'hidden once a dependent has started from its result');
+
+  const exitedRow = lane('444444444444', 'Build API', {
+    state: 'exited', exitCode: 0,
+    planJob: { planId: 'p1', planTitle: 'Checkout', jobKey: 'build', jobTitle: 'Build API', state: 'active', dependents: 0, dependentsStarted: 0 },
+  });
+  const rowHtml = renderToStaticMarkup(React.createElement(LanesView, { lanes: [exitedRow], terminals: true, onSend: () => {}, onFocused: () => {} }));
+  assert.match(rowHtml, /Plan · Checkout › Build API/, 'the exited-lane row shows the chip too');
+});
+
 test('an empty Lanes view (no lanes yet) still renders the toolbar and a hint, not an empty grid crash', async () => {
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');

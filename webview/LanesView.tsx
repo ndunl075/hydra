@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientMessage, LaneAction, LaneLimitOfferView, LaneOfferButtonId, LaneView, Provider } from '../src/core/model';
+import type { ClientMessage, LaneAction, LaneLimitOfferView, LaneOfferButtonId, LanePlanJobView, LaneView, Provider } from '../src/core/model';
 import type { JobCheckResult } from '../src/core/jobs';
 import { otherProvider } from '../src/core/limitEvents';
 import { gateChip } from '../src/core/agentsCanvas';
@@ -146,6 +146,18 @@ function Chip({ tone, title, children }: { tone: 'warning' | 'info' | 'good' | '
   return <span className={`lane-chip tone-${tone}`} title={title}>{children}</span>;
 }
 
+/**
+ * A plan lane's chip (docs/Plan_Lanes_Plan.md, section 5): "Plan · Checkout ›
+ * Build API", and once the job is done, a second green "Job done · a1b2c3d"
+ * chip. Shown on both the tile header and the exited-lane row.
+ */
+function PlanChip({ planJob }: { planJob: LanePlanJobView }) {
+  return <>
+    <Chip tone="neutral" title="Jobs after it start when you mark it done or merge it">Plan · {planJob.planTitle} › {planJob.jobTitle}</Chip>
+    {planJob.state === 'done' && <Chip tone="good">Job done{planJob.commit ? ` · ${planJob.commit.slice(0, 7)}` : ''}</Chip>}
+  </>;
+}
+
 /** Gate chips (docs/Gates_Plan.md, "Lanes"): "Gates: ✓ unit · … review" while running, or the last run's chips once it's done. */
 function GateChips({ results, running }: { results: readonly JobCheckResult[]; running?: string }) {
   if (!results.length && !running) return null;
@@ -197,6 +209,7 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
         {lastSwitch.reason === 'limit' ? `Continued from ${providerLabel(lastSwitch.from)} (limit)` : `Switched from ${providerLabel(lastSwitch.from)}`}
       </span>}
       <div className="lane-chips">
+        {lane.planJob && <PlanChip planJob={lane.planJob} />}
         {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}{conflict.files[0] ? ` · ${conflict.files[0]}` : ''}</Chip>}
         {!!sync?.targetConflicts.length && lane.state !== 'merged' && <Chip tone="warning" title={sync.targetConflicts.join(', ')}>Conflicts with {lane.target} · {sync.targetConflicts[0]}</Chip>}
         {!!sync?.behind && lane.state !== 'merged' && <Chip tone="info">{sync.behind} behind {lane.target}</Chip>}
@@ -219,6 +232,8 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
       <button className="text-button" disabled={!sync?.changedFiles.length} onClick={() => act('diff')}>{plural(sync?.changedFiles.length ?? 0, 'file')} changed</button>
       <div className="lane-tile-actions">
         <button onClick={() => act('diff')}>Diff</button>
+        {/* Mark job done (docs/Plan_Lanes_Plan.md, section 5): only while no dependent has started from its result. */}
+        {lane.planJob && lane.planJob.dependentsStarted === 0 && <button onClick={() => act('markJobDone')}>{lane.planJob.state === 'done' ? 'Mark job done again' : 'Mark job done'}</button>}
         <button className="primary" disabled={lane.state === 'merged' || !sync?.changedFiles.length} title={!sync?.changedFiles.length ? 'Nothing to merge yet' : undefined} onClick={() => act('merge')}>Merge</button>
         <div className="lane-menu-wrap">
           <button className="lane-menu-button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={`More actions for lane ${lane.name}`} onClick={() => setMenuOpen(value => !value)}>⋯</button>
@@ -232,6 +247,8 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('resume'); }}>Resume</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('restart'); }}>Restart</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('switchProvider'); }}>Switch to {providerLabel(other)}</button>
+            {lane.planJob && <button role="menuitem" onClick={() => { setMenuOpen(false); act('showPlan'); }}>Show plan</button>}
+            {lane.planJob && <button role="menuitem" className="danger" onClick={() => { setMenuOpen(false); act('cancelJob'); }}>Cancel job…</button>}
             <button role="menuitem" className="danger" onClick={() => { setMenuOpen(false); act('close'); }}>Close lane…</button>
           </div>}
         </div>
@@ -253,6 +270,7 @@ function ExitedLaneRow({ lane, laneName, expanded, onToggle, onSend }: {
     <span className="lane-provider"><ProviderLogo provider={lane.provider} /></span>
     <code className="lane-branch" title={lane.branch}>{lane.branch}</code>
     <div className="lane-chips">
+      {lane.planJob && <PlanChip planJob={lane.planJob} />}
       {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}</Chip>}
       {lane.exitCode !== undefined && <Chip tone="neutral">Exited (code {lane.exitCode})</Chip>}
     </div>

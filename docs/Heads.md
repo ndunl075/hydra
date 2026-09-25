@@ -118,6 +118,35 @@ Apart from plans (below), the view never starts work itself; everything else on 
 - **Cycles are refused.** A plan whose dependencies loop shows the loop, draws it in red, and can't run until you break it.
 - **Run plan** starts one head per job in dependency order, grouped under the plan on the canvas. Running it again after adding jobs starts only the new ones.
 
+### Lanes
+
+Heads are Hydra's agents. **Lanes** are yours: each lane is a real `claude` or `codex` terminal, signed in with your own account, working in its own git worktree and branch ([Lanes_And_Planner_Plan.md](Lanes_And_Planner_Plan.md), section 1). The Agents tab has two views, **Canvas | Lanes**.
+
+- **New lane** (in the Lanes view, the Hydra panel's **+**, or **Hydra: New Lane**):
+  - Give it a name, pick Claude Code or Codex, and optionally a goal.
+  - With a goal, the agent starts on it straight away, already told what the other lanes are doing.
+  - The first run asks you to trust the new folder; that's the CLI's own prompt.
+- **The grid:**
+  - Fixed-size tiles, two or three to a row, scrolling for more.
+  - Click a tile to type into it.
+  - Each tile shows its branch, files changed, and warnings: **Conflicts with Lane 3 · src/cart.ts**, **Conflicts with main**, **3 behind main**, **Merges cleanly**.
+- **Coordination:**
+  - Hydra predicts conflicts between lanes, and with main, every 10 seconds using `git merge-tree`. It never touches a lane's files and makes no model calls.
+  - A lane's agent can call **`hydra_lanes`** to see the other lanes' goals, files and conflicts, and it can start heads, which appear under that lane on the canvas.
+  - Hydra only warns; it never blocks a lane.
+- **Finishing a lane:**
+  - **Merge** merges the lane into the branch your folder is on, after a confirmation that says whether it merges cleanly. It refuses, with the reason, if there's nothing to merge, uncommitted work (**⋯ → Commit…** first), the wrong branch checked out, or a conflict with main.
+  - **⋯ → Update from main** brings main into the lane; conflicts are left for you, or the lane's agent, to resolve in the lane.
+  - **⋯ → Open PR** pushes the branch and opens GitHub's compare page.
+- **Close lane:**
+  - A merged lane closes quietly.
+  - Otherwise, choose **Keep branch** (uncommitted work is committed as "WIP") or **Delete everything**.
+  - Hydra only ever removes its own lane worktrees, and removes any links inside first, so it never deletes through a junction.
+- **Restarting Hydra** ends the lanes' terminal sessions but keeps their worktrees. **Resume** continues the conversation (`claude --continue`, `codex resume --last`); **Start fresh** begins a new one.
+- **On the canvas:** every open lane is a node, heads it started grow from it, and lanes that would conflict are joined by a red dashed line. Click a lane to jump to its terminal.
+
+The **Hydra panel** (the Hydra icon in the activity bar) lists your lanes, running heads and plans, with **New lane**, **New plan** and **Open Agents view** at the top.
+
 ## Security
 
 - **Local endpoint:** Hydra listens on `127.0.0.1` only, on a random port. Requests with a foreign `Host` or any `Origin` are refused, which blocks web pages. Oversized and flooding requests are refused too.

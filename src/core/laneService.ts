@@ -67,6 +67,12 @@ export function parseTestCommand(value: string): { executable: string; args: str
   return { executable: text, args: [] };
 }
 
+/** Markers a parent Claude Code session leaves in its children's environment; user settings (CLAUDE_CODE_USE_BEDROCK...) pass. */
+const sessionMarkers = new Set(['ELECTRON_RUN_AS_NODE', 'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_AGENT_SDK_VERSION', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING']);
+export function inheritedSessionVariable(key: string): boolean { return sessionMarkers.has(key.toUpperCase()); }
+
 /**
  * The command line and environment of a lane's CLI. The environment is the
  * host's plus the lane's identity (HYDRA_LANE_ID, its name and branch, for the
@@ -78,9 +84,11 @@ export function laneLaunch(input: LaneLaunchInput): LaneLaunch {
   // HYDRA_HELPERS_DIR (which wins over ours) belongs to another Hydra profile.
   const laneEnv = { HYDRA_LANE_ID: lane.id, HYDRA_LANE_NAME: lane.name, HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: input.helpersDir };
   const env: Record<string, string> = {};
-  // The host may run as Node; the lane's own tools must not inherit that.
-  for (const [key, value] of Object.entries(input.env)) if (typeof value === 'string' && key.toUpperCase() !== 'ELECTRON_RUN_AS_NODE') env[key] = value;
-  Object.assign(env, laneEnv, { HYDRA_LEAD_PROVIDER: lane.provider, HYDRA_HELPERS_DIR: input.helpersDir, TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+  // The host may run as Node, or have been started from inside a Claude Code session;
+  // a lane is a fresh top-level session, so neither reaches it.
+  for (const [key, value] of Object.entries(input.env)) if (typeof value === 'string' && !inheritedSessionVariable(key)) env[key] = value;
+  // Like heads, a lane never updates the user's CLI behind their back.
+  Object.assign(env, laneEnv, { HYDRA_LEAD_PROVIDER: lane.provider, HYDRA_HELPERS_DIR: input.helpersDir, TERM: 'xterm-256color', COLORTERM: 'truecolor', DISABLE_AUTOUPDATER: '1' });
   if (input.testCommand) return { ...parseTestCommand(input.testCommand), env };
   const shim = (input.platform ?? process.platform) === 'win32' && /\.(cmd|bat)$/i.test(input.executable);
   const prompt = input.prompt && !input.resume ? (shim ? shimSafe(input.prompt) : input.prompt) : undefined;

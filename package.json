@@ -85,11 +85,13 @@
       },
       {
         "command": "hydra.openAgents",
-        "title": "Hydra: Open Agents"
+        "title": "Hydra: Open Agents",
+        "icon": "$(type-hierarchy)"
       },
       {
         "command": "hydra.newPlan",
-        "title": "Hydra: New Plan"
+        "title": "Hydra: New Plan",
+        "icon": "$(checklist)"
       },
       {
         "command": "hydra.stopAllHelpers",
@@ -97,7 +99,8 @@
       },
       {
         "command": "hydra.newLane",
-        "title": "Hydra: New Lane"
+        "title": "Hydra: New Lane",
+        "icon": "$(add)"
       },
       {
         "command": "hydra.openLanes",
@@ -168,7 +171,7 @@
         {
           "id": "hydra",
           "title": "Hydra",
-          "icon": "media/hydra.svg"
+          "icon": "hydra-logo.png"
         }
       ]
     },

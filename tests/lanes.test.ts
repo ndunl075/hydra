@@ -175,12 +175,12 @@ test('parseMessage validates every lane message', () => {
 test('a lane launches its CLI with the plan\'s arguments and environment', () => {
   const lane = { id, name: 'Lane 1', branch: `lane/lane-1-${id}`, provider: 'claude' as const };
   const bridge = { command: 'C:\\Program Files\\Hydra\\Hydra.exe', args: ['C:\\Program Files\\Hydra\\hydra-mcp.cjs'], env: { ELECTRON_RUN_AS_NODE: '1', HYDRA_HELPERS_DIR: 'C:\\h', HYDRA_LEAD_PROVIDER: 'claude' } };
-  const base = { lane, executable: 'C:\\bin\\claude.exe', resume: false, connected: false, bridge, mcpConfigFile: 'C:\\s\\lane.mcp.json', helpersDir: 'C:\\h', env: { PATH: 'C:\\bin', ELECTRON_RUN_AS_NODE: '1', HOME: 'C:\\u' }, platform: 'win32' as const };
+  const base = { lane, executable: 'C:\\bin\\claude.exe', resume: false, connected: false, bridge, mcpConfigFile: 'C:\\s\\lane.mcp.json', helpersDir: 'C:\\h', env: { PATH: 'C:\\bin', ELECTRON_RUN_AS_NODE: '1', HOME: 'C:\\u', CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ID: 'parent' }, platform: 'win32' as const };
   const fresh = laneLaunch({ ...base, prompt: 'You are working in Hydra lane "Lane 1". Your task: fix 100% & ship' });
   assert.deepEqual(fresh.args, ['--mcp-config', 'C:\\s\\lane.mcp.json', 'You are working in Hydra lane "Lane 1". Your task: fix 100% & ship'], 'a real executable gets the prompt untouched');
   const server = JSON.parse(fresh.mcpConfig!).mcpServers.hydra;
   assert.deepEqual(server, { type: 'stdio', command: bridge.command, args: bridge.args, env: { ...bridge.env, HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: 'C:\\h' }, timeout: 3_600_000 });
-  assert.deepEqual({ ...fresh.env, PATH: undefined }, { PATH: undefined, HOME: 'C:\\u', HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: 'C:\\h', HYDRA_LEAD_PROVIDER: 'claude', HYDRA_HELPERS_DIR: 'C:\\h', TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+  assert.deepEqual({ ...fresh.env, PATH: undefined }, { PATH: undefined, HOME: 'C:\\u', HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: 'C:\\h', HYDRA_LEAD_PROVIDER: 'claude', HYDRA_HELPERS_DIR: 'C:\\h', TERM: 'xterm-256color', COLORTERM: 'truecolor', DISABLE_AUTOUPDATER: '1' }, 'a parent Claude session\'s markers never reach the lane, and the CLI never self-updates');
   assert.equal(fresh.env.ELECTRON_RUN_AS_NODE, undefined, 'the host\'s run-as-Node flag never reaches the lane');
   const connected = laneLaunch({ ...base, connected: true });
   assert.deepEqual(connected.args, [], 'a connected Claude already has Hydra; no goal starts it empty');

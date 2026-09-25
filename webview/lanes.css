@@ -14,7 +14,7 @@
 
 /* New lane card */
 .lane-new { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-.lane-new label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--muted); }
+.lane-new label, .lane-new-field { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--muted); }
 .lane-new input, .lane-new textarea { padding: 7px 9px; border: 1px solid var(--input-border); border-radius: 5px; background: var(--rail); color: var(--text); font: inherit; resize: vertical; }
 .lane-new-provider { display: flex; gap: 6px; }
 .lane-new-provider button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); }

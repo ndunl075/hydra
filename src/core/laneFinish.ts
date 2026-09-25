@@ -111,6 +111,7 @@ export async function updateLane(lane: FinishLane): Promise<{ conflicts: string[
   if (result.code === 0) return { conflicts: [], upToDate: /already up to date/i.test(result.stdout) };
   const conflicts = (await git(lane.worktree, ['diff', '--name-only', '-z', '--diff-filter=U'])).split('\0').filter(Boolean);
   if (conflicts.length) return { conflicts, upToDate: false };
+  if (/local changes .* would be overwritten|commit your changes or stash them/is.test(result.stderr)) throw new Error(`The lane has uncommitted changes to files ${lane.target} also changed. Commit them first (⋯ → Commit…), then update.`);
   throw new Error(`git refused the update: ${(result.stderr.trim() || result.stdout.trim()).split('\n').slice(0, 6).join(' ')}`);
 }
 

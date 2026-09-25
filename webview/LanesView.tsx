@@ -48,6 +48,7 @@ function LaneTerminal({ id, onInput, onResize }: { id: string; onInput: (data: s
     let disposed = false;
     let term: import('@xterm/xterm').Terminal | undefined;
     let observer: ResizeObserver | undefined;
+    const cleanups: (() => void)[] = [];
     void (async () => {
       const [{ Terminal }, { FitAddon }] = await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]);
       if (disposed || !container.current) return;
@@ -64,14 +65,17 @@ function LaneTerminal({ id, onInput, onResize }: { id: string; onInput: (data: s
       report();
       observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(report);
       observer?.observe(container.current);
-      const off = onLaneEvent(event => {
+      cleanups.push(onLaneEvent(event => {
         if (event.id !== id || !term) return;
         if (event.type === 'laneReplay') term.reset();
         term.write(event.data);
-      });
-      (container.current as unknown as { _laneCleanup?: () => void })._laneCleanup = () => { off(); };
+      }));
+      // The tile asks for focus (a lane opened from the canvas or the Hydra panel).
+      const element = container.current, focus = () => term?.focus();
+      element.addEventListener('lane-focus', focus);
+      cleanups.push(() => element.removeEventListener('lane-focus', focus));
     })();
-    return () => { disposed = true; observer?.disconnect(); term?.dispose(); };
+    return () => { disposed = true; observer?.disconnect(); for (const cleanup of cleanups) cleanup(); term?.dispose(); term = undefined; };
   }, [id]);
 
   return <div className="lane-terminal" ref={container} />;
@@ -88,15 +92,16 @@ export function NewLaneCard({ initial, error, onStart, onCancel }: { initial: Ne
     return () => window.removeEventListener('keydown', escape);
   }, [onCancel]);
   return <div className="lane-new" role="dialog" aria-label="New lane">
-    <label>Name<input value={form.name} maxLength={40} autoFocus onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-    <label>Agent
-      <div className="lane-new-provider" role="radiogroup" aria-label="Agent">
+    <label>Name<input value={form.name} maxLength={40} autoFocus onChange={event => { const name = event.target.value; setForm(current => ({ ...current, name })); }} /></label>
+    {/* Not a <label>: a label forwards any click inside it to its first button, so Codex could never be chosen. */}
+    <div className="lane-new-field"><span id="lane-new-agent">Agent</span>
+      <div className="lane-new-provider" role="radiogroup" aria-labelledby="lane-new-agent">
         {(['claude', 'codex'] as const).map(provider => <button key={provider} type="button" role="radio" aria-checked={form.provider === provider}
-          className={form.provider === provider ? 'on' : ''} onClick={() => setForm({ ...form, provider })}>{providerLabel(provider)}</button>)}
+          className={form.provider === provider ? 'on' : ''} onClick={() => setForm(current => ({ ...current, provider }))}>{providerLabel(provider)}</button>)}
       </div>
-    </label>
+    </div>
     <label>Goal, optional<textarea value={form.goal} maxLength={2000} rows={2} placeholder="What should it work on? Leave empty to start without a prompt."
-      onChange={event => setForm({ ...form, goal: event.target.value })} /></label>
+      onChange={event => { const goal = event.target.value; setForm(current => ({ ...current, goal })); }} /></label>
     {error && <p className="lane-new-error" role="alert">{error}</p>}
     <div className="lane-new-actions">
       <button className="primary" disabled={!form.name.trim()} onClick={() => onStart(form)}>Start lane</button>
@@ -144,7 +149,8 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
       <code className="lane-branch" title={lane.branch}>{lane.branch}</code>
       <div className="lane-chips">
         {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}{conflict.files[0] ? ` · ${conflict.files[0]}` : ''}</Chip>}
-        {!!sync?.behind && <Chip tone="info">{sync.behind} behind main</Chip>}
+        {!!sync?.targetConflicts.length && lane.state !== 'merged' && <Chip tone="warning" title={sync.targetConflicts.join(', ')}>Conflicts with {lane.target} · {sync.targetConflicts[0]}</Chip>}
+        {!!sync?.behind && lane.state !== 'merged' && <Chip tone="info">{sync.behind} behind {lane.target}</Chip>}
         {merges && <Chip tone="good">Merges cleanly</Chip>}
         {lane.state === 'merged' && <Chip tone="neutral">Merged</Chip>}
       </div>
@@ -160,12 +166,12 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
       <button className="text-button" disabled={!sync?.changedFiles.length} onClick={() => act('diff')}>{plural(sync?.changedFiles.length ?? 0, 'file')} changed</button>
       <div className="lane-tile-actions">
         <button onClick={() => act('diff')}>Diff</button>
-        <button className="primary" onClick={() => act('merge')}>Merge</button>
+        <button className="primary" disabled={lane.state === 'merged' || !sync?.changedFiles.length} title={!sync?.changedFiles.length ? 'Nothing to merge yet' : undefined} onClick={() => act('merge')}>Merge</button>
         <div className="lane-menu-wrap">
           <button className="lane-menu-button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={`More actions for lane ${lane.name}`} onClick={() => setMenuOpen(value => !value)}>⋯</button>
           {menuOpen && <div className="lane-menu" role="menu">
             {sync?.dirty && <button role="menuitem" onClick={() => { setMenuOpen(false); act('commit'); }}>Commit…</button>}
-            <button role="menuitem" onClick={() => { setMenuOpen(false); act('update'); }}>Update from main</button>
+            <button role="menuitem" onClick={() => { setMenuOpen(false); act('update'); }}>Update from {lane.target}</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('pr'); }}>Open PR</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('openWindow'); }}>Open in new window</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('resume'); }}>Resume</button>
@@ -183,6 +189,9 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [showForm, setShowForm] = useState(false);
+  // The form closes once the lane it started shows up; an error keeps it open.
+  const starting = useRef<number | undefined>(undefined);
+  useEffect(() => { if (starting.current !== undefined && lanes.length > starting.current) { starting.current = undefined; setShowForm(false); } }, [lanes.length]);
   const mounted = useRef(false);
   useEffect(() => { if (!mounted.current) { mounted.current = true; onSend({ type: 'laneAttach' }); } }, []);
   const laneName = (id: string) => lanes.find(lane => lane.id === id)?.name;
@@ -206,7 +215,7 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
       : <div className="lanes-grid">
         {showForm && <NewLaneCard initial={{ name: nextName, provider: defaultProvider === 'codex' ? 'codex' : 'claude', goal: '' }} error={laneError}
           onCancel={() => setShowForm(false)}
-          onStart={form => { onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}) }); }} />}
+          onStart={form => { starting.current = lanes.length; onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}) }); }} />}
         {lanes.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} onSend={onSend} onFocused={onFocused} />)}
         {!lanes.length && !showForm && <p className="lanes-empty-hint">No lanes yet. Start one to run a real Claude Code or Codex terminal in its own worktree.</p>}
       </div>}

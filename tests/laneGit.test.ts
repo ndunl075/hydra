@@ -135,6 +135,11 @@ test('merge refuses with the reason, and merges only when it is clean', async ()
     const conflicts = await checkMerge(lane) as { reason: string; files: string[] };
     assert.equal(conflicts.reason, 'conflicts'); assert.deepEqual(conflicts.files, ['src/b.ts']);
     await assert.rejects(mergeLane(lane), /Merging would conflict in 1 file \(src\/b\.ts\)\. Update the lane from main first\./);
+    // Uncommitted changes to a file main also changed: a plain reason, and nothing changes.
+    await f.write(lane.worktree, 'src/b.ts', 'export const b = "uncommitted";\n');
+    await assert.rejects(updateLane(lane), /The lane has uncommitted changes to files main also changed\. Commit them first/);
+    assert.equal((await git(lane.worktree, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']).catch(() => '')).trim(), '', 'no merge was started');
+    await git(lane.worktree, ['checkout', '--', 'src/b.ts']);
     assert.deepEqual(await updateLane(lane), { conflicts: ['src/b.ts'], upToDate: false });
     await f.write(lane.worktree, 'src/b.ts', 'export const b = "both";\n');
     await commitLane(lane, 'Resolve');

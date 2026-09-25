@@ -36,7 +36,7 @@ import { LanesController, isLaneMessage } from './extensionLanes';
 import { HydraTreeProvider } from './extensionTree';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
-import { createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
+import { allJobsDone, createPlan, maxPlanJobs, PlanStore, runPlan, type Plan, type PlanJob } from './core/plans';
 import { planBrief } from './core/planner';
 
 let manager: Manager | undefined;
@@ -320,6 +320,7 @@ class Manager {
     const planStore = new PlanStore(path.join(this.storageDirectory, 'plans'));
     await planStore.load();
     this.plans = { store: planStore, planning: new Map() };
+    await this.finishDonePlans();
     this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list() });
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
@@ -548,7 +549,20 @@ class Manager {
     const heads = this.headViews() ?? [];
     void this.broadcast({ type: 'heads', heads }).catch(() => undefined);
     this.tree.update({ heads });
+    void this.finishDonePlans().catch(error => this.report(error));
     this.publishSoon();
+  }
+  /** A running plan whose every head is done becomes done. */
+  private async finishDonePlans(): Promise<void> {
+    const plans = this.plans, store = this.helpers?.store;
+    if (!plans || !store) return;
+    let changed = false;
+    for (const plan of plans.store.list()) {
+      if (plan.state !== 'running' || !allJobsDone(plan, id => store.get(id)?.state)) continue;
+      await plans.store.save({ ...plan, state: 'done' });
+      changed = true;
+    }
+    if (changed) this.plansChanged();
   }
   private publishSoon(): void {
     if (this.publishTimer) clearTimeout(this.publishTimer);
@@ -771,7 +785,9 @@ class Manager {
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
     const css = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.css'));
     const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'hydra-logo.png'));
-    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-logo="${logo}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
+    // Lane terminals (xterm.js) write their font and ANSI colours into a <style> element they create,
+    // so inline styles are allowed here. Scripts stay nonce-only; text is escaped by React and xterm.
+    return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Hydra</title></head><body data-logo="${logo}"><div id="root"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
   }
   private async handle(value: unknown): Promise<void> {
     const message = parseMessage(value);

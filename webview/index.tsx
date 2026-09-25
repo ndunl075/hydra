@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { ClientMessage, HelperJobView, LaneServerMessage, LaneView, Snapshot, Provider, Handoff, OfficialExtensionInfo } from '../src/core/model';
+import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneServerMessage, LaneView, Snapshot, Provider, Handoff, OfficialExtensionInfo } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
 import './styles.css';
 import { AgentsBody, type AgentsViewName } from './AgentsBody';
+import type { LaneSwitchCountdown } from './LanesView';
 import { HydraMark } from './HydraMark';
 import { emitLaneEvent } from './laneBus';
 
@@ -58,6 +59,9 @@ function App() {
   const [terminals, setTerminals] = useState(true);
   const [laneError, setLaneError] = useState<string>();
   const [laneFocus, setLaneFocus] = useState<string>();
+  // ---- The usage-limit banner and the onLimit:"switch" countdown (docs/Gates_Plan.md, section 2), by lane id ----
+  const [laneLimits, setLaneLimits] = useState<Record<string, LaneLimitOfferView>>({});
+  const [laneSwitchCountdowns, setLaneSwitchCountdowns] = useState<Record<string, LaneSwitchCountdown>>({});
   const [headFocus, setHeadFocus] = useState<{ id: string; at: number }>();
   const changeView = (next: AgentsViewName, focus?: string) => {
     setView(next);
@@ -76,6 +80,12 @@ function App() {
       if (lane?.type === 'lanes') { setLanes(lane.lanes); setTerminals(lane.terminals); }
       if (lane?.type === 'laneError') setLaneError(lane.message);
       if (lane?.type === 'laneData' || lane?.type === 'laneReplay') emitLaneEvent({ type: lane.type, id: lane.id, data: lane.data });
+      if (lane?.type === 'laneLimit') setLaneLimits(current => {
+        if (!lane.offer) { if (!(lane.id in current)) return current; const { [lane.id]: _removed, ...rest } = current; return rest; }
+        return { ...current, [lane.id]: lane.offer };
+      });
+      if (lane?.type === 'laneSwitchCountdown') setLaneSwitchCountdowns(current => ({ ...current, [lane.id]: { to: lane.to, deadline: lane.deadline } }));
+      if (lane?.type === 'laneSwitchCancelled') setLaneSwitchCountdowns(current => { if (!(lane.id in current)) return current; const { [lane.id]: _removed, ...rest } = current; return rest; });
       if (lane?.type === 'show') {
         setView(lane.view);
         try { api.setState({ view: lane.view }); } catch { /* ignore */ }
@@ -96,7 +106,7 @@ function App() {
     {snapshot.handoff
       ? <HandoffView handoff={snapshot.handoff} info={snapshot.officialExtensions?.find(info => info.provider === snapshot.handoff?.task.provider)} busy={snapshot.busy} />
       : <AgentsBody view={view} onViewChange={changeView} heads={heads} plans={plans} lanes={lanes} terminals={terminals} defaultProvider={snapshot.defaultProvider}
-          laneError={laneError} laneFocus={laneFocus} onLaneFocused={() => setLaneFocus(undefined)} openNewPlanAt={newPlanSignal} focusHead={headFocus}
+          laneError={laneError} laneFocus={laneFocus} onLaneFocused={() => setLaneFocus(undefined)} laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} openNewPlanAt={newPlanSignal} focusHead={headFocus}
           onAction={(type, jobId) => send({ type, jobId })} onPlan={send} onStopAll={() => send({ type: 'helperStopAll' })}
           onOpenLane={id => { setLaneFocus(id); changeView('lanes', id); }} onSend={send} />}
   </main>;

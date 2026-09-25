@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientMessage, LaneAction, LaneView, Provider } from '../src/core/model';
+import type { ClientMessage, LaneAction, LaneLimitOfferView, LaneOfferButtonId, LaneView, Provider } from '../src/core/model';
+import { otherProvider } from '../src/core/limitEvents';
 import { ProviderLogo } from './ProviderLogo';
 import { onLaneEvent } from './laneBus';
 import '@xterm/xterm/css/xterm.css';
@@ -81,6 +82,34 @@ function LaneTerminal({ id, onInput, onResize }: { id: string; onInput: (data: s
   return <div className="lane-terminal" ref={container} />;
 }
 
+/** `hydra.lanes.onLimit: "switch"`'s countdown, as the extension sent it. */
+export interface LaneSwitchCountdown { to: Provider; deadline: number }
+const laneOfferButtonLabel: Record<LaneOfferButtonId, (other: string) => string> = {
+  continueOther: other => `Continue in ${other}`, viewHandoff: () => 'View handoff', wait: () => 'Wait',
+};
+
+/** The lane tile's usage-limit banner (docs/Gates_Plan.md, section 2). Never a notification: it lives on the tile it's about. */
+function LaneLimitBanner({ offer, onAction }: { offer: LaneLimitOfferView; onAction: (action: LaneOfferButtonId) => void }) {
+  const other = providerLabel(otherProvider(offer.provider));
+  return <div className="lane-limit-banner" role="alert">
+    <p>{offer.message}</p>
+    <div className="lane-limit-actions">
+      {offer.buttons.map(button => <button key={button} className={button === 'continueOther' ? 'primary' : ''} onClick={() => onAction(button)}>{laneOfferButtonLabel[button](other)}</button>)}
+    </div>
+  </div>;
+}
+
+/** The `hydra.lanes.onLimit: "switch"` countdown: seconds left, ticking locally from the deadline the extension sent. */
+function LaneSwitchCountdownBanner({ countdown, onCancel }: { countdown: LaneSwitchCountdown; onCancel: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 250); return () => clearInterval(timer); }, []);
+  const secondsLeft = Math.max(0, Math.ceil((countdown.deadline - now) / 1000));
+  return <div className="lane-limit-banner" role="alert">
+    <p>Switching to {providerLabel(countdown.to)} in {secondsLeft}s…</p>
+    <div className="lane-limit-actions"><button onClick={onCancel}>Cancel</button></div>
+  </div>;
+}
+
 interface NewLaneForm { name: string; provider: Provider; goal: string }
 
 /** The inline "New lane" card at the top of the grid. */
@@ -115,8 +144,9 @@ function Chip({ tone, title, children }: { tone: 'warning' | 'info' | 'good' | '
   return <span className={`lane-chip tone-${tone}`} title={title}>{children}</span>;
 }
 
-function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
+function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, onSend, onFocused }: {
   lane: LaneView; laneName: (id: string) => string | undefined; focused: boolean;
+  limitOffer?: LaneLimitOfferView; switchCountdown?: LaneSwitchCountdown;
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -125,6 +155,8 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
   const sync = lane.sync;
   const conflict = sync?.conflicts[0];
   const merges = !!sync && !sync.dirty && sync.targetConflicts.length === 0 && sync.changedFiles.length > 0 && lane.state !== 'merged';
+  const lastSwitch = lane.switches?.at(-1);
+  const other = otherProvider(lane.provider);
 
   useEffect(() => {
     if (!focused || !ref.current) return;
@@ -147,6 +179,9 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
       <b className="lane-name" title={lane.name}>{lane.name}</b>
       <span className="lane-provider"><ProviderLogo provider={lane.provider} /></span>
       <code className="lane-branch" title={lane.branch}>{lane.branch}</code>
+      {lastSwitch && <span className="lane-switched" title={`${new Date(lastSwitch.at).toLocaleString()}`}>
+        {lastSwitch.reason === 'limit' ? `Continued from ${providerLabel(lastSwitch.from)} (limit)` : `Switched from ${providerLabel(lastSwitch.from)}`}
+      </span>}
       <div className="lane-chips">
         {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}{conflict.files[0] ? ` · ${conflict.files[0]}` : ''}</Chip>}
         {!!sync?.targetConflicts.length && lane.state !== 'merged' && <Chip tone="warning" title={sync.targetConflicts.join(', ')}>Conflicts with {lane.target} · {sync.targetConflicts[0]}</Chip>}
@@ -155,6 +190,9 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
         {lane.state === 'merged' && <Chip tone="neutral">Merged</Chip>}
       </div>
     </header>
+    {switchCountdown
+      ? <LaneSwitchCountdownBanner countdown={switchCountdown} onCancel={() => onSend({ type: 'laneCancelSwitch', id: lane.id })} />
+      : limitOffer && <LaneLimitBanner offer={limitOffer} onAction={action => onSend({ type: 'laneLimitAction', id: lane.id, action })} />}
     <div className="lane-tile-body">
       <LaneTerminal id={lane.id} onInput={data => onSend({ type: 'laneInput', id: lane.id, data })} onResize={(cols, rows) => onSend({ type: 'laneResize', id: lane.id, cols, rows })} />
       {lane.state === 'exited' && <div className="lane-exited">
@@ -176,6 +214,7 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('openWindow'); }}>Open in new window</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('resume'); }}>Resume</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); act('restart'); }}>Restart</button>
+            <button role="menuitem" onClick={() => { setMenuOpen(false); act('switchProvider'); }}>Switch to {providerLabel(other)}</button>
             <button role="menuitem" className="danger" onClick={() => { setMenuOpen(false); act('close'); }}>Close lane…</button>
           </div>}
         </div>
@@ -184,8 +223,9 @@ function LaneTile({ lane, laneName, focused, onSend, onFocused }: {
   </section>;
 }
 
-export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, onSend, onFocused }: {
+export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, laneLimits, laneSwitchCountdowns, onSend, onFocused }: {
   lanes: readonly LaneView[]; terminals: boolean; defaultProvider?: Provider; laneError?: string; focus?: string;
+  laneLimits?: Readonly<Record<string, LaneLimitOfferView>>; laneSwitchCountdowns?: Readonly<Record<string, LaneSwitchCountdown>>;
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -216,7 +256,7 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
         {showForm && <NewLaneCard initial={{ name: nextName, provider: defaultProvider === 'codex' ? 'codex' : 'claude', goal: '' }} error={laneError}
           onCancel={() => setShowForm(false)}
           onStart={form => { starting.current = lanes.length; onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}) }); }} />}
-        {lanes.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} onSend={onSend} onFocused={onFocused} />)}
+        {lanes.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} onSend={onSend} onFocused={onFocused} />)}
         {!lanes.length && !showForm && <p className="lanes-empty-hint">No lanes yet. Start one to run a real Claude Code or Codex terminal in its own worktree.</p>}
       </div>}
   </section>;

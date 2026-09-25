@@ -109,7 +109,7 @@ test('the Agents view offers only head actions: diff, log, answer, cancel and st
 // ---- Lanes (docs/Lanes_And_Planner_Plan.md, section 2): its own block. ----
 
 test('buildCanvas draws every open lane as a lead node, even with no heads; closed and merged lanes are hidden', () => {
-  const model = buildCanvas([], now, { lanes: [lane('111111111111', 'Lane 1'), lane('222222222222', 'Lane 2', { state: 'exited' }), lane('333333333333', 'Lane 3', { state: 'merged' }), lane('444444444444', 'Lane 4', { state: 'closed' })] });
+  const model = buildCanvas([], now, { lanes: [lane('111111111111', 'Lane 1'), lane('222222222222', 'Lane 2', { state: 'exited', exitedAt: at(60_000) }), lane('333333333333', 'Lane 3', { state: 'merged' }), lane('444444444444', 'Lane 4', { state: 'closed' })] });
   const keys = model.leads.map(item => item.key);
   assert.ok(keys.includes('111111111111') && keys.includes('222222222222'));
   assert.ok(!keys.includes('333333333333') && !keys.includes('444444444444'), 'a merged or closed lane is not drawn');

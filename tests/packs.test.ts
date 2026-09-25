@@ -7,7 +7,7 @@ import { git } from '../src/core/git';
 import { JobStore, toHeadCheckView } from '../src/core/jobs';
 import { HelperService, type HelperServiceOptions } from '../src/core/helperService';
 import { LaneStore } from '../src/core/lanes';
-import { LaneService } from '../src/core/laneService';
+import { LaneService, gatesFingerprint, gatesPassNote } from '../src/core/laneService';
 import { parseGatesConfig, runGateList, type Gate, type GatesConfig } from '../src/core/gates';
 import { reviewPrompt } from '../src/core/gates/review';
 import { checkPackContents, codexProblem, formatPacksFile, packCaps, parsePackManifest, parsePacksFile, parseSkillFile, resolvePlaceholders, skipGatesProblem, type PackManifest } from '../src/core/packs/format';
@@ -693,4 +693,15 @@ test('cache: heads finishing at once share one copy; none removes another\'s', a
     assert.equal((await readPackFolder(copies[0]!)).hash, hash);
     assert.deepEqual(await readdir(cacheRoot), [cacheName('seo', hash)]);
   } finally { await close(); }
+});
+
+test('reused lane gates: a pack whose gates won\'t run changes the fingerprint, and the note names gates that didn\'t run', () => {
+  const config: GatesConfig = { source: 'gates', lanes: 'onMerge', gates: [] };
+  const skipped = { id: 'seo:meta', title: 'meta', state: 'notRun' } as any;
+  assert.notEqual(gatesFingerprint({ ...config, notRun: [skipped] }), gatesFingerprint(config));
+  assert.equal(gatesFingerprint({ ...config, notRun: [] }), gatesFingerprint(config));
+  const passed = { id: 'unit', title: 'unit', state: 'passed' } as any;
+  assert.equal(gatesPassNote([passed]), ' Gates passed.');
+  assert.equal(gatesPassNote([passed, skipped], ' on abc1234'), ' Gates passed on abc1234; not run: seo:meta.');
+  assert.equal(gatesPassNote([skipped]), ' Gates not run: seo:meta.');
 });

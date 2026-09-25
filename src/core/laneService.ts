@@ -181,6 +181,13 @@ export function gatesFingerprint(config: Pick<GatesConfig, 'source' | 'gates' | 
   return createHash('sha256').update(JSON.stringify({ source: config.source, maxAttempts: config.maxAttempts ?? null, gates: config.gates, ...notRun })).digest('hex').slice(0, 16);
 }
 
+/** The confirmation's note for gates that didn't fail. Packs (docs/Packs_Plan.md): a gate that didn't run is named, never counted as passed. */
+export function gatesPassNote(results: readonly JobCheckResult[], when = ''): string {
+  const skipped = results.filter(result => result.state === 'notRun').map(result => result.id);
+  if (!skipped.length) return ` Gates passed${when}.`;
+  return skipped.length === results.length ? ` Gates not run: ${skipped.join(', ')}.` : ` Gates passed${when}; not run: ${skipped.join(', ')}.`;
+}
+
 /**
  * Write a plan lane's full brief into its fresh worktree, in a folder whose own .gitignore
  * ignores everything, so git never sees it and no commit can include it. A worktree that

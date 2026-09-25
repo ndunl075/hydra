@@ -5,7 +5,7 @@ import { findProvider } from './core/providers';
 import { claudeStatus, codexStatus, providerPaths, type HelperServerSpec } from './core/helperRegistration';
 import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePty';
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
-import { LaneService, maxOpenLanes } from './core/laneService';
+import { LaneService, gatesPassNote, maxOpenLanes } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
 import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesLoader, type GatesOutcome } from './core/gates';
 import type { JobCheckResult } from './core/jobs';
@@ -53,12 +53,6 @@ export interface LanesHost {
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
 
-/** The confirmation's note for gates that didn't fail. Packs (docs/Packs_Plan.md): a gate that didn't run is named, never counted as passed. */
-export function gatesPassNote(results: readonly JobCheckResult[], when = ''): string {
-  const skipped = results.filter(result => result.state === 'notRun').map(result => result.id);
-  if (!skipped.length) return ` Gates passed${when}.`;
-  return skipped.length === results.length ? ` Gates not run: ${skipped.join(', ')}.` : ` Gates passed${when}; not run: ${skipped.join(', ')}.`;
-}
 
 const laneMessages: ReadonlySet<string> = new Set(['laneNew', 'laneAttach', 'laneInput', 'laneResize', 'laneAction', 'laneLimitAction', 'laneCancelSwitch', 'view']);
 export const isLaneMessage = (message: { type: string }): message is LaneClientMessage => laneMessages.has(message.type);

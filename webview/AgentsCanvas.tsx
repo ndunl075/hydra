@@ -521,15 +521,27 @@ function PlanRunningJobSlot({ item, onOpenMenu, onOpenLane, onPlan }: {
   </div>;
 }
 
-/** The ⋯ menu on a lane card or a status node (docs/Plan_Lanes_Plan.md, section 4): Start lane, Cancel job, Show lane. */
+/**
+ * The ⋯ menu on a plan job's slot (docs/Plan_Lanes_Plan.md, section 4). A lane
+ * card's menu is Open lane, Mark job done, Cancel job, Diff; a job that hasn't
+ * started (or has ended) only gets Start lane (when startable) and Cancel job.
+ */
 function RunningJobMenu({ state, onOpenLane, onPlan, onClose }: {
   state: { item: CanvasPlanJob; x: number; y: number }; onOpenLane?: (laneId: string) => void; onPlan: (message: ClientMessage) => void; onClose: () => void;
 }) {
   const { item } = state, view = item.view!, job = item.job;
   const ended = view.status === 'done' || view.status === 'failed' || view.status === 'cancelled' || view.status === 'skipped';
+  if (item.lane) {
+    const laneId = item.lane.id;
+    return <div className="canvas-menu" role="menu" style={{ left: state.x, top: state.y }}>
+      <button role="menuitem" autoFocus onClick={() => { onClose(); onOpenLane?.(laneId); }}>Open lane</button>
+      {!ended && <button role="menuitem" onClick={() => { onClose(); onPlan({ type: 'laneAction', id: laneId, action: 'markJobDone' }); }}>Mark job done</button>}
+      {!ended && <button role="menuitem" className="danger" onClick={() => { onClose(); onPlan({ type: 'planCancelJob', id: item.planId, key: job.key }); }}>Cancel job</button>}
+      <button role="menuitem" onClick={() => { onClose(); onPlan({ type: 'laneAction', id: laneId, action: 'diff' }); }}>Diff</button>
+    </div>;
+  }
   return <div className="canvas-menu" role="menu" style={{ left: state.x, top: state.y }}>
     {view.startable && <button role="menuitem" autoFocus onClick={() => { onClose(); onPlan({ type: 'planStartJob', id: item.planId, key: job.key }); }}>Start lane</button>}
-    {job.laneId && <button role="menuitem" onClick={() => { onClose(); onOpenLane?.(job.laneId!); }}>Show lane</button>}
     {!ended && <button role="menuitem" className="danger" onClick={() => { onClose(); onPlan({ type: 'planCancelJob', id: item.planId, key: job.key }); }}>Cancel job</button>}
   </div>;
 }

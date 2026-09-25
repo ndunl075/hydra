@@ -3,7 +3,8 @@ import type { ClientMessage, HelperJobView, LaneView, Provider } from '../src/co
 import { buildCanvas, elapsedLabel, gateChip, headStatus, isActive, layout, type CanvasHead, type CanvasLead, type CanvasPlanJob, type CanvasPlanNode } from '../src/core/agentsCanvas';
 // Type-only (see the note in agentsCanvas.ts): plans.ts's storage code must never
 // enter this browser bundle, so only PlanJob's shape crosses this boundary.
-import type { Plan, PlanJob } from '../src/core/plans';
+import type { Plan, PlanJob, PlanJobRunAs } from '../src/core/plans';
+import type { PlanJobStatus, PlanJobView } from '../src/core/planRunner';
 import { ProviderLogo } from './ProviderLogo';
 import './agents-canvas.css';
 
@@ -29,22 +30,24 @@ const leadGraceMs = 1200;
 interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
 interface JobMenuState { planId: string; job: PlanJob; x: number; y: number }
 
-export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = [], defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
+export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = [], planJobs = {}, defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
   heads: readonly HelperJobView[];
   /** Finished heads the tray's Clear button has hidden (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"). */
   dismissedTray?: readonly string[];
   plans?: readonly Plan[];
   /** Open lanes (docs/Lanes_And_Planner_Plan.md, section 2): every one is a lead node, even with no heads. */
   lanes?: readonly LaneView[];
+  /** Each plan's job statuses (docs/Plan_Lanes_Plan.md, section 4), by plan id, once it has run. */
+  planJobs?: Readonly<Record<string, readonly PlanJobView[]>>;
   defaultProvider?: Provider;
   onAction: (action: HeadAction, jobId: string) => void;
   onPlan?: (message: ClientMessage) => void;
   onStopAll?: () => void;
   /** Bumped by index.tsx when the extension asks (hydra.newPlan / "showNewPlan"): opens the New plan card. */
   openNewPlanAt?: number;
-  /** Clicking a lane node: switch to Lanes and focus that tile. */
+  /** Clicking a lane node, or a plan job's lane card or menu: switch to Lanes and focus that tile. */
   onOpenLane?: (laneId: string) => void;
-  /** A `show` message asked to focus a head on the canvas (bumped each time, so the same id can be re-focused). */
+  /** A `show` message asked to focus a head or a plan on the canvas (bumped each time, so the same id can be re-focused). */
   focusHead?: { id: string; at: number };
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -60,6 +63,8 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
   const [newPlan, setNewPlan] = useState<{ title: string; brief: string }>();
   const [jobPopover, setJobPopover] = useState<JobPopoverState>();
   const [jobMenu, setJobMenu] = useState<JobMenuState>();
+  // ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 4): the ⋯ menu on a running plan's job slot. ----
+  const [runningJobMenu, setRunningJobMenu] = useState<{ item: CanvasPlanJob; x: number; y: number }>();
   const dragging = useRef<{ planId: string; key: string } | undefined>(undefined);
   const previousLeads = useRef(new Map<string, CanvasLead>());
   // When each head was first drawn: for its first moments it grows out of its chat.
@@ -81,7 +86,7 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
   // One clock drives elapsed times, the finished-head timeout, and clearing heads that have collapsed away.
   useEffect(() => { const timer = setInterval(() => { setNow(Date.now()); setGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); setLeadGhosts(current => current.some(ghost => ghost.until <= Date.now()) ? current.filter(ghost => ghost.until > Date.now()) : current); }, 250); return () => clearInterval(timer); }, []);
   const dismissedTraySet = useMemo(() => new Set(dismissedTray), [dismissedTray]);
-  const model = useMemo(() => buildCanvas(heads, now, { plans, lanes, dismissedTray: dismissedTraySet }), [heads, now, plans, lanes, dismissedTraySet]);
+  const model = useMemo(() => buildCanvas(heads, now, { plans, lanes, dismissedTray: dismissedTraySet, planJobs }), [heads, now, plans, lanes, dismissedTraySet, planJobs]);
   useEffect(() => {
     if (manual || !box.width || !box.height || (!model.heads.length && !model.plans.length)) return;
     const fit = Math.min(1, (box.width - 24) / model.width, (box.height - 24) / model.height);
@@ -157,19 +162,31 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
     return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', escape); };
   }, [jobMenu]);
   useEffect(() => {
+    if (!runningJobMenu) return;
+    const close = (event: Event) => { if (!(event.target as HTMLElement).closest?.('.canvas-menu')) setRunningJobMenu(undefined); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setRunningJobMenu(undefined); };
+    window.addEventListener('mousedown', close); window.addEventListener('keydown', escape);
+    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', escape); };
+  }, [runningJobMenu]);
+  useEffect(() => {
     if (!jobPopover) return;
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setJobPopover(undefined); };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
   }, [jobPopover !== undefined]);
 
+  // A `show` message names a head or a plan id (docs/Plan_Lanes_Plan.md, section 4: "Show plan"); both are
+  // 12-hex ids, so a head is tried first and a plan node second.
   const reveal = (id: string) => {
     setSelected(id);
     const item = headAt.get(id);
+    const plan = item ? undefined : planAt.get(id);
     const box = viewport.current;
-    if (!item || !box) return;
+    const target = item ?? plan;
+    if (!target || !box) return;
+    const width = item ? layout.headWidth : layout.leadWidth;
     setManual(true);
-    setPan({ x: Math.min(0, box.clientWidth / 2 - (item.x + layout.headWidth / 2) * zoom), y: Math.min(0, box.clientHeight / 2 - (item.y + 40) * zoom) });
+    setPan({ x: Math.min(0, box.clientWidth / 2 - (target.x + width / 2) * zoom), y: Math.min(0, box.clientHeight / 2 - (target.y + 40) * zoom) });
   };
   useEffect(() => { if (focusHead) reveal(focusHead.id); }, [focusHead?.at]);
   const openMenu = (id: string, x: number, y: number) => { setSelected(id); setMenu({ id, x, y }); };
@@ -278,10 +295,20 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
               <div className="canvas-node-card"><strong>{ghost.head.head.title}</strong></div>
             </div>)}
             {model.plans.map(node => <PlanLeadNode key={node.plan.id} node={node} defaultProvider={defaultProvider} onPlan={onPlan} />)}
-            {model.plans.flatMap(node => node.jobs.map(item => <PlanJobNode key={item.id} item={item}
-              onOpen={() => openJobPopover(item.planId, item.job, item.x, item.y)}
-              onMenu={(x, y) => openJobMenu(item.planId, item.job, x, y)}
-              onHandleDown={startDependencyDrag(item.planId, item.job.key)} onHandleUp={endDependencyDrag} />))}
+            {model.plans.flatMap(node => node.jobs.map(item => {
+              if (!item.view) return <PlanJobNode key={item.id} item={item}
+                onOpen={() => openJobPopover(item.planId, item.job, item.x, item.y)}
+                onMenu={(x, y) => openJobMenu(item.planId, item.job, x, y)}
+                onHandleDown={startDependencyDrag(item.planId, item.job.key)} onHandleUp={endDependencyDrag} />;
+              // A started head keeps its ordinary head card (diff, log, cancel head, …); a lane or a
+              // job that hasn't started (or has ended) gets the plan job's own ⋯ menu (Start lane,
+              // Cancel job, Show lane).
+              if (item.head) return <HeadNode key={item.id} item={{ id: item.head.id, lead: item.id, depth: 0, x: item.x, y: item.y, head: item.head }} now={now}
+                fresh={fresh.includes(item.head.id)} selected={selected === item.head.id}
+                onSelect={() => setSelected(item.head!.id)} onOpen={() => onAction('helperReview', item.head!.id)}
+                onMenu={(x, y) => openMenu(item.head!.id, x, y)} onKey={event => onNodeKey(event, item.head!.id)} />;
+              return <PlanRunningJobSlot key={item.id} item={item} onOpenMenu={(x, y) => setRunningJobMenu({ item, x, y })} onOpenLane={onOpenLane} onPlan={onPlan} />;
+            }))}
           </div>}
       </div>
         {model.parkedLanes.length > 0 && <div className="canvas-tray canvas-parked" aria-label="Parked lanes">
@@ -326,8 +353,9 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
       <button role="menuitem" onClick={() => { setJobMenu(undefined); onPlan({ type: 'planDependsOn', id: jobMenu.planId, key: jobMenu.job.key }); }}>Depends on…</button>
       <button role="menuitem" className="danger" onClick={() => { setJobMenu(undefined); onPlan({ type: 'planDeleteJob', id: jobMenu.planId, key: jobMenu.job.key }); }}>Delete</button>
     </div>}
+    {runningJobMenu && <RunningJobMenu state={runningJobMenu} onOpenLane={onOpenLane} onPlan={onPlan} onClose={() => setRunningJobMenu(undefined)} />}
     {jobPopover && <JobEditPopover key={`${jobPopover.planId}:${jobPopover.job.key}`} state={jobPopover} onCancel={() => setJobPopover(undefined)}
-      onSave={(title, brief, provider) => { onPlan({ type: 'planSaveJob', id: jobPopover.planId, key: jobPopover.job.key, title, brief, provider }); setJobPopover(undefined); }} />}
+      onSave={(title, brief, provider, runAs) => { onPlan({ type: 'planSaveJob', id: jobPopover.planId, key: jobPopover.job.key, title, brief, provider, runAs }); setJobPopover(undefined); }} />}
   </section>;
 }
 
@@ -394,6 +422,19 @@ function PlanLeadNode({ node, defaultProvider, onPlan }: { node: CanvasPlanNode;
         <button className="danger" aria-label={`Delete plan "${plan.title}"`} onClick={() => onPlan({ type: 'planDelete', id: plan.id })}>Delete plan</button>
       </div>
     </>}
+    {(plan.state === 'running' || plan.state === 'incomplete' || plan.state === 'done') && (() => {
+      const hasFailed = node.jobs.some(item => item.view && ['failed', 'cancelled', 'skipped'].includes(item.view.status));
+      const hasDraft = plan.jobs.some(job => job.draft);
+      return <>
+        <p className={`canvas-plan-status${plan.state === 'incomplete' ? ' error' : ''}`}>{node.progress}</p>
+        <div className="canvas-plan-actions">
+          {plan.state === 'incomplete' && hasFailed && <button className="primary" onClick={() => onPlan({ type: 'planRetryJobs', id: plan.id })}>Retry failed jobs</button>}
+          {plan.state !== 'done' && <button aria-label={`Add a job to "${plan.title}"`} disabled={plan.jobs.length >= 12} onClick={() => onPlan({ type: 'planAddJob', id: plan.id })}>+ Job</button>}
+          {hasDraft && <button className="primary" onClick={() => onPlan({ type: 'planRun', id: plan.id })}>Run plan</button>}
+          <button className="danger" aria-label={`Delete plan "${plan.title}"`} onClick={() => onPlan({ type: 'planDelete', id: plan.id })}>Delete plan</button>
+        </div>
+      </>;
+    })()}
   </div>;
 }
 
@@ -421,11 +462,88 @@ function PlanJobNode({ item, onOpen, onMenu, onHandleDown, onHandleUp }: {
   </div>;
 }
 
-/** The job-edit popover: title, brief, and provider (Auto/Claude/Codex). */
-function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; onSave: (title: string, brief: string, provider?: Provider) => void; onCancel: () => void }) {
+const planJobStatusLabel: Record<PlanJobStatus, string> = {
+  draft: 'Draft', waiting: 'Waiting', active: 'Working', held: 'Held', done: 'Done', failed: 'Failed', cancelled: 'Cancelled', skipped: 'Skipped',
+};
+
+/**
+ * A started plan job's slot that isn't a still-on-canvas head (docs/Plan_Lanes_Plan.md, section 4):
+ * a lane card while its lane is open, or a small dashed status node otherwise (not started, or ended).
+ */
+function PlanRunningJobSlot({ item, onOpenMenu, onOpenLane, onPlan }: {
+  item: CanvasPlanJob; onOpenMenu: (x: number, y: number) => void; onOpenLane?: (laneId: string) => void; onPlan: (message: ClientMessage) => void;
+}) {
+  const view = item.view!, job = item.job;
+  const openMenuFromClick = (event: React.MouseEvent | React.KeyboardEvent) => { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); onOpenMenu(rect.left + 24, rect.top + 24); };
+  if (item.lane) {
+    const lane = item.lane;
+    const status = lane.state === 'exited' ? 'Exited' : view.status === 'done' ? `Job done · ${(view.commit || '').slice(0, 7)}` : `Working · ${lane.branch}`;
+    return <div className={`canvas-node canvas-plan-lane-card provider-${lane.provider} state-${view.status}`} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
+      role="button" tabIndex={0} aria-label={`Lane, job ${job.title}. ${status}. Opens the Lanes view; Shift+F10 for more.`}
+      onClick={() => onOpenLane?.(lane.id)}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenLane?.(lane.id); }
+        if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) { event.preventDefault(); openMenuFromClick(event); }
+      }}
+      onContextMenu={event => { event.preventDefault(); onOpenMenu(event.clientX, event.clientY); }}>
+      <div className="canvas-node-card">
+        <div className="canvas-node-top">
+          <span className="canvas-node-logo"><ProviderLogo provider={lane.provider} /></span>
+          <span className="canvas-node-kind">Lane</span>
+          <span className={`canvas-state state-${view.status}`}><i aria-hidden="true" />{status}</span>
+        </div>
+        <strong className="canvas-node-title" title={job.title}>{job.title}</strong>
+        {!!lane.lastGates?.results.length && <div className="canvas-node-gates" aria-label="Gate results">
+          {lane.lastGates.results.map(check => { const chip = gateChip(check); return <span key={chip.id} className={`gate-chip tone-${chip.tone}`} title={chip.title}>{chip.label}</span>; })}
+        </div>}
+        <div className="canvas-node-foot">
+          <code title={lane.branch}>{lane.branch}</code>
+          <button className="canvas-node-more" aria-label={`More actions for ${job.title}`} onClick={event => { event.stopPropagation(); onOpenMenu(event.clientX, event.clientY); }}>⋯</button>
+        </div>
+      </div>
+    </div>;
+  }
+  const detail = view.status === 'done' ? `Job done${view.commit ? ` · ${view.commit.slice(0, 7)}` : ''}` : view.reason || planJobStatusLabel[view.status];
+  return <div className={`canvas-node canvas-plan-job canvas-plan-status status-${view.status}`} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
+    role="button" tabIndex={0} aria-label={`${job.title}, ${planJobStatusLabel[view.status]}. ${detail}. Shift+F10 for more.`}
+    onClick={openMenuFromClick}
+    onKeyDown={event => { if (event.key === 'Enter' || event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) { event.preventDefault(); openMenuFromClick(event); } }}
+    onContextMenu={event => { event.preventDefault(); onOpenMenu(event.clientX, event.clientY); }}>
+    <div className="canvas-node-card">
+      <div className="canvas-node-top">
+        <span className="canvas-node-kind">{job.runAs === 'lane' ? 'Lane job' : 'Head job'}</span>
+        <span className={`canvas-state state-${view.status}`}><i aria-hidden="true" />{planJobStatusLabel[view.status]}</span>
+      </div>
+      <strong className="canvas-node-title" title={job.title}>{job.title}</strong>
+      <p className="canvas-node-detail" title={detail}>{detail}</p>
+      {view.startable && <div className="canvas-plan-actions"><button className="primary" onClick={event => { event.stopPropagation(); onPlan({ type: 'planStartJob', id: item.planId, key: job.key }); }}>Start lane</button></div>}
+    </div>
+  </div>;
+}
+
+/** The ⋯ menu on a lane card or a status node (docs/Plan_Lanes_Plan.md, section 4): Start lane, Cancel job, Show lane. */
+function RunningJobMenu({ state, onOpenLane, onPlan, onClose }: {
+  state: { item: CanvasPlanJob; x: number; y: number }; onOpenLane?: (laneId: string) => void; onPlan: (message: ClientMessage) => void; onClose: () => void;
+}) {
+  const { item } = state, view = item.view!, job = item.job;
+  const ended = view.status === 'done' || view.status === 'failed' || view.status === 'cancelled' || view.status === 'skipped';
+  return <div className="canvas-menu" role="menu" style={{ left: state.x, top: state.y }}>
+    {view.startable && <button role="menuitem" autoFocus onClick={() => { onClose(); onPlan({ type: 'planStartJob', id: item.planId, key: job.key }); }}>Start lane</button>}
+    {job.laneId && <button role="menuitem" onClick={() => { onClose(); onOpenLane?.(job.laneId!); }}>Show lane</button>}
+    {!ended && <button role="menuitem" className="danger" onClick={() => { onClose(); onPlan({ type: 'planCancelJob', id: item.planId, key: job.key }); }}>Cancel job</button>}
+  </div>;
+}
+
+/** A job that has a head, a lane, a result or an outcome has started (docs/Plan_Lanes_Plan.md, section 1): its Run as can't change any more. Duplicated from plans.ts's jobStarted, which this browser bundle can't import (see the note atop this file). */
+const jobHasStarted = (job: Pick<PlanJob, 'jobId' | 'laneId' | 'result' | 'outcome'>): boolean => !!(job.jobId || job.laneId || job.result || job.outcome);
+
+/** The job-edit popover: title, brief, provider (Auto/Claude/Codex) and, for a job that hasn't started, Run as (Head/Lane). */
+function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; onSave: (title: string, brief: string, provider: Provider | undefined, runAs: PlanJobRunAs) => void; onCancel: () => void }) {
   const [title, setTitle] = useState(state.job.title);
   const [brief, setBrief] = useState(state.job.brief);
   const [provider, setProvider] = useState<'' | Provider>(state.job.provider || '');
+  const [runAs, setRunAs] = useState<PlanJobRunAs>(state.job.runAs ?? 'head');
+  const started = jobHasStarted(state.job);
   return <div className="canvas-menu canvas-job-popover" role="dialog" aria-label={`Edit "${state.job.title}"`} style={{ left: state.x, top: state.y }}
     onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onCancel(); } }}>
     <label>Title<input value={title} onChange={event => setTitle(event.target.value)} maxLength={80} autoFocus /></label>
@@ -433,8 +551,17 @@ function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; o
     <label>Provider<select value={provider} onChange={event => setProvider(event.target.value as '' | Provider)}>
       <option value="">Auto</option><option value="claude">Claude</option><option value="codex">Codex</option>
     </select></label>
+    <div className="canvas-job-popover-field"><span id="job-popover-runas">Run as</span>
+      {started
+        ? <p className="canvas-job-popover-readonly">{runAs === 'lane' ? 'Lane (you drive)' : 'Head (Hydra drives)'} · already started</p>
+        : <div className="canvas-job-popover-runas" role="radiogroup" aria-labelledby="job-popover-runas">
+            <button type="button" role="radio" aria-checked={runAs === 'head'} className={runAs === 'head' ? 'on' : ''} onClick={() => setRunAs('head')}>Head (Hydra drives)</button>
+            <button type="button" role="radio" aria-checked={runAs === 'lane'} className={runAs === 'lane' ? 'on' : ''} onClick={() => setRunAs('lane')}>Lane (you drive)</button>
+          </div>}
+      {!started && runAs === 'lane' && <p className="canvas-job-popover-hint">You drive it in a terminal. Its brief becomes the lane's goal.</p>}
+    </div>
     <div className="canvas-newplan-actions">
-      <button className="primary" disabled={!title.trim() || !brief.trim()} onClick={() => onSave(title.trim(), brief.trim(), provider || undefined)}>Save</button>
+      <button className="primary" disabled={!title.trim() || !brief.trim()} onClick={() => onSave(title.trim(), brief.trim(), provider || undefined, runAs)}>Save</button>
       <button className="text-button" onClick={onCancel}>Cancel</button>
     </div>
   </div>;

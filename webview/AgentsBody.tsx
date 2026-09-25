@@ -2,6 +2,7 @@ import React from 'react';
 import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneView, Provider } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
 import type { JobCheckResult } from '../src/core/jobs';
+import type { PlanJobView } from '../src/core/planRunner';
 import { AgentsCanvas, type HeadAction } from './AgentsCanvas';
 import { LanesView, type LaneSwitchCountdown } from './LanesView';
 
@@ -15,7 +16,7 @@ export type AgentsViewName = 'canvas' | 'lanes';
  * No `acquireVsCodeApi` here, unlike index.tsx, so this renders under SSR too.
  */
 export function AgentsBody({
-  view, onViewChange, heads, dismissedTray, plans, lanes, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
+  view, onViewChange, heads, dismissedTray, plans, lanes, planJobs, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
   laneLimits, laneSwitchCountdowns, laneGates, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
 }: {
   view: AgentsViewName;
@@ -25,6 +26,8 @@ export function AgentsBody({
   dismissedTray?: readonly string[];
   plans?: readonly Plan[];
   lanes?: readonly LaneView[];
+  /** Each plan's job statuses (docs/Plan_Lanes_Plan.md, section 4-5), by plan id. */
+  planJobs?: Readonly<Record<string, readonly PlanJobView[]>>;
   terminals: boolean;
   defaultProvider?: Provider;
   laneError?: string;
@@ -49,7 +52,7 @@ export function AgentsBody({
       <button role="tab" aria-selected={view === 'lanes'} className={view === 'lanes' ? 'on' : ''} onClick={() => onViewChange('lanes')}>Lanes <span className="agents-view-count">{(lanes || []).length}</span></button>
     </div>
     <div className="agents-view-pane" hidden={view !== 'canvas'}>
-      <AgentsCanvas heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} defaultProvider={defaultProvider} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
+      <AgentsCanvas heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} planJobs={planJobs} defaultProvider={defaultProvider} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
     </div>
     <div className="agents-view-pane" hidden={view !== 'lanes'}>
       <LanesView lanes={lanes || []} terminals={terminals} defaultProvider={defaultProvider} laneError={laneError} focus={laneFocus} onSend={onSend} onFocused={onLaneFocused}

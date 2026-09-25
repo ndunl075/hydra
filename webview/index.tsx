@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneServerMessage, LaneView, Snapshot, Provider, Handoff, OfficialExtensionInfo } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
 import type { JobCheckResult } from '../src/core/jobs';
+import type { PlanJobView } from '../src/core/planRunner';
 import './styles.css';
 import { AgentsBody, type AgentsViewName } from './AgentsBody';
 import type { LaneSwitchCountdown } from './LanesView';
@@ -55,6 +56,7 @@ function App() {
   const [dismissedTray, setDismissedTray] = useState<string[]>([]);
   // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4): its own block. ----
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [planJobs, setPlanJobs] = useState<Record<string, PlanJobView[]>>({});
   const [newPlanSignal, setNewPlanSignal] = useState(0);
   // ---- Lanes (docs/Lanes_And_Planner_Plan.md, sections 1-2): its own block. ----
   const [view, setView] = useState<AgentsViewName>(initialView);
@@ -76,9 +78,9 @@ function App() {
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       const data = event.data;
-      if (data?.type === 'snapshot') { const next = data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); setDismissedTray(next.dismissedTray || []); }
+      if (data?.type === 'snapshot') { const next = data.snapshot as Snapshot; setSnapshot(next); setHeads(next.helpers || []); setPlans(next.plans || []); setPlanJobs(next.planJobs || {}); setDismissedTray(next.dismissedTray || []); }
       if (data?.type === 'heads') setHeads(data.heads as HelperJobView[]);
-      if (data?.type === 'plans') setPlans(data.plans as Plan[]);
+      if (data?.type === 'plans') { setPlans(data.plans as Plan[]); setPlanJobs((data as { planJobs?: Record<string, PlanJobView[]> }).planJobs || {}); }
       if (data?.type === 'showNewPlan') setNewPlanSignal(value => value + 1);
       // ---- Lanes: 'lanes'/'show' update React state; 'laneData'/'laneReplay' skip it entirely (the lane bus writes straight into xterm). ----
       const lane = data as LaneServerMessage | undefined;
@@ -114,7 +116,7 @@ function App() {
     {(snapshot.error) && <div className="error" role="alert"><strong>Needs attention</strong><p>{snapshot.error}</p><button onClick={() => send({ type: 'refresh' })}>Retry</button></div>}
     {snapshot.handoff
       ? <HandoffView handoff={snapshot.handoff} info={snapshot.officialExtensions?.find(info => info.provider === snapshot.handoff?.task.provider)} busy={snapshot.busy} />
-      : <AgentsBody view={view} onViewChange={changeView} heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} terminals={terminals} defaultProvider={snapshot.defaultProvider}
+      : <AgentsBody view={view} onViewChange={changeView} heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} planJobs={planJobs} terminals={terminals} defaultProvider={snapshot.defaultProvider}
           laneError={laneError} laneFocus={laneFocus} onLaneFocused={() => setLaneFocus(undefined)} laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} laneGates={laneGates} openNewPlanAt={newPlanSignal} focusHead={headFocus}
           onAction={(type, jobId) => send({ type, jobId })} onPlan={send} onStopAll={() => send({ type: 'helperStopAll' })}
           onOpenLane={id => { setLaneFocus(id); changeView('lanes', id); }} onSend={send} />}

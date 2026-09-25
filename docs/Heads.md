@@ -8,7 +8,7 @@ This replaces the old Auto delegation, which read a `HYDRA_DELEGATION_V1` line o
 
 ## Connecting Claude Code and Codex
 
-Connect in onboarding (step 03, Providers) or in **Hydra Settings → Hydra heads**. Each agent has one row with a single **Connect to Hydra** button:
+Connect in onboarding (step 03, Providers) or in **Hydra Settings → Connectors**, which also shows the exact entries Hydra wrote and has a **Repair** button for claude-mem. Each agent has one row with a single **Connect to Hydra** button:
 
 1. It installs the official extension if it's missing. It uses the extension gallery, or downloads straight from Open VSX when the editor has none.
 2. It connects the extension to Hydra.
@@ -67,11 +67,11 @@ any unfinished state → failed or cancelled
 ## Limits and permissions
 
 - **Starting point:** each head gets a new worktree and branch from the lead folder's **current HEAD**. If that folder has uncommitted changes, the lead is warned that the head won't see them.
-- **Limits** (defaults; the lead can change them per job): 30 minutes of work (time spent waiting for an answer doesn't count), 60 turns and 5 USD. The turn and cost caps apply to Claude only.
+- **Limits** (the lead can change them per job): by default 30 minutes of work (time spent waiting for an answer doesn't count), 60 turns and 5 USD. Change the defaults in **Hydra Settings → Heads**. The turn and cost caps apply to Claude only.
 - **No permission prompts:** heads never ask anyone.
   - **Claude:** `--permission-mode dontAsk` with an allowed-tools list (file tools, Bash/PowerShell, and Hydra's head actions; no web tools). Anything else is denied and the head carries on. Your user-level allow rules in `~/.claude/settings.json` also apply to heads.
   - **Codex:** `codex exec` with the `workspace-write` sandbox and approval `never`. On Windows that sandbox blocks writes to a worktree's `.git` metadata, which is why Hydra does the commit.
-- **Stop everything:** **Hydra: Stop All Heads** in the command palette, or **Stop all** on the dashboard.
+- **Stop everything:** **Hydra: Stop All Heads** in the command palette, **Stop all heads** in **Hydra Settings → Heads**, or **Stop all** on the dashboard.
 
 ## Checks
 
@@ -119,7 +119,7 @@ Hydra runs Claude Code 2.1.x from 2.1.270 and Codex 0.154.x from 0.154.0 (`src/c
 | You see | Why | Fix |
 | --- | --- | --- |
 | "Hydra isn't open for this folder" | No Hydra window has the chat's folder open | Open the folder in Hydra |
-| "Hydra heads are not set up for this CLI" | The agent isn't connected | Connect it in Settings → Hydra heads |
+| "Hydra heads are not set up for this CLI" | The agent isn't connected | Connect it in Hydra Settings → Connectors |
 | "Hydra refused this lead: it was not started from this Hydra window" | The CLI runs outside Hydra (for example Windows Terminal) | Use the Claude Code or Codex extension, or a terminal inside Hydra |
 | A head "exited without finishing" | Its CLI failed to start or crashed | **Open log** on the dashboard |
 | Claude reports failing SessionStart hooks | A plugin hook fails (for example claude-mem without Bun or its dependencies) | Press Connect on Claude again; it sets up Bun and claude-mem. Hydra records hook failures and carries on. |

@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { replaceAtomic } from './atomicFile';
 import { leadGuidanceMarkdown } from './helperTools';
 import { processLaunch } from './process';
 
@@ -37,14 +38,17 @@ export function providerPaths(env: NodeJS.ProcessEnv = process.env): ProviderPat
   };
 }
 
-const read = async (file: string): Promise<string | undefined> => { try { return await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; } };
-async function writeAtomic(file: string, text: string): Promise<void> {
+/** A file's text, or undefined when it doesn't exist. */
+export const read = async (file: string): Promise<string | undefined> => { try { return await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; } };
+export async function writeAtomic(file: string, text: string): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.hydra-${process.pid}.tmp`;
+  const temporary = `${file}.hydra-${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
   await writeFile(temporary, text, 'utf8');
-  await rename(temporary, file);
+  try { await replaceAtomic(temporary, file); }
+  catch (error) { await rm(temporary, { force: true }); throw error; }
 }
-const eolOf = (text: string) => text.includes('\r\n') ? '\r\n' : '\n';
+/** The file's own line ending: CRLF if it has any, else LF. */
+export const eolOf =(text: string) => text.includes('\r\n') ? '\r\n' : '\n';
 
 // ---- Codex ----
 
@@ -70,15 +74,35 @@ export function codexBlock(spec: HelperServerSpec, eol = '\n'): string {
 }
 /** The text without Hydra's block, and whether it had one. Byte-exact inverse of addCodexBlock. */
 export function removeCodexBlock(text: string): { text: string; had: boolean } {
+  return removeMarkedBlock(text, blockStart, blockEnd, 'Hydra\'s block in the Codex config is damaged. Remove the lines between the Hydra markers by hand.');
+}
+/**
+ * Remove one block that was appended as `eol + start + eol + … + eol + end + eol`
+ * (its lines joined with the file's own line ending, with an empty first and last
+ * element). The byte-exact inverse of appending it, whatever came before or after.
+ */
+export function removeMarkedBlock(text: string, start: string, end: string, damaged: string): { text: string; had: boolean } {
   for (const eol of ['\r\n', '\n']) {
-    const start = text.indexOf(`${eol}${blockStart}${eol}`);
-    if (start < 0) continue;
-    const endMarker = `${eol}${blockEnd}${eol}`;
-    const end = text.indexOf(endMarker, start);
-    if (end < 0) throw new Error('Hydra\'s block in the Codex config is damaged. Remove the lines between the Hydra markers by hand.');
-    return { text: text.slice(0, start) + text.slice(end + endMarker.length), had: true };
+    const from = text.indexOf(`${eol}${start}${eol}`);
+    if (from < 0) continue;
+    const endMarker = `${eol}${end}${eol}`;
+    const to = text.indexOf(endMarker, from);
+    if (to < 0) throw new Error(damaged);
+    return { text: text.slice(0, from) + text.slice(to + endMarker.length), had: true };
   }
   return { text, had: false };
+}
+/** The block itself (markers included, trimmed), read back the same way removeMarkedBlock finds it. Undefined when absent. */
+export function readMarkedBlock(text: string, start: string, end: string): string | undefined {
+  for (const eol of ['\r\n', '\n']) {
+    const from = text.indexOf(`${eol}${start}${eol}`);
+    if (from < 0) continue;
+    const endMarker = `${eol}${end}${eol}`;
+    const to = text.indexOf(endMarker, from);
+    if (to < 0) return undefined;
+    return text.slice(from + eol.length, to + eol.length + end.length);
+  }
+  return undefined;
 }
 export function addCodexBlock(text: string, spec: HelperServerSpec): string {
   const without = removeCodexBlock(text).text;
@@ -95,15 +119,7 @@ const guidanceEnd = '<!-- <<< Hydra heads -->';
 export const codexAgentsFile = (configFile: string) => path.join(path.dirname(configFile), 'AGENTS.md');
 export function guidanceBlock(eol = '\n'): string { return ['', guidanceStart, ...leadGuidanceMarkdown.trimEnd().split('\n'), guidanceEnd, ''].join(eol); }
 export function removeGuidanceBlock(text: string): { text: string; had: boolean } {
-  for (const eol of ['\r\n', '\n']) {
-    const start = text.indexOf(`${eol}${guidanceStart}${eol}`);
-    if (start < 0) continue;
-    const endMarker = `${eol}${guidanceEnd}${eol}`;
-    const end = text.indexOf(endMarker, start);
-    if (end < 0) throw new Error('Hydra\'s block in Codex\'s AGENTS.md is damaged. Remove the lines between the Hydra markers by hand.');
-    return { text: text.slice(0, start) + text.slice(end + endMarker.length), had: true };
-  }
-  return { text, had: false };
+  return removeMarkedBlock(text, guidanceStart, guidanceEnd, 'Hydra\'s block in Codex\'s AGENTS.md is damaged. Remove the lines between the Hydra markers by hand.');
 }
 export function addGuidanceBlock(text: string): string {
   const without = removeGuidanceBlock(text).text;
@@ -180,7 +196,8 @@ export async function claudeStatus(paths: ProviderPaths, spec: HelperServerSpec)
   } catch (error) { return { provider: 'claude', connected: false, current: false, error: error instanceof Error ? error.message : String(error) }; }
 }
 
-function runClaude(executable: string, args: string[]): Promise<{ code: number; output: string }> {
+/** Run Claude's CLI with an argument array (no shell string; `.cmd` shims go through processLaunch). */
+export function runClaude(executable: string, args: string[]): Promise<{ code: number; output: string }> {
   return new Promise(resolve => {
     const launch = processLaunch(executable, args);
     execFile(launch.executable, launch.args, { windowsHide: true, timeout: 60_000, env: { ...process.env, DISABLE_AUTOUPDATER: '1' } }, (error, stdout, stderr) => {
@@ -204,4 +221,59 @@ export async function disconnectClaude(executable: string | undefined, paths: Pr
   const settings = await read(paths.claudeSettings);
   const updated = removeClaudeAllowRule(settings);
   if (settings !== undefined && updated !== settings) await writeAtomic(paths.claudeSettings, updated!);
+}
+
+// ---- "What Hydra wrote" (Settings, Connectors page): the exact user-level
+// entries read back off disk now, secrets masked, falling back to undefined
+// ("not written") when absent. Pure and read-only; never touches a file. ----
+
+/** Mask any `KEY = 'value'`-shaped line whose key looks like a secret (used on the Codex block, read back as plain text). */
+function maskAssignmentLines(text: string, mask: (key: string, value: string) => string): string {
+  return text.replace(/^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)'([^']*)'/gm, (line, indent: string, key: string, equals: string, value: string) => {
+    const shown = mask(key, value);
+    return shown === value ? line : `${indent}${key}${equals}'${shown}'`;
+  });
+}
+
+/** The exact `mcpServers.hydra` entry in ~/.claude.json now, env values masked. Undefined when Claude has none. */
+export async function claudeWrittenServer(paths: ProviderPaths, mask: (key: string | undefined, value: string) => string): Promise<string | undefined> {
+  const raw = await read(paths.claudeJson);
+  if (!raw) return undefined;
+  try {
+    const config = JSON.parse(raw) as { mcpServers?: Record<string, { env?: Record<string, string> } & Record<string, unknown>> };
+    const entry = config.mcpServers?.[serverName];
+    if (!entry) return undefined;
+    const masked = entry.env ? { ...entry, env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, mask(key, String(value))])) } : entry;
+    return JSON.stringify({ [serverName]: masked }, null, 2);
+  } catch { return undefined; }
+}
+/** The exact allow rule Hydra inserted into ~/.claude/settings.json. Undefined when it isn't there. */
+export async function claudeWrittenAllowRule(paths: ProviderPaths): Promise<string | undefined> {
+  const raw = await read(paths.claudeSettings);
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { permissions?: { allow?: unknown } };
+    const allow = parsed.permissions?.allow;
+    return Array.isArray(allow) && allow.includes(claudeAllowRule) ? `"${claudeAllowRule}"` : undefined;
+  } catch { return undefined; }
+}
+/** The exact `[mcp_servers.hydra]` block in ~/.codex/config.toml now, env values masked. Undefined when it isn't there. */
+export async function codexWrittenBlock(file: string, mask: (key: string, value: string) => string): Promise<string | undefined> {
+  const text = await read(file);
+  const block = text ? readMarkedBlock(text, blockStart, blockEnd) : undefined;
+  return block ? maskAssignmentLines(block, mask) : undefined;
+}
+/** The exact Hydra guidance block in Codex's AGENTS.md now. Undefined when it isn't there. */
+export async function codexWrittenGuidance(file: string): Promise<string | undefined> {
+  const agents = await read(codexAgentsFile(file));
+  return agents ? readMarkedBlock(agents, guidanceStart, guidanceEnd) : undefined;
+}
+export interface WrittenEntries { claude: { server?: string; allowRule?: string }; codex: { config?: string; agents?: string } }
+/** Everything Hydra has written for both providers, read straight off disk. */
+export async function helperWrittenEntries(paths: ProviderPaths, mask: (key: string | undefined, value: string) => string): Promise<WrittenEntries> {
+  const [server, allowRule, config, agents] = await Promise.all([
+    claudeWrittenServer(paths, mask), claudeWrittenAllowRule(paths),
+    codexWrittenBlock(paths.codexConfig, mask), codexWrittenGuidance(paths.codexConfig),
+  ]);
+  return { claude: { server, allowRule }, codex: { config, agents } };
 }

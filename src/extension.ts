@@ -21,7 +21,7 @@ import { Onboarding } from './extensionOnboarding';
 import { ProviderAccounts } from './extensionAccounts';
 import { ProviderQuota } from './extensionQuota';
 import { executableFingerprint, findProvider, terminalLaunch } from './core/providers';
-import { JobStore } from './core/jobs';
+import { JobStore, resolveHeadDefaults } from './core/jobs';
 import { HelperEndpoint } from './core/helperEndpoint';
 import { HelperService } from './core/helperService';
 import { removeWindowRecord, writeWindowRecord } from './core/helperDiscovery';
@@ -30,8 +30,9 @@ import { createLeadVerifier } from './core/leadVerification';
 import { claudeMemStatus, setupClaudeMem } from './core/claudeMem';
 import { downloadOpenVsx } from './core/openVsx';
 import { selfCheckCli } from './core/cliSelfCheck';
-import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, providerPaths, type ConnectableProvider, type HelperServerSpec } from './core/helperRegistration';
+import { claudeStatus, codexStatus, connectClaude, connectCodex, disconnectClaude, disconnectCodex, helperWrittenEntries, providerPaths, type ConnectableProvider, type HelperServerSpec, type WrittenEntries } from './core/helperRegistration';
 import type { ProviderConnectionView } from './helperConnectionsView';
+import { addMcpServer, configuredSpec, defaultMcpContext, enableMcpServerFor, listMcpServers, maskSecret, removeMcpServer, testMcpServer, validateServerSpec, type McpAgent } from './core/mcpServers';
 import { checkProvider } from './core/diagnostics';
 import { settingsRequiringRefresh } from './core/settingsRefresh';
 import { ManagedSessions } from './core/managedSessions';
@@ -50,6 +51,8 @@ import { supportedCliDescription, supportedCliVersion } from './core/cliVersions
 import type { HelperJobView, Provider, ProviderDiagnostic, PreparedReview, ReviewedCommit } from './core/model';
 import { assertCliAllowed, handoffTask, parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
+import { claudeForRegistration } from './claudeExecutable';
+import { registerChatLocationController, setChatLocation } from './chatLocationController';
 import { parseMessage, type Task, type Snapshot, type ProviderInfo, type Draft, type Handoff, type HandoffTask } from './core/model';
 
 let manager: Manager | undefined;
@@ -58,6 +61,7 @@ function otherHydraSettings(context: vscode.ExtensionContext): string[] {
   return settingsRequiringRefresh([context.extension.packageJSON?.contributes?.configuration].flat().flatMap((section: { properties?: Record<string, unknown> } | undefined) => Object.keys(section?.properties || {})));
 }
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  registerChatLocationController(context);
   manager = new Manager(context);
   await manager.initialize();
   await manager.showFirstRun();
@@ -149,7 +153,7 @@ class Manager {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
-    this.settings = new AppearanceSettings(context.extensionUri, this.settingsImport);
+    this.settings = new AppearanceSettings(context, this.settingsImport);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
     context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
@@ -198,7 +202,8 @@ class Manager {
     command('hydra.newTask', async () => { this.pendingNewTask = !this.panel; await this.openAgents(); await this.panel?.webview.postMessage({ type: 'newTask' }); });
     command('hydra.openTask', async (id: string) => { this.getTask(id); this.selectedId = id; await this.openAgents(); });
     command('hydra.refresh', () => this.refresh());
-    command('hydra.openSettings', () => this.settings.show());
+    command('hydra.openSettings', (pageId?: string) => this.settings.show(pageId));
+    command('hydra.setChatLocation', (mode?: 'docked' | 'tabs') => setChatLocation(mode));
     command('hydra.openAccounts', (provider?: 'claude' | 'codex', autoLogin?: boolean) => this.accounts.show(provider, autoLogin));
     command('hydra.getAccountSetupState', () => this.accounts.snapshot());
     command('hydra.openQuotaStatus', () => this.quota.show());
@@ -232,6 +237,15 @@ class Manager {
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
     command('hydra.installProviderExtension', async (provider: ConnectableProvider) => { await this.installProviderExtension(provider); return this.helperConnections(); });
+    command('hydra.repairClaudeMem', () => this.repairClaudeMem());
+    command('hydra.helperWrittenEntries', () => this.helperWrittenEntries());
+    // MCP servers (Settings plan, Phase 4). Lists come back with secrets masked; changes return the fresh list.
+    const mcp = async () => defaultMcpContext(await claudeForRegistration());
+    command('hydra.mcpServers.list', async () => listMcpServers(await mcp()));
+    command('hydra.mcpServers.add', async (name: unknown, spec: unknown, agents: unknown) => { const context = await mcp(); await addMcpServer(context, name, spec, agents); return listMcpServers(context); });
+    command('hydra.mcpServers.remove', async (name: unknown, agent: unknown) => { const context = await mcp(); await removeMcpServer(context, name, agent); return listMcpServers(context); });
+    command('hydra.mcpServers.enable', async (name: unknown, agent: unknown) => { const context = await mcp(); await enableMcpServerFor(context, name, agent); return listMcpServers(context); });
+    command('hydra.mcpServers.test', async (target: unknown, agent?: McpAgent) => testMcpServer(typeof target === 'string' ? await configuredSpec(await mcp(), target, agent) : validateServerSpec(target)));
     command('hydra.reconcileCapacity', (id: string) => this.handle({ type: 'reconcileCapacity', id }));
     command('hydra.reconcileWriter', (id: string) => this.handle({ type: 'reconcileWriter', id }));
     command('hydra.stopTask', (id: string) => this.handle({ type: 'stop', id }));
@@ -377,7 +391,14 @@ class Manager {
     for (const folder of folders) { try { leadFolder = await repositoryRoot(folder); break; } catch { /* not a Git folder */ } }
     if (!leadFolder) return;
     const directory = path.join(this.storageDirectory, 'helpers');
-    const store = new JobStore(directory);
+    const store = new JobStore(directory, undefined, undefined, () => {
+      const config = vscode.workspace.getConfiguration('hydra');
+      return resolveHeadDefaults({
+        minutes: config.get<number>('heads.defaultMinutes'),
+        maxTurns: config.get<number>('heads.defaultMaxTurns'),
+        budgetUsd: config.get<number>('heads.defaultBudgetUsd'),
+      });
+    });
     await store.load();
     const leadKey = path.basename(this.storageDirectory);
     let service: HelperService | undefined;
@@ -415,21 +436,26 @@ class Manager {
   // ---- Connecting Claude Code and Codex to Hydra (plan, Phase 5) ----
   private helperServerSpec(provider: ConnectableProvider): HelperServerSpec { const bridge = this.helperBridge(provider); return { command: bridge.command, args: bridge.args, env: bridge.env }; }
   /** Claude's own CLI does the registration: the configured or PATH claude, else the extension's bundled one. */
-  private async claudeForRegistration(): Promise<string | undefined> {
-    const info = await findProvider('claude', vscode.workspace.getConfiguration('hydra').get<string>('claudePath')).catch(() => undefined);
-    if (info?.executable) return info.executable;
-    const extension = vscode.extensions.getExtension('anthropic.claude-code');
-    if (!extension) return undefined;
-    const bundled = path.join(extension.extensionPath, 'resources', 'native-binary', process.platform === 'win32' ? 'claude.exe' : 'claude');
-    return await realpath(bundled).catch(() => undefined);
-  }
   async helperConnections(): Promise<ProviderConnectionView[]> {
     const paths = providerPaths();
     const [claude, codex, memory] = await Promise.all([claudeStatus(paths, this.helperServerSpec('claude')), codexStatus(paths.codexConfig, this.helperServerSpec('codex')), claudeMemStatus()]);
+    const accounts = this.accounts.snapshot();
+    const claudeExtension = vscode.extensions.getExtension('anthropic.claude-code');
+    const codexExtension = vscode.extensions.getExtension('openai.chatgpt');
     return [
-      { ...claude, name: 'Claude Code', extensionInstalled: !!vscode.extensions.getExtension('anthropic.claude-code'), memory: memory.plugin && memory.bun && memory.dependencies ? 'ready' : 'missing' },
-      { ...codex, name: 'Codex', extensionInstalled: !!vscode.extensions.getExtension('openai.chatgpt') },
+      { ...claude, name: 'Claude Code', extensionInstalled: !!claudeExtension, extensionVersion: (claudeExtension?.packageJSON as { version?: string } | undefined)?.version, memory: memory.plugin && memory.bun && memory.dependencies ? 'ready' : 'missing', signedIn: accounts.claude.status },
+      { ...codex, name: 'Codex', extensionInstalled: !!codexExtension, extensionVersion: (codexExtension?.packageJSON as { version?: string } | undefined)?.version, signedIn: accounts.codex.status },
     ];
+  }
+  /** "What Hydra wrote" (Settings, Connectors): the exact user-level entries read back off disk, secrets masked. */
+  async helperWrittenEntries(): Promise<WrittenEntries> {
+    return helperWrittenEntries(providerPaths(), maskSecret);
+  }
+  /** Re-run claude-mem's setup idempotently: the Repair button, and reused by Connect. */
+  private async repairClaudeMem(): Promise<{ status: Awaited<ReturnType<typeof claudeMemStatus>>; installed: string[] }> {
+    const claude = await claudeForRegistration();
+    if (!claude) throw new Error('Install the Claude Code extension or CLI first.');
+    return setupClaudeMem(claude);
   }
   /** Install an official extension from the gallery, or straight from Open VSX when this build has no gallery. */
   private async installProviderExtension(provider: ConnectableProvider): Promise<void> {
@@ -453,7 +479,7 @@ class Manager {
     const paths = providerPaths(), spec = this.helperServerSpec(provider);
     if (provider === 'codex') await connectCodex(paths.codexConfig, spec);
     else if (provider === 'claude') {
-      const claude = await this.claudeForRegistration();
+      const claude = await claudeForRegistration();
       if (!claude) throw new Error('Install the Claude Code extension or CLI first; Hydra connects through it.');
       await connectClaude(claude, paths, spec);
       this.output.appendLine('[heads] connected claude to Hydra');
@@ -469,7 +495,7 @@ class Manager {
   private async disconnectHelpers(provider: ConnectableProvider): Promise<void> {
     const paths = providerPaths();
     if (provider === 'codex') await disconnectCodex(paths.codexConfig);
-    else if (provider === 'claude') await disconnectClaude(await this.claudeForRegistration(), paths);
+    else if (provider === 'claude') await disconnectClaude(await claudeForRegistration(), paths);
     else throw new Error('Unknown provider.');
     this.output.appendLine(`[heads] disconnected ${provider} from Hydra`);
   }
@@ -515,7 +541,13 @@ class Manager {
   }
   async showFirstRun(): Promise<void> {
     await this.collapseSidebarOnce();
-    if (!this.disabled) await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
+    const onboarding = this.disabled ? false : await this.onboarding.autoShow(!!vscode.workspace.getConfiguration('hydra').get('handoff'));
+    // Onboarding has its own path into the Agents view (the Providers step); a
+    // handoff window is already forced to Agents in initialize(). Neither is
+    // overridden by the startup layout setting.
+    if (!onboarding && !this.handoff && this.mode === 'editor' && vscode.workspace.getConfiguration('hydra').get<string>('startupLayout') === 'agents') {
+      await this.openAgents();
+    }
   }
   private async collapseSidebarOnce(): Promise<void> {
     // The primary side bar has no configurationDefaults-controlled initial

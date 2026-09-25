@@ -63,6 +63,10 @@
         "title": "Hydra: Open Settings"
       },
       {
+        "command": "hydra.setChatLocation",
+        "title": "Hydra: Set Chat Location"
+      },
+      {
         "command": "hydra.checkProvider",
         "title": "Hydra: Check Default Provider Capabilities"
       },
@@ -120,6 +124,11 @@
         "command": "hydra.toggleMode",
         "key": "ctrl+alt+a",
         "mac": "cmd+alt+a"
+      },
+      {
+        "command": "hydra.openSettings",
+        "key": "ctrl+shift+,",
+        "mac": "cmd+shift+,"
       }
     ],
     "viewsContainers": {
@@ -245,6 +254,53 @@
           "maximum": 8,
           "default": 3,
           "description": "Maximum Hydra heads running at once in this window. More wait in a queue."
+        },
+        "hydra.chatLocation": {
+          "type": "string",
+          "enum": [
+            "docked",
+            "tabs"
+          ],
+          "enumDescriptions": [
+            "Docked: the Claude Code and Codex chats live in the side bar, locked in place.",
+            "Tabs: chats open as editor tabs, one per conversation, like Cursor."
+          ],
+          "default": "docked",
+          "markdownDescription": "Where the Claude Code and Codex chats open. Applies Claude's own `#claudeCode.preferredLocation#` setting and routes Hydra's open-chat actions to each provider's tab command in Tabs mode."
+        },
+        "hydra.startupLayout": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "agents"
+          ],
+          "enumDescriptions": [
+            "Editor: this window opens in the code editor.",
+            "Agents: this window opens in the Agents view."
+          ],
+          "default": "editor",
+          "description": "Which view a Hydra window opens in on startup."
+        },
+        "hydra.heads.defaultMinutes": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 480,
+          "default": 30,
+          "description": "Default time cap, in minutes, for a Hydra head started without its own limit."
+        },
+        "hydra.heads.defaultMaxTurns": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 60,
+          "description": "Default turn cap for a Hydra head started without its own limit."
+        },
+        "hydra.heads.defaultBudgetUsd": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 100,
+          "default": 5,
+          "description": "Default budget cap, in USD, for a Hydra head started without its own limit."
         }
       }
     }

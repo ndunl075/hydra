@@ -31,6 +31,23 @@ export const canTransition = (from: JobState, to: JobState): boolean => jobTrans
 
 export interface JobLimits { wallClockMs: number; maxTurns: number; maxBudgetUsd: number }
 export const defaultJobLimits: JobLimits = { wallClockMs: 30 * 60_000, maxTurns: 60, maxBudgetUsd: 5 };
+
+/** Raw values from Hydra's heads settings, before clamping. */
+export interface HeadDefaultsInput { minutes?: number; maxTurns?: number; budgetUsd?: number }
+const clampDefault = (value: unknown, fallback: number, min: number, max: number): number =>
+  Number.isFinite(value) ? Math.min(max, Math.max(min, Number(value))) : fallback;
+/**
+ * Resolve the default caps for a head started without explicit limits, from
+ * Hydra's heads settings (hydra.heads.defaultMinutes/defaultMaxTurns/defaultBudgetUsd).
+ * Pure so it is unit-testable; matches the package.json minimum/maximum for each setting.
+ */
+export function resolveHeadDefaults(input: HeadDefaultsInput): JobLimits {
+  return {
+    wallClockMs: clampDefault(input.minutes, 30, 1, 480) * 60_000,
+    maxTurns: clampDefault(input.maxTurns, 60, 1, 500),
+    maxBudgetUsd: clampDefault(input.budgetUsd, 5, 0.5, 100),
+  };
+}
 export interface JobCheckResult { id: string; required: boolean; passed: boolean; exitCode: number | null; durationMs: number; outputTail: string }
 export interface JobResult { summary: string; commit: string; changedFiles: string[]; checks: JobCheckResult[] }
 export interface JobEvent { at: string; from: JobState | null; to: JobState; reason?: string }
@@ -138,7 +155,7 @@ export class JobStore {
   private jobs = new Map<string, Job>();
   private queue: Promise<unknown> = Promise.resolve();
   private loaded = false;
-  constructor(private readonly directory: string, private readonly now: () => Date = () => new Date(), private readonly lockStaleMs = 30_000) {}
+  constructor(private readonly directory: string, private readonly now: () => Date = () => new Date(), private readonly lockStaleMs = 30_000, private readonly getDefaultLimits: () => JobLimits = () => defaultJobLimits) {}
   get file(): string { return path.join(this.directory, 'jobs.json'); }
   private get lockFile(): string { return `${this.file}.lock`; }
 
@@ -175,7 +192,7 @@ export class JobStore {
       }
       const at = this.now().toISOString();
       let id: string; do { id = randomBytes(6).toString('hex'); } while (this.jobs.has(id));
-      const limits = { ...defaultJobLimits, ...Object.fromEntries(Object.entries(input.limits || {}).filter(([, value]) => value !== undefined)) } as JobLimits;
+      const limits = { ...this.getDefaultLimits(), ...Object.fromEntries(Object.entries(input.limits || {}).filter(([, value]) => value !== undefined)) } as JobLimits;
       const job: Job = {
         version: 1, id, leadKey, ...(lead ? { lead: { ...lead, ...(input.leadLabel ? { label: input.leadLabel } : {}) } } : {}),
         idempotencyKey: input.idempotencyKey, title: input.title, brief: input.brief, writeScope: input.writeScope,

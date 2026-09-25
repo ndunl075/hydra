@@ -172,7 +172,7 @@ export async function run(): Promise<void> {
       await vscode.commands.executeCommand('hydra.openAgents');
       await vscode.commands.executeCommand('hydra.openSettings');
       await vscode.commands.executeCommand('hydra.openSettings');
-      const settingsTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra · Settings');
+      const settingsTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label === 'Hydra Settings');
       await waitFor(() => settingsTabs().length === 1);
       assert.ok(managerOpen(), 'Settings retains the agent-manager tab');
       const tasksBeforeAppearance = await vscode.commands.executeCommand<Task[]>('hydra.listTasks');
@@ -200,6 +200,15 @@ export async function run(): Promise<void> {
       await workbench.update('colorTheme', previousTheme, vscode.ConfigurationTarget.Global);
       await windowConfig.update('autoDetectColorScheme', previousAutomatic, vscode.ConfigurationTarget.Global);
     }
+    const hydraConfig = vscode.workspace.getConfiguration('hydra');
+    const previousChatLocation = hydraConfig.inspect<string>('chatLocation')?.globalValue;
+    try {
+      for (const mode of ['tabs', 'docked'] as const) {
+        await vscode.commands.executeCommand('hydra.setChatLocation', mode);
+        await waitFor(() => vscode.workspace.getConfiguration('hydra').get('chatLocation') === mode);
+      }
+      console.log('PASS: hydra.setChatLocation writes the global hydra.chatLocation preference.');
+    } finally { await hydraConfig.update('chatLocation', previousChatLocation, vscode.ConfigurationTarget.Global); }
   } finally { terminal.dispose(); }
   if (process.env.HYDRA_TEST_DESKTOP) {
     const accountsBefore = await vscode.commands.executeCommand<Record<string,{status:string}>>('hydra.getAccountSetupState');

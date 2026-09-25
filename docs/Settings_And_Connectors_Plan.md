@@ -1,6 +1,6 @@
 # Hydra Settings, connectors and MCP servers
 
-Status: **plan** (2026-09-24).
+Status: **built** (2026-09-24) on `feat/hydra-settings`, phases 1–5. The Freebuff section at the end is still research only.
 
 ## Goal
 
@@ -77,6 +77,14 @@ How to implement:
 - The side bar icons stay in both modes. In Tabs mode, clicking one opens a new tab.
 - Stored as `hydra.chatLocation`: `docked` | `tabs`, applied at startup and whenever it changes.
 
+Verified (installed `anthropic.claude-code` 2.1.274, `package.json`, and `openai.chatgpt` 26.721.30844 from `~/.cursor/extensions`, read-only):
+
+- `claudeCode.preferredLocation` is `"sidebar" | "panel"`, default `panel` in the extension itself; Hydra sets it to `sidebar` for Docked and `panel` for Tabs, only on the Global target, only when it differs, and only if the extension is installed.
+- Claude contributes both `claude-vscode.sidebar.open` ("Open in Side Bar") and `claude-vscode.editor.open` ("Open in New Tab") regardless of `preferredLocation`, so Hydra's own open-chat action (`hydra.openOfficialExtension`, used from the task handoff panel) calls the one matching the current mode instead of a fixed command.
+- Claude's side bar container is genuinely one icon in both layouts: `views`/`viewsContainers` register `claude-sidebar` (primary activity bar, `when: claude-code:doesNotSupportSecondarySidebar`) and `claude-sidebar-secondary` (secondary side bar) as the *same* logical view — clicking it always reveals wherever Claude currently is, it does not by itself open a tab. Getting "click icon → new tab" for Claude in Tabs mode is what `preferredLocation: panel` is for: Claude itself changes what its own icon/command opens once that setting is `panel` (per its own description: "This setting updates automatically when you open Claude in a new location"), confirmed by the extension's own configuration description in `package.json`, not by Hydra probing behaviour live.
+- Codex (`openai.chatgpt`) has no location setting. It contributes `chatgpt.openSidebar` ("Open Codex Sidebar") and `chatgpt.newCodexPanel` ("New Codex Agent", opens as an editor tab); its `codexViewContainer`/`codexSecondaryViewContainer` side bar icon is a webview view like Claude's, but nothing in the manifest switches what clicking that icon does — clicking the Codex side bar icon always reveals the Codex sidebar view, in both Hydra chat-location modes. **Not feasible without a Codex-side setting**: "the side bar icon itself opens a new tab in Tabs mode" is only implemented for Hydra's own open-chat action (`hydra.openOfficialExtension` → `chatgpt.newCodexPanel` in Tabs mode); the raw activity-bar icon Codex itself renders still opens its docked sidebar view. If `chatgpt.newCodexPanel` is missing from an older extension version, Hydra falls back to `chatgpt.openSidebar` rather than failing.
+- Implementation: `src/core/chatLocation.ts` (pure mode → plan mapping, unit-tested in `tests/chatLocation.test.ts`), `src/chatLocationController.ts` (applies `claudeCode.preferredLocation` at startup and on `onDidChangeConfiguration`), and `src/extensionBridge.ts` (`officialExtensionInfo`/`openOfficialExtension` pick the mode's open command, falling back to the docked one if the extension doesn't contribute it).
+
 ## Build approach
 
 - **Webview:** the same stack as the existing settings page (`src/extensionSettings.ts`), restructured with a left nav plus pages, and search across row titles. The styles follow the Cursor reference: card groups, row title + description, and right-aligned actions.
@@ -96,6 +104,15 @@ How to implement:
 | 5 | Gear menu, keybinding, docs (README, Heads guide), and the full gate. | **Sonnet** |
 
 Phases 1–3 can run in parallel (separate files); phase 4 after 1. Each goes through the local gate, a PR, and Nico's OK before merge.
+
+## As built
+
+- **Code:** `src/settings/` holds the shell (`shell.ts`, `styles.ts`, `search.ts`) and one module per page in `src/settings/pages/`. `src/extensionSettings.ts` re-exports the shell.
+- **New settings:** `hydra.chatLocation`, `hydra.startupLayout` (the Window layout tiles), and `hydra.heads.defaultMinutes`, `hydra.heads.defaultMaxTurns` and `hydra.heads.defaultBudgetUsd`. The caps have the same defaults as before (30 / 60 / 5), and new heads read them live.
+- **Reset "Don't ask again":** today this clears Hydra's one dismissed-prompt flag (`hydra.firstRunLayout.v1`). New flags go in `src/settings/dismissedPrompts.ts`.
+- **Chat location, Codex:** Hydra's own open-chat action opens a Codex tab in Tabs mode. Codex's own side bar icon always opens its side bar, because Codex has no setting for it. For Claude, Hydra only writes `claudeCode.preferredLocation` once you pick a mode.
+- **MCP servers:** `src/core/mcpServers.ts`. Claude servers are read from `~/.claude.json` and changed only through `claude mcp add-json/remove -s user`. Codex servers are marked `# >>> Hydra MCP: <name>` blocks, checked to round-trip byte-exactly before every write.
+- **Entry points:** the title bar gear menu entry is registered in `desktop/workbench/hydraProfile.ts` (`MenuId.GlobalActivity`, so it needs a desktop build). `Ctrl+Shift+,` replaces VS Code's rarely used "Replace with previous value".
 
 ## Later: "Switch to Hydra Agent" when a provider hits its limit (Freebuff)
 

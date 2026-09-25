@@ -1,0 +1,14 @@
+{
+  "numStartups": 42,
+  "mcpServers": {
+    "hydra": { "type": "stdio", "command": "C:\\Program Files\\Hydra\\Hydra.exe", "args": ["hydra-mcp.cjs"], "env": { "ELECTRON_RUN_AS_NODE": "1" }, "timeout": 3600000 },
+    "github": { "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_abcdefghijklmnopqrstuvwxyz0123456789" } },
+    "linear": { "type": "http", "url": "https://mcp.linear.app/mcp", "headers": { "Authorization": "Bearer lin_api_abcdefghijklmnop" } },
+    "legacy": { "type": "sse", "url": "https://example.com/sse" },
+    "plain": { "command": "node", "args": ["server.js", "--api-key", "sk-1234567890abcdef"] },
+    "weird": { "type": "websocket", "url": "wss://example.com" }
+  },
+  "projects": {
+    "C:/work/app": { "mcpServers": { "project-only": { "command": "x" } } }
+  }
+}

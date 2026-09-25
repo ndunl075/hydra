@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JobStore, canTransition, finalJobStates, jobStates, jobTransitions, parseJobInput, parseWriteScope, type JobInput } from '../src/core/jobs';
+import { JobStore, canTransition, finalJobStates, jobStates, jobTransitions, parseJobInput, parseWriteScope, resolveHeadDefaults, type JobInput } from '../src/core/jobs';
 
 const input = (key = 'k1', extra: Partial<JobInput> = {}): JobInput => ({ title: 'Parser', brief: 'Fix the parser', writeScope: ['src/'], provider: 'claude', idempotencyKey: key, ...extra });
 async function withStore(run: (store: JobStore, directory: string) => Promise<void>) {
@@ -98,6 +98,35 @@ test('job input from a provider is validated', () => {
   assert.throws(() => parseJobInput({ title: 'x', brief: 'y', write_scope: ['src'], idempotency_key: 'k', provider: 'gpt' }), /provider/);
   assert.throws(() => parseJobInput({ title: '', brief: 'y', write_scope: ['src'], idempotency_key: 'k' }), /title/);
   assert.throws(() => parseJobInput({ title: 'x', brief: 'y', write_scope: ['src'], idempotency_key: 'k', depends_on: ['nope'] }), /depends_on/);
+});
+
+test('resolveHeadDefaults falls back and clamps to the package.json bounds', () => {
+  assert.deepEqual(resolveHeadDefaults({}), { wallClockMs: 30 * 60_000, maxTurns: 60, maxBudgetUsd: 5 }, 'no settings read falls back to the built-in defaults');
+  assert.deepEqual(resolveHeadDefaults({ minutes: 10, maxTurns: 20, budgetUsd: 2 }), { wallClockMs: 600_000, maxTurns: 20, maxBudgetUsd: 2 });
+  // Below the minimum clamps up.
+  assert.deepEqual(resolveHeadDefaults({ minutes: 0, maxTurns: 0, budgetUsd: 0 }), { wallClockMs: 60_000, maxTurns: 1, maxBudgetUsd: 0.5 });
+  // Above the maximum clamps down.
+  assert.deepEqual(resolveHeadDefaults({ minutes: 9999, maxTurns: 9999, budgetUsd: 9999 }), { wallClockMs: 480 * 60_000, maxTurns: 500, maxBudgetUsd: 100 });
+  // Garbage falls back rather than propagating NaN.
+  assert.deepEqual(resolveHeadDefaults({ minutes: NaN, maxTurns: undefined, budgetUsd: -5 }), { wallClockMs: 30 * 60_000, maxTurns: 60, maxBudgetUsd: 0.5 });
+});
+
+test('JobStore.create reads its default caps live, so a later change applies to the next head without reload', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'hydra-jobs-'));
+  try {
+    let minutes = 10;
+    const store = new JobStore(directory, undefined, undefined, () => resolveHeadDefaults({ minutes, maxTurns: 60, budgetUsd: 5 }));
+    await store.load();
+    const first = await store.create('lead', input('a'));
+    assert.equal(first.job.limits.wallClockMs, 600_000);
+    minutes = 45;
+    const second = await store.create('lead', input('b'));
+    assert.equal(second.job.limits.wallClockMs, 45 * 60_000, 'the second head picks up the changed default without recreating the store');
+    // An explicit limit still wins over the default.
+    const third = await store.create('lead', input('c', { limits: { maxTurns: 12 } }));
+    assert.equal(third.job.limits.maxTurns, 12);
+    assert.equal(third.job.limits.wallClockMs, 45 * 60_000);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('a malformed store is refused rather than silently emptied', async () => {

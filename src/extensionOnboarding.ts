@@ -14,13 +14,16 @@ export class Onboarding implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext, private readonly imports: SettingsImport, private readonly appearance: AppearanceSettings) {
     this.state = readOnboarding(context.globalState.get(stateKey));
   }
-  async autoShow(handoff: boolean): Promise<void> {
-    if (!this.imports.available) return;
+  /** Returns whether onboarding was opened, so callers can skip their own startup behavior. */
+  async autoShow(handoff: boolean): Promise<boolean> {
+    if (!this.imports.available) return false;
     // The bundled module remains Production even in a separate test harness.
     // Ask the owned workbench about the host, not only this extension's mode.
     const host = await Promise.resolve(vscode.commands.executeCommand<{ development: boolean }>('hydra.desktop.startupContext')).catch(() => undefined);
-    if (shouldOpenOnboarding({ desktop: this.imports.available, trusted: vscode.workspace.isTrusted,
-      development: host?.development !== false || this.context.extensionMode !== vscode.ExtensionMode.Production, handoff, completed: this.state.completed })) await this.show();
+    const open = shouldOpenOnboarding({ desktop: this.imports.available, trusted: vscode.workspace.isTrusted,
+      development: host?.development !== false || this.context.extensionMode !== vscode.ExtensionMode.Production, handoff, completed: this.state.completed });
+    if (open) await this.show();
+    return open;
   }
   snapshot(): OnboardingState { return structuredClone(this.state); }
   async show(): Promise<void> {

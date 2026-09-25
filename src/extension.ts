@@ -378,7 +378,7 @@ class Manager {
       // ---- Gates (docs/Gates_Plan.md) ----
       providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
       // ---- Packs (docs/Packs_Plan.md) ----
-      gates: this.packs.gates,
+      gates: this.packs.gates, roles: this.packs,
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
     this.context.subscriptions.push(this.limitEvents.event(event => { this.latestLimits.set(event.provider, event); }));
@@ -642,6 +642,7 @@ class Manager {
       checks: job.result?.checks.map(toHeadCheckView) ?? [],
       repository: service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
       lead: job.lead, merged: service.isMerged(job.id), startedAt: job.startedAt, writeScope: job.writeScope,
+      ...(job.role ? { role: { ref: job.role.ref, title: job.role.title, packTitle: job.role.packTitle } } : {}),
     })).reverse();
   }
   /** Head changes go to the webview at once (the Agents canvas animates them); the full snapshot follows, debounced. */
@@ -881,12 +882,13 @@ class Manager {
         lanesAvailable: () => this.lanes.available,
       },
       // A plan's heads group under its lead `plan-<id>`; a retried head gets a new idempotency key.
+      // Provider (docs/Packs_Plan.md, "Plans"): the job's own, then its role's, then hydra.defaultProvider.
       startHead: async (plan, job, dependsOn, inputs) => {
         const result = await service.startForPlan({
           title: job.title, brief: job.brief, write_scope: job.writeScope?.length ? job.writeScope : [''],
-          provider: job.provider ?? defaultProvider(), idempotency_key: planHeadKey(plan, job),
+          ...(job.provider ? { provider: job.provider } : {}), ...(job.role ? { role: job.role } : {}), idempotency_key: planHeadKey(plan, job),
           depends_on: dependsOn, lead_label: `Plan · ${plan.title}`.slice(0, 60),
-        }, `plan-${plan.id}`, inputs) as { job_id: string };
+        }, `plan-${plan.id}`, inputs, defaultProvider()) as { job_id: string };
         return { jobId: result.job_id };
       },
       startLane: (plan, job, start) => this.lanes.startPlanLane(plan, job, start, defaultProvider()),

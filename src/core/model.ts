@@ -30,6 +30,8 @@ export interface HelperJobView {
   merged?: boolean;
   startedAt?: string;
   writeScope?: string[];
+  /** Packs (docs/Packs_Plan.md): the role it works in, "coding/builder", with the titles it started with. */
+  role?: { ref: string; title: string; packTitle: string };
 }
 export interface Snapshot {
   mode: 'editor' | 'agents'; busy: boolean; error?: string;

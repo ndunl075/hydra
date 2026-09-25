@@ -32,6 +32,26 @@ export interface HelperRunSpec {
   logFile: string;
   /** Called with each process started for this helper, so Hydra can refuse it as a lead. */
   spawned?: (pid: number) => void;
+  /** Packs (docs/Packs_Plan.md, section 5): what the head's role adds to its command line and environment. */
+  role?: HeadRoleArguments;
+}
+/**
+ * A role's pieces on a head's command line (roleLaunch, placed here). The role's
+ * instructions and skill index are in the first message instead (helperPrompt).
+ */
+export interface HeadRoleArguments {
+  /** Claude: a second `--mcp-config=<file>` with the role's servers (R3), next to the inline Hydra config. */
+  mcpConfigFile?: string;
+  /** Claude: `--plugin-dir` with the role's skills (R5). */
+  pluginDir?: string;
+  /** Claude: added to `--allowedTools`: `Skill`, `mcp__<pack>-<id>`, and `WebSearch`,`WebFetch` for a web role. */
+  allowedTools: string[];
+  /** Codex: `-c mcp_servers.<pack>-<id>.*` pairs (R4). */
+  codexConfig: string[];
+  /** Codex: web search, `'live'` only for a web role (R7). */
+  webSearch: 'live' | 'disabled';
+  /** Variables the role's Codex servers read by name, set in the head's own environment. */
+  env: Record<string, string>;
 }
 export interface HelperRun {
   /** Resolves when a turn ends (the helper stopped working and is waiting for a message). */
@@ -50,10 +70,14 @@ export const claudeHelperTools = ['Read', 'Edit', 'Write', 'MultiEdit', 'Noteboo
 
 export function claudeHelperArguments(spec: HelperRunSpec): string[] {
   const mcp = JSON.stringify({ mcpServers: { hydra: { type: 'stdio', command: spec.bridge.command, args: spec.bridge.args, env: spec.bridge.env, timeout: 3_600_000 } } });
+  const role = spec.role;
+  // A role's servers come in a second file, beside Hydra's token-bearing entry, which stays inline;
+  // --strict-mcp-config still keeps every other server out (R3). No --add-dir: Read reaches the pack's copy (R8).
   return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-    '--permission-mode', 'dontAsk', '--allowedTools', claudeHelperTools.join(','),
+    '--permission-mode', 'dontAsk', '--allowedTools', [...claudeHelperTools, ...role?.allowedTools ?? []].join(','),
     '--max-turns', String(spec.maxTurns), '--max-budget-usd', String(spec.maxBudgetUsd),
-    `--mcp-config=${mcp}`, '--strict-mcp-config', ...(spec.model ? ['--model', spec.model] : [])];
+    `--mcp-config=${mcp}`, ...(role?.mcpConfigFile ? [`--mcp-config=${role.mcpConfigFile}`] : []), '--strict-mcp-config',
+    ...(role?.pluginDir ? ['--plugin-dir', role.pluginDir] : []), ...(spec.model ? ['--model', spec.model] : [])];
 }
 
 /** A TOML literal string. Paths and tokens never contain a single quote; refuse rather than mis-quote. */
@@ -62,6 +86,8 @@ export function codexHelperArguments(spec: HelperRunSpec, resumeThread?: string)
   const env = Object.entries(spec.bridge.env).map(([key, value]) => `${key} = ${toml(value)}`).join(', ');
   const config = ['-c', `mcp_servers.hydra.command=${toml(spec.bridge.command)}`, '-c', `mcp_servers.hydra.args=[${spec.bridge.args.map(toml).join(', ')}]`,
     '-c', `mcp_servers.hydra.env={ ${env} }`, '-c', "mcp_servers.hydra.default_tools_approval_mode='approve'", '-c', 'mcp_servers.hydra.tool_timeout_sec=3600',
+    // Packs: the role's servers, then web search, which `codex exec` has on by default: only a web role keeps it (R7).
+    ...spec.role?.codexConfig ?? [], '-c', `web_search='${spec.role?.webSearch ?? 'disabled'}'`,
     '-c', "approval_policy='never'", '-s', 'workspace-write', ...(spec.model ? ['-m', spec.model] : [])];
   return resumeThread ? ['exec', 'resume', '--json', ...config, resumeThread, '-'] : ['exec', '--json', ...config, '-'];
 }
@@ -76,7 +102,8 @@ function logger(file: string, secret?: string) {
 
 function spawnLogged(spec: HelperRunSpec, args: string[], log: (kind: string, data: unknown) => void, onLine: (message: Record<string, unknown>) => void): ChildProcess {
   const launch = processLaunch(spec.executable, args);
-  const child = spawn(launch.executable, launch.args, { cwd: spec.worktree, env: { ...process.env, DISABLE_AUTOUPDATER: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+  // A role's Codex servers read some variables by name (R4): Hydra puts them in the head's own environment, never on its command line.
+  const child = spawn(launch.executable, launch.args, { cwd: spec.worktree, env: { ...process.env, ...spec.role?.env, DISABLE_AUTOUPDATER: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
   if (child.pid) spec.spawned?.(child.pid);
   let buffer = '';
   child.stdout!.setEncoding('utf8');

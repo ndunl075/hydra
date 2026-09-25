@@ -64,7 +64,14 @@ export interface PlanJob {
   attempt?: number;
   /** Added with + Job after the plan ran (decision 5): it waits for Run plan, so a half-written job never starts by itself. */
   draft?: boolean;
+  /**
+   * Packs (docs/Packs_Plan.md, "Plans and the planner"): a role from an active pack, as "pack/role".
+   * A head job passes it to its head, a lane job to its lane; the job's provider comes first, then the role's.
+   */
+  role?: string;
 }
+/** A plan job's role: "pack/role", as packs name their roles (src/core/packs/launch.ts). */
+export const planJobRolePattern = /^[a-z0-9-]{1,24}\/[a-z0-9-]{1,24}$/;
 export interface Plan {
   version: 1; id: string; title: string; brief?: string; createdAt: string; updatedAt: string;
   state: PlanState; error?: string; jobs: PlanJob[];
@@ -118,6 +125,7 @@ export function validatePlanJobs(jobs: readonly PlanJob[]): void {
     // A lane job's brief has the same limit as a head's: the lane reads the whole brief from a file (decision 2).
     if (!trimmed(job.brief) || job.brief.length > planJobBriefMax) throw new Error(`Job "${job.key}" brief must be 1-${planJobBriefMax} characters.`);
     if (job.provider !== undefined && job.provider !== 'claude' && job.provider !== 'codex') throw new Error(`Job "${job.key}" has an unknown provider.`);
+    if (job.role !== undefined && (typeof job.role !== 'string' || !planJobRolePattern.test(job.role))) throw new Error(`Job "${job.key}" names its role as "pack/role", like "coding/builder".`);
     if (!Array.isArray(job.dependsOn)) throw new Error(`Job "${job.key}" dependsOn must be a list.`);
     validateRunFields(job);
   }

@@ -1,6 +1,6 @@
 import { callHelperEndpoint, requestLeadSession } from './helperEndpoint';
 import { findWindowFor } from './helperDiscovery';
-import { helperInstructions, jobReadyTool, laneGuidance, leadInstructions, toolsFor, type HelperRole } from './helperTools';
+import { activeRolesTool, helperInstructions, jobReadyTool, laneGuidance, leadInstructions, leadToolsWithRoles, rolesGuidance, toolsFor, type HelperRole, type LeadRole } from './helperTools';
 
 /**
  * The `hydra-mcp` bridge core: a stdio MCP server (newline-delimited JSON-RPC)
@@ -31,7 +31,11 @@ export function createBridge(options: BridgeOptions) {
   const role: HelperRole = options.env.HYDRA_HELPER_TOKEN ? 'helper' : 'lead';
   const lane = role === 'lead' ? laneFromEnv(options.env) : undefined;
   // hydra_job_ready is listed only in a lane that runs a plan job (docs/Plan_Lanes_Plan.md, decision 6).
-  const tools = toolsFor(role).filter(tool => tool.name !== jobReadyTool || !!lane?.planJob);
+  const listed = (roles: readonly LeadRole[]) => (role === 'lead' ? leadToolsWithRoles(roles) : toolsFor(role)).filter(tool => tool.name !== jobReadyTool || !!lane?.planJob);
+  // Packs (docs/Packs_Plan.md, decision 6): a lead hears of the active roles in its instructions and in
+  // hydra_start_head's `role`. They are asked for once, when the CLI starts the bridge; none if the window can't say.
+  let roles: LeadRole[] = [];
+  let tools = listed(roles);
   const inflight = new Map<string | number, AbortController>();
   const leadTokens = new Map<number, string>();
   const connection = async (): Promise<{ port: number; token: string } | string> => {
@@ -54,6 +58,19 @@ export function createBridge(options: BridgeOptions) {
     leadTokens.set(record.port, token);
     return { port: record.port, token };
   };
+  /** The active roles, from the window, within a few seconds; none when it isn't open or doesn't answer in time. */
+  const activeRoles = async (): Promise<LeadRole[]> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const target = await Promise.race([connection(), new Promise<string>(resolve => controller.signal.addEventListener('abort', () => resolve('timed out'), { once: true }))]);
+      if (typeof target === 'string') return [];
+      const response = await callHelperEndpoint(target.port, target.token, activeRolesTool, {}, controller.signal);
+      const list = response.ok ? (response.result as { roles?: unknown } | undefined)?.roles : undefined;
+      return Array.isArray(list) ? list.filter(isLeadRole).slice(0, 64) : [];
+    } catch { return []; }
+    finally { clearTimeout(timer); }
+  };
   const result = (id: Message['id'], value: unknown) => ({ jsonrpc: '2.0', id, result: value });
   const text = (value: unknown, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }], ...(isError ? { isError: true } : {}) });
 
@@ -62,11 +79,13 @@ export function createBridge(options: BridgeOptions) {
     if (method === 'notifications/cancelled') { const target = params.requestId as string | number; inflight.get(target)?.abort(); return undefined; }
     if (id === undefined || !method) return undefined; // other notifications and stray responses
     if (method === 'initialize') {
+      if (role === 'lead') { roles = await activeRoles(); tools = listed(roles); }
+      const guidance = rolesGuidance(roles);
       return result(id, {
         protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'hydra', title: 'Hydra heads', version: options.version },
-        instructions: role === 'lead' ? (lane ? `${leadInstructions}\n\n${laneGuidance(lane.name, lane.branch, !!lane.planJob)}` : leadInstructions) : helperInstructions,
+        instructions: role === 'lead' ? [leadInstructions, ...(lane ? [laneGuidance(lane.name, lane.branch, !!lane.planJob)] : []), ...(guidance ? [guidance] : [])].join('\n\n') : helperInstructions,
       });
     }
     if (method === 'ping') return result(id, {});
@@ -88,6 +107,14 @@ export function createBridge(options: BridgeOptions) {
     return { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } };
   }
   return { role, handle, abortAll: () => { for (const controller of inflight.values()) controller.abort(); } };
+}
+
+/** A role from the window's answer, checked before it reaches a schema: names by pattern, text on one line. */
+function isLeadRole(value: unknown): value is LeadRole {
+  const role = value as Partial<LeadRole> | undefined;
+  const line = (text: unknown, max: number) => typeof text === 'string' && !!text && text.length <= max && !/[\u0000-\u001f\u007f]/.test(text);
+  return !!role && typeof role === 'object' && typeof role.name === 'string' && /^(?:[a-z0-9-]{1,24}\/)?[a-z0-9-]{1,24}$/.test(role.name)
+    && line(role.title, 40) && line(role.packTitle, 60) && line(role.description, 300) && (role.provider === 'claude' || role.provider === 'codex');
 }
 
 /** Wire the bridge to stdio. Each request is handled concurrently, since a wait may take minutes. */

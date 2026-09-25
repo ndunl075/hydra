@@ -676,7 +676,9 @@ class Manager {
    * that has never seen it (tracked in globalState), never in a test/smoke run.
    */
   private async showWalkthroughOnce(): Promise<void> {
-    if (this.context.extensionMode !== vscode.ExtensionMode.Production) return;
+    // The desktop smoke runs the installed build, which is Production too; its test
+    // environment is how it's told apart (the tab it opens would take the smoke's focus).
+    if (this.context.extensionMode !== vscode.ExtensionMode.Production || process.env.HYDRA_TEST_REPOSITORY) return;
     const key = 'hydra.learn.seen.v1';
     if (this.context.globalState.get(key)) return;
     await this.context.globalState.update(key, true);

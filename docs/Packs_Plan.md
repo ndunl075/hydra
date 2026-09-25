@@ -417,7 +417,8 @@ Tried live on 2026-09-25 with Claude Code 2.1.282 and Codex 0.154.0.
 - Claude ran with `DISABLE_AUTOUPDATER=1`, without the parent session's variables, and with `--setting-sources ""` and `--strict-mcp-config`, so no user settings, hooks or servers loaded. Runs used `--no-session-persistence`, except the `--continue` checks.
 - Codex ran with `--ignore-user-config`, and with `--ephemeral` except the resume checks. Those resumed a thread by its id, never `--last`, so no real session could be picked up.
 - The MCP probe was a 30-line stdio server. It logged its arguments and `PROBE_*` variables, and offered one tool.
-- Nothing was written to `~/.claude`, `~/.claude.json` or `~/.codex` except what the CLIs write for a session: Claude's transcripts for the `--continue` checks, and Codex's for the resume checks.
+- Hydra's probes changed no user config. The CLIs wrote their own session files: Claude's transcripts for the `--continue` checks, and Codex's for the resume checks.
+- **Codex wrote to `~/.codex/config.toml` by itself.** The R8 run (`-s workspace-write`, `windows.sandbox='elevated'`) added `[projects.'<that folder>'] trust_level = "trusted"`, even with `--ignore-user-config`. Codex heads and lanes in new worktrees will do the same, so live check 4 must compare `config.toml` without the `[projects.*]` trust entries.
 - **Not tested non-interactively:** the interactive (TUI) sessions that lanes use. The flags are parsed the same way there, and `--help` lists `--plugin-dir` as "for this session only", but a lane check stays in the live list.
 
 | # | Question | What was run, and what was seen | Approach |
@@ -474,7 +475,7 @@ Tried live on 2026-09-25 with Claude Code 2.1.282 and Codex 0.154.0.
 1. Turn on Coding. The review panel lists its roles, gate and skills, and `packs.json` is written.
 2. A Claude lane as Builder follows its role (ask it "What is your role?"), and still does after Resume. A Codex lane as Reviewer does too.
 3. A Claude lane as UI builder lists `hydra-coding:ui-check` among its skills. A Claude head as Builder uses `test-first`.
-4. With a test user pack that has a tiny stdio MCP server, a connected Claude lane and a Codex lane both list its tools. `~/.claude.json` and `~/.codex/config.toml` are byte-identical before and after.
+4. With a test user pack that has a tiny stdio MCP server, a connected Claude lane and a Codex lane both list its tools. `~/.claude.json` and `~/.codex/config.toml` are byte-identical before and after, apart from the `[projects.*]` trust entries Codex adds by itself for new folders (research R8).
 5. A head as Researcher fetches a web page; a head with no role can't.
 6. `code-review` runs on a head and on a lane merge, and its chip says "From the Coding pack".
 7. Edit the user pack's `pack.json`. The pack shows Changed and its gate isn't run, with the reason. Reviewing it again restores it.

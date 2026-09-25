@@ -10,7 +10,14 @@ import { git, gitRun } from './git';
  * it starts, naming the files. The head's brief also says what each dependency
  * did.
  */
-export interface DependencyResult { id: string; title: string; summary: string; commit: string; branch?: string; changedFiles: string[] }
+/**
+ * What one dependency handed on. `kind` says who did the work: a head, or a lane
+ * that runs a plan job (docs/Plan_Lanes_Plan.md, "Starting a lane job"); for a
+ * lane, `id` is the lane's id and `summary` its Mark job done note or commit subjects.
+ */
+export interface DependencyResult { id: string; kind: 'head' | 'lane'; title: string; summary: string; commit: string; branch?: string; changedFiles: string[] }
+/** "heads" while every dependency is a head, as before lanes could run plan jobs; "jobs" once any is a lane. */
+export const dependencyNoun = (dependencies: readonly Pick<DependencyResult, 'kind'>[]): 'heads' | 'jobs' => dependencies.some(dependency => dependency.kind === 'lane') ? 'jobs' : 'heads';
 
 export const maxDependencyBrief = 4096;
 const sha = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
@@ -22,7 +29,7 @@ const hydraIdentity: NodeJS.ProcessEnv = {
 
 /** Thrown when the dependencies can't be merged; the head fails with this message. */
 export class DependencyConflict extends Error {
-  constructor(readonly files: string[]) { super(`The heads it depends on conflict in ${files.join(', ')}; merge them first.`); }
+  constructor(readonly files: string[], noun: 'heads' | 'jobs' = 'heads') { super(`The ${noun} it depends on conflict in ${files.join(', ')}; merge them first.`); }
 }
 
 /** Two commits merged in memory: the tree, or the files that conflict. Never touches a worktree or the index. */
@@ -42,7 +49,8 @@ async function mergeTrees(repository: string, a: string, b: string): Promise<{ t
  */
 export async function dependencyBase(repository: string, title: string, dependencies: readonly DependencyResult[]): Promise<string> {
   const commits = [...new Set(dependencies.map(dependency => dependency.commit))];
-  if (!commits.length || commits.some(commit => !sha.test(commit))) throw new Error('A head it depends on has no result commit.');
+  const noun = dependencyNoun(dependencies);
+  if (!commits.length || commits.some(commit => !sha.test(commit))) throw new Error(`A ${noun === 'heads' ? 'head' : 'job'} it depends on has no result commit.`);
   // A commit another dependency already contains adds nothing.
   const tips: string[] = [];
   for (const commit of commits) {
@@ -57,21 +65,24 @@ export async function dependencyBase(repository: string, title: string, dependen
   let merged = tips[0]!, tree = '';
   for (const next of tips.slice(1)) {
     const result = await mergeTrees(repository, merged, next);
-    if ('conflicts' in result) throw new DependencyConflict(result.conflicts);
+    if ('conflicts' in result) throw new DependencyConflict(result.conflicts, noun);
     tree = result.tree;
     // A stepping stone so the next merge finds the right merge base; only the final commit is kept.
     merged = (await git(repository, ['commit-tree', tree, '-p', merged, '-p', next, '-m', 'Hydra: merging dependencies'], hydraIdentity)).trim();
   }
   const titles = dependencies.filter(dependency => tips.includes(dependency.commit)).map(dependency => `- ${dependency.title} (${dependency.commit.slice(0, 12)})`);
-  const message = `Hydra: merge the heads "${title}" depends on\n\n${titles.join('\n')}`;
+  const message = `Hydra: merge the ${noun} "${title}" depends on\n\n${titles.join('\n')}`;
   return (await git(repository, ['commit-tree', tree, ...tips.flatMap(tip => ['-p', tip]), '-m', message], hydraIdentity)).trim();
 }
 
 const clip = (value: string, max: number) => value.length > max ? `${value.slice(0, Math.max(0, max - 1))}…` : value;
 
-/** "What the heads you depend on did:" for the brief: each one's title, summary, branch and changed files, 4 KB in all. */
+/**
+ * "What the heads you depend on did:" for the brief: each one's title, summary, branch and changed files, 4 KB in all.
+ * It says "the jobs" once any of them is a lane (docs/Plan_Lanes_Plan.md, "Heads that depend on a lane job").
+ */
 export function dependencyBrief(dependencies: readonly DependencyResult[]): string {
-  const header = 'What the heads you depend on did (your worktree already has their work):';
+  const header = `What the ${dependencyNoun(dependencies)} you depend on did (your worktree already has their work):`;
   const share = Math.floor((maxDependencyBrief - header.length) / Math.max(1, dependencies.length)) - 1;
   const entries = dependencies.map(dependency => {
     const files = dependency.changedFiles.length > 20 ? `${dependency.changedFiles.slice(0, 20).join(', ')} and ${dependency.changedFiles.length - 20} more` : dependency.changedFiles.join(', ');

@@ -4,9 +4,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  allJobsDone, createPlan, cycleMessage, findCycle, jobsToStart, PlanStore, parsePlannerOutput, runPlan,
+  canTransitionPlan, createPlan, cycleMessage, dependentsOf, findCycle, jobRunAs, PlanStore, parsePlannerOutput, planJobBriefMax,
   topologicalOrder, validatePlan, validatePlanJobs, type Plan, type PlanJob,
 } from '../src/core/plans';
+import { writeFile } from 'node:fs/promises';
 
 const job = (key: string, extra: Partial<PlanJob> = {}): PlanJob => ({ key, title: `Job ${key}`, brief: `Do ${key}.`, dependsOn: [], ...extra });
 
@@ -47,45 +48,6 @@ test('topologicalOrder puts dependencies first and is deterministic; it names th
   assert.deepEqual(order, ['api', 'docs', 'ui', 'tests']);
   assert.deepEqual(topologicalOrder([job('b'), job('a')]), ['a', 'b'], 'independent jobs sort by key');
   assert.throws(() => topologicalOrder([job('a', { dependsOn: ['b'] }), job('b', { dependsOn: ['a'] })]), /dependency cycle: Job a → Job b → Job a/);
-});
-
-test('jobsToStart is idempotent: only jobs without a jobId, in dependency order', () => {
-  const jobs = [job('api'), job('ui', { jobId: 'aaaaaaaaaaaa' }), job('tests', { dependsOn: ['api', 'ui'] })];
-  assert.deepEqual(jobsToStart({ jobs }).map(j => j.key), ['api', 'tests']);
-  assert.deepEqual(jobsToStart({ jobs: jobs.map(j => ({ ...j, jobId: j.jobId ?? 'bbbbbbbbbbbb' })) }), []);
-});
-
-test('allJobsDone requires every job to have started and finished', () => {
-  const state = new Map([['a', 'done'], ['b', 'running']]);
-  assert.equal(allJobsDone({ jobs: [job('x', { jobId: 'a' }), job('y', { jobId: 'b' })] }, key => state.get(key)), false);
-  assert.equal(allJobsDone({ jobs: [job('x', { jobId: 'a' })] }, key => state.get(key)), true);
-  assert.equal(allJobsDone({ jobs: [job('x')] }, key => state.get(key)), false, 'a job that never started is not done');
-  assert.equal(allJobsDone({ jobs: [] }, () => 'done'), false, 'an empty plan is never done on its own');
-});
-
-test('runPlan starts jobs in dependency order, maps dependsOn to real head ids, and refuses a cycle without starting anything', async () => {
-  const plan: Plan = { ...createPlan({ title: 'Checkout refactor' }), state: 'draft', jobs: [job('api'), job('ui'), job('tests', { dependsOn: ['api', 'ui'] })] };
-  const started: { key: string; dependsOn: readonly string[] }[] = [];
-  let counter = 0;
-  const start = async (job: PlanJob, dependsOn: readonly string[]) => { started.push({ key: job.key, dependsOn }); return { jobId: `head-${job.key}-${counter++}` }; };
-  const running = await runPlan(plan, start);
-  assert.equal(running.state, 'running');
-  assert.deepEqual(started.map(item => item.key), ['api', 'ui', 'tests']);
-  const testsJob = running.jobs.find(j => j.key === 'tests')!;
-  const apiJob = running.jobs.find(j => j.key === 'api')!;
-  const uiJob = running.jobs.find(j => j.key === 'ui')!;
-  assert.deepEqual([...started.find(item => item.key === 'tests')!.dependsOn].sort(), [apiJob.jobId, uiJob.jobId].sort());
-  assert.ok(testsJob.jobId);
-
-  // Idempotent: running again with a new job started starts only the new one.
-  const withNewJob: Plan = { ...running, jobs: [...running.jobs, job('docs', { dependsOn: ['api'] })] };
-  const startedAgain: string[] = [];
-  const again = await runPlan(withNewJob, async job => { startedAgain.push(job.key); return { jobId: 'head-docs-9' }; });
-  assert.deepEqual(startedAgain, ['docs']);
-  assert.equal(again.jobs.find(j => j.key === 'api')!.jobId, apiJob.jobId, 'already-started jobs keep their head id');
-
-  const cyclic: Plan = { ...createPlan({ title: 'Bad plan' }), jobs: [job('a', { dependsOn: ['b'] }), job('b', { dependsOn: ['a'] })] };
-  await assert.rejects(runPlan(cyclic, async () => { throw new Error('must not start anything'); }), /dependency cycle/);
 });
 
 test('parsePlannerOutput handles fenced and noisy replies and rejects invalid output', () => {
@@ -141,4 +103,54 @@ test('a plan store reload fails a plan that was still "planning" when Hydra stop
     assert.equal(plans[0]!.state, 'failed');
     assert.match(plans[0]!.error || '', /Hydra stopped/);
   });
+});
+
+// ---- Plan jobs that run as lanes (docs/Plan_Lanes_Plan.md, section 1) ----
+
+const sha = (fill: string) => fill.repeat(40);
+const result = { commit: sha('a'), via: 'marked' as const, at: '2026-09-25T10:00:00.000Z', changedFiles: ['src/a.ts'] };
+const outcome = { state: 'failed' as const, reason: 'It failed.', at: '2026-09-25T10:00:00.000Z' };
+
+test('validation: runAs values, and ids and results only on the right kind of job', () => {
+  for (const runAs of [undefined, 'head', 'lane'] as const) assert.doesNotThrow(() => validatePlanJobs([job('a', runAs ? { runAs } : {})]), String(runAs));
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'agent' as never })]), /must run as a head or a lane/);
+  assert.doesNotThrow(() => validatePlanJobs([job('a', { jobId: 'abcdefabcdef' })]));
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', jobId: 'abcdefabcdef' })]), /can't have a head id/);
+  assert.throws(() => validatePlanJobs([job('a', { jobId: 'not-an-id' })]), /can't have a head id/);
+  assert.doesNotThrow(() => validatePlanJobs([job('a', { runAs: 'lane', laneId: 'abcdefabcdef', result })]));
+  assert.throws(() => validatePlanJobs([job('a', { laneId: 'abcdefabcdef' })]), /can't have a lane id/, 'a head job has no lane');
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'head', result })]), /can't have a result/);
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', result: { ...result, commit: 'abc123' } })]), /full commit id/);
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', result: { ...result, changedFiles: Array.from({ length: 301 }, (_, index) => `f${index}`) } })]), /at most 300 changed files/);
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', result: { ...result, note: 'n'.repeat(2001) } })]), /note longer than 2000/);
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', result: { ...result, via: 'pushed' as never } })]), /unknown kind/);
+});
+
+test('validation: never both a result and an outcome; outcome reasons are short; a lane brief has a head\'s limit (decision 2)', () => {
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', laneId: 'abcdefabcdef', result, outcome })]), /both a result and an outcome/);
+  assert.doesNotThrow(() => validatePlanJobs([job('a', { outcome: { ...outcome, state: 'skipped' } })]));
+  assert.throws(() => validatePlanJobs([job('a', { outcome: { ...outcome, reason: 'r'.repeat(501) } })]), /1-500 characters/);
+  assert.throws(() => validatePlanJobs([job('a', { outcome: { ...outcome, state: 'lost' as never } })]), /unknown outcome/);
+  assert.throws(() => validatePlanJobs([job('a', { attempt: -1 })]), /attempt/);
+  // The 2000-character cap went (decision 2): the lane reads its full brief from a file, so a lane job's brief is as long as a head's.
+  assert.doesNotThrow(() => validatePlanJobs([job('a', { runAs: 'lane', brief: 'b'.repeat(planJobBriefMax) })]));
+  assert.throws(() => validatePlanJobs([job('a', { runAs: 'lane', brief: 'b'.repeat(planJobBriefMax + 1) })]), /brief must be/);
+});
+
+test('an old plan with no runAs loads, and its jobs run as heads; the plan states include incomplete', async () => {
+  await withStore(async (store, directory) => {
+    const old = { version: 1, plans: [{ version: 1, id: 'abcdefabcdef', title: 'Old', createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', state: 'running', jobs: [{ key: 'api', title: 'API', brief: 'Build it.', dependsOn: [], jobId: '0123456789ab' }] }] };
+    await writeFile(path.join(directory, 'plans.json'), JSON.stringify(old));
+    const reloaded = new PlanStore(directory);
+    const [plan] = await reloaded.load();
+    assert.equal(plan!.jobs[0]!.runAs, undefined);
+    assert.equal(jobRunAs(plan!.jobs[0]!), 'head');
+    const updated = await reloaded.update(plan!.id, current => ({ ...current, state: 'incomplete' }));
+    assert.equal(updated?.state, 'incomplete');
+    assert.equal(await reloaded.update('ffffffffffff', current => current), undefined);
+  });
+  assert.equal(canTransitionPlan('running', 'incomplete'), true);
+  assert.equal(canTransitionPlan('incomplete', 'running'), true);
+  assert.equal(canTransitionPlan('done', 'running'), false);
+  assert.deepEqual(dependentsOf([job('a'), job('b', { dependsOn: ['a'] }), job('c', { dependsOn: ['b'] }), job('d')], 'a').map(item => item.key), ['b', 'c']);
 });

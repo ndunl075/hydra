@@ -544,9 +544,99 @@ test('a head started from a lane takes the lane\'s HEAD as its base, not the mai
 
 test('the dependency summaries for a dependent\'s brief are capped at 4 KB', () => {
   const brief = dependencyBrief([
-    { id: 'a'.repeat(12), title: 'Parser', summary: 'Added the parser.', commit: 'c'.repeat(40), branch: 'agent/parser-aaaaaaaaaaaa', changedFiles: ['src/parser.ts', 'tests/parser.test.ts'] },
-    { id: 'b'.repeat(12), title: 'Huge', summary: 'x'.repeat(10_000), commit: 'd'.repeat(40), changedFiles: Array.from({ length: 30 }, (_, index) => `src/f${index}.ts`) },
+    { id: 'a'.repeat(12), kind: 'head', title: 'Parser', summary: 'Added the parser.', commit: 'c'.repeat(40), branch: 'agent/parser-aaaaaaaaaaaa', changedFiles: ['src/parser.ts', 'tests/parser.test.ts'] },
+    { id: 'b'.repeat(12), kind: 'head', title: 'Huge', summary: 'x'.repeat(10_000), commit: 'd'.repeat(40), changedFiles: Array.from({ length: 30 }, (_, index) => `src/f${index}.ts`) },
   ]);
   assert.ok(brief.length <= maxDependencyBrief, String(brief.length));
   assert.match(brief, /^What the heads you depend on did \(your worktree already has their work\):\n- Parser \(branch agent\/parser-aaaaaaaaaaaa, commit cccccccccccc\): Added the parser\.\n  Changed files: src\/parser\.ts, tests\/parser\.test\.ts\n- Huge \(commit dddddddddddd\): x+…$/);
+});
+
+// ---- Plan lanes (docs/Plan_Lanes_Plan.md, "Heads that depend on a lane job", decision 7) ----
+
+test('a plan head starts from a lane job\'s result, sees its file, and is told what "the jobs it depends on" did', async () => {
+  const f = await fixture({ script: async helper => {
+    if (jobKey(helper.spec.prompt) === 'api') assert.match(await readFile(path.join(helper.spec.worktree, 'src', 'schema.ts'), 'utf8'), /^schema\r?\n$/, 'the lane\'s work is there');
+    await helper.commit(`src/${jobKey(helper.spec.prompt)}.ts`, 'done\n');
+    await helper.call('hydra_done', { summary: 'Done.' });
+    helper.endTurn();
+  } });
+  try {
+    // A lane's committed work on its own branch, not merged into main.
+    await git(f.repo, ['switch', '-q', '-c', 'lane/schema-abcabcabcabc']);
+    await writeFile(path.join(f.repo, 'src', 'schema.ts'), 'schema\n');
+    await git(f.repo, ['add', '.']); await git(f.repo, ['commit', '-qm', 'Add the schema']);
+    const laneCommit = (await git(f.repo, ['rev-parse', 'HEAD'])).trim();
+    await git(f.repo, ['switch', '-q', 'main']);
+    const input = { id: 'abcabcabcabc', kind: 'lane' as const, title: 'Schema', summary: 'The schema is in src/schema.ts.', commit: laneCommit, branch: 'lane/schema-abcabcabcabc', changedFiles: ['src/schema.ts'] };
+    const args = { title: 'Job api', brief: 'Build the API on the schema.', write_scope: ['src/'], idempotency_key: 'plan-abcdefabcdef-api', lead_label: 'Plan · Checkout' };
+    const started = await f.service.startForPlan(args, 'plan-abcdefabcdef', [input]) as { job_id: string; base_commit?: string };
+    assert.equal(started.base_commit, laneCommit, 'its base is the lane\'s result, known at once');
+    assert.deepEqual(f.store.get(started.job_id)!.inputs, [input], 'kept with the job across a restart');
+    assert.equal((await f.service.startForPlan(args, 'plan-abcdefabcdef', [input]) as { job_id: string }).job_id, started.job_id, 'the idempotency key covers a repeat');
+    await assert.rejects(f.service.startForPlan({ ...args, idempotency_key: 'bad' }, 'plan-abcdefabcdef', [{ ...input, commit: 'nope' }]), /inputs are malformed/);
+    // A plan head with a head dependency and a lane input starts from both, merged, once the head is done.
+    const first = await f.start('first');
+    const both = await f.service.startForPlan({ ...args, title: 'Job both', idempotency_key: 'plan-abcdefabcdef-both', depends_on: [first.job_id] }, 'plan-abcdefabcdef', [input]) as { job_id: string; base_commit?: string };
+    assert.equal(both.base_commit, undefined, 'known only when it starts');
+    const [api, , mixed] = (await f.wait([started.job_id, first.job_id, both.job_id])).heads;
+    assert.equal(api.state, 'done', api.reason); assert.equal(api.base_commit, laneCommit);
+    assert.deepEqual(api.changed_files, ['src/api.ts'], 'its own changes only');
+    assert.equal(mixed.state, 'done', mixed.reason);
+    const [, ...parents] = (await git(f.repo, ['rev-list', '--parents', '-n', '1', mixed.base_commit])).trim().split(' ');
+    assert.deepEqual(parents.sort(), [f.store.get(first.job_id)!.result!.commit, laneCommit].sort());
+    const prompt = f.runs.find(run => jobKey(run.prompt) === 'api')!.prompt;
+    assert.match(prompt, /What the jobs you depend on did \(your worktree already has their work\):\n- Schema \(branch lane\/schema-abcabcabcabc, commit [a-f0-9]{12}\): The schema is in src\/schema\.ts\.\n  Changed files: src\/schema\.ts/);
+    assert.match(prompt, /which already has the work of the jobs it depends on\./);
+    // A lead can never pass inputs: hydra_start_head ignores them.
+    const lead = await f.start('lead', { inputs: [input] });
+    assert.equal(f.store.get(lead.job_id)!.inputs, undefined);
+  } finally { await f.close(); }
+});
+
+test('lane inputs that conflict refuse the plan head before it exists, naming the files', async () => {
+  const f = await fixture({ script: async () => {} });
+  try {
+    const commits: string[] = [];
+    for (const side of ['a', 'b']) {
+      await git(f.repo, ['switch', '-q', '-c', `lane/${side}-abcabcabcab${side}`]);
+      await writeFile(path.join(f.repo, 'src', 'a.ts'), `export const a = "${side}";\n`);
+      await git(f.repo, ['commit', '-qam', side]);
+      commits.push((await git(f.repo, ['rev-parse', 'HEAD'])).trim());
+      await git(f.repo, ['switch', '-q', 'main']);
+    }
+    const inputs = commits.map((commit, index) => ({ id: `abcabcabcab${'ab'[index]}`, kind: 'lane' as const, title: `Lane ${index}`, summary: 's', commit, changedFiles: ['src/a.ts'] }));
+    await assert.rejects(f.service.startForPlan({ title: 'Job c', brief: 'b', write_scope: ['src/'], idempotency_key: 'plan-c' }, 'plan-abcdefabcdef', inputs), /^Error: The jobs it depends on conflict in src\/a\.ts; merge them first\.$/);
+    assert.equal(f.store.list().length, 0, 'no head was created');
+  } finally { await f.close(); }
+});
+
+test('heads queued behind a head that hit its usage limit wait for it (decision 7), go on after Continue in, and fail once it is given up on', async () => {
+  const f = await fixture({ script: async helper => {
+    const key = jobKey(helper.spec.prompt);
+    if (helper.spec.provider === 'claude' && (key === 'limited' || key === 'abandoned')) { helper.limit({ message: 'Claude AI usage limit reached|1790000000' }); helper.endTurn(); return; }
+    await helper.commit(`src/${key}.ts`, 'done\n');
+    await helper.call('hydra_done', { summary: 'Done.' });
+    helper.endTurn();
+  } });
+  try {
+    const limited = await f.start('limited');
+    const after = await f.start('after', { depends_on: [limited.job_id] });
+    const abandoned = await f.start('abandoned');
+    const orphan = await f.start('orphan', { depends_on: [abandoned.job_id] });
+    await until(() => !!f.store.get(limited.job_id)?.limitHit && !!f.store.get(abandoned.job_id)?.limitHit, 'both heads hit their limit');
+    // Let the queue run a few more passes: the dependents still wait instead of failing.
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.deepEqual([f.store.get(after.job_id)!.state, f.store.get(orphan.job_id)!.state], ['queued', 'queued']);
+    // Continue in Codex brings the first back, and its dependent goes on.
+    await f.service.continueWith(limited.job_id, 'codex', '## Handoff');
+    const [one, two] = (await f.wait([limited.job_id, after.job_id])).heads;
+    assert.deepEqual([one.state, two.state], ['done', 'done'], two.reason);
+    // Cancelling the held second head gives up on it: its dependent fails, and it can't be continued any more.
+    assert.equal(f.store.get(orphan.job_id)!.state, 'queued');
+    await f.call('hydra_cancel_head', { job_id: abandoned.job_id, reason: 'Given up.' });
+    const [gone] = (await f.wait([orphan.job_id])).heads;
+    assert.equal(gone.state, 'failed'); assert.match(gone.reason, /depends on did not finish/);
+    assert.equal(f.store.get(abandoned.job_id)!.limitHit, false);
+    await assert.rejects(f.service.continueWith(abandoned.job_id, 'codex', 'x'), /did not fail from a usage limit/);
+  } finally { await f.close(); }
 });

@@ -2,8 +2,8 @@ import { lstat, readdir, realpath, rm, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { git, gitRun } from './git';
 import { isInside } from './worktrees';
-import { branchTip, mergeTreeConflicts } from './laneSync';
-import { isLaneBranch, isSafeBranchName, laneFolder, type Lane } from './lanes';
+import { branchTip, laneDiffBase, mergeTreeConflicts } from './laneSync';
+import { isLaneBranch, isSafeBranchName, laneFolder, type Lane, type LaneCloseMode } from './lanes';
 
 /**
  * Finishing a lane (docs/Lanes_And_Planner_Plan.md, "Finishing a lane"): commit,
@@ -135,12 +135,14 @@ export async function pushLane(lane: FinishLane): Promise<{ branch: string; comp
   return { branch: lane.branch, ...(compareUrl ? { compareUrl } : {}) };
 }
 
-/** The files a lane changed, against where it meets its target, for the multi-file diff. Uncommitted and untracked files included. */
+/**
+ * The files a lane changed, against where it meets its target (or, for a plan lane that started
+ * from unmerged work, its base commit: laneDiffBase), for the multi-file diff. Uncommitted and
+ * untracked files included.
+ */
 export async function laneDiffFiles(lane: FinishLane, max = 300): Promise<{ base: string; files: { path: string; status: 'A' | 'M' | 'D' }[] }> {
   assertLaneRefs(lane);
-  const tip = await branchTip(lane.repository, lane.target);
-  const merged = tip ? (await gitRun(lane.worktree, ['merge-base', tip, 'HEAD'])).stdout.trim() : '';
-  const base = /^[a-f0-9]{40,64}$/.test(merged) ? merged : lane.baseCommit;
+  const base = await laneDiffBase(lane, (await git(lane.worktree, ['rev-parse', 'HEAD'])).trim());
   const files: { path: string; status: 'A' | 'M' | 'D' }[] = [];
   const parts = (await git(lane.worktree, ['diff', '--name-status', '-z', '--no-renames', base, '--'])).split('\0');
   for (let index = 0; index + 1 < parts.length; index += 2) {
@@ -213,7 +215,7 @@ export async function unlinkLinks(folder: string): Promise<string[]> {
   return unlinked;
 }
 
-export type CloseMode = 'merged' | 'keep' | 'delete';
+export type CloseMode = LaneCloseMode;
 
 async function removeWorktree(lane: FinishLane, force: boolean): Promise<void> {
   const args = ['worktree', 'remove', ...(force ? ['--force', '--force'] : []), lane.worktree];

@@ -220,6 +220,11 @@
           "maximum": 100,
           "default": 5,
           "description": "Default budget cap, in USD, for a Hydra head started without its own limit."
+        },
+        "hydra.limits.offerHandoff": {
+          "type": "boolean",
+          "default": true,
+          "description": "When Claude Code or Codex hits its usage limit, offer to continue in the other provider with a handoff."
         }
       }
     }

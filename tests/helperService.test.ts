@@ -193,6 +193,49 @@ test('a head that hits a usage limit fails at once with the reason, uses no nudg
   } finally { await exits.close(); }
 });
 
+test('continueWith restarts a head that hit a usage limit with the other provider, in the same worktree and branch', async () => {
+  const f = await fixture({ checks: passCheck, script: async helper => {
+    if (helper.spec.provider === 'claude') {
+      helper.limit({ message: 'Claude AI usage limit reached|1790000000', resetsAt: new Date(1790000000 * 1000).toISOString() });
+      helper.endTurn();
+    } else {
+      await helper.commit('src/fixed.ts', 'export const fixed = true;\n');
+      const reported = await helper.call('hydra_done', { summary: 'Continued in Codex' });
+      assert.equal(reported.result.accepted, true);
+      helper.endTurn();
+    }
+  } });
+  try {
+    const { job_id } = await f.start('limited-continue');
+    const failed = (await f.wait([job_id])).heads[0];
+    assert.equal(failed.state, 'failed');
+    const before = f.store.get(job_id)!;
+    assert.equal(before.limitHit, true);
+    assert.ok(before.worktree && before.branch);
+
+    const updated = await f.service.continueWith(job_id, 'codex', '## Handoff\n\nPick up where Claude left off.');
+    assert.equal(updated.state, 'queued');
+    assert.equal(updated.provider, 'codex');
+    assert.equal(updated.attempts, 0);
+    assert.equal(updated.nudged, false);
+    assert.equal(updated.limitHit, false);
+    assert.match(updated.brief, /## Handoff\n\nPick up where Claude left off\./);
+    assert.equal(updated.history.at(-1)!.reason, "Continued in Codex after Claude's usage limit.");
+
+    const done = (await f.wait([job_id])).heads[0];
+    assert.equal(done.state, 'done');
+    const after = f.store.get(job_id)!;
+    assert.equal(after.worktree, before.worktree, 'same worktree reused');
+    assert.equal(after.branch, before.branch, 'same branch reused');
+    assert.equal(f.runs.length, 2, 'one run per provider; no extra worktree created for the continuation');
+    assert.equal(f.runs[1]!.provider, 'codex');
+    assert.equal(f.runs[1]!.worktree, before.worktree);
+
+    await assert.rejects(f.service.continueWith(job_id, 'claude', 'x'), /did not fail from a usage limit/);
+    await assert.rejects(f.service.continueWith('ffffffffffff', 'codex', 'x'), /No head/);
+  } finally { await f.close(); }
+});
+
 test('the time limit stops a head, and time spent waiting for an answer does not count', async () => {
   let clock = 0;
   const f = await fixture({ now: () => clock, script: async () => { /* works forever */ } });

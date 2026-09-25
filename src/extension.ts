@@ -31,6 +31,7 @@ import { parseHandoff, officialProviders } from './core/handoff';
 import { officialExtensionInfo, openOfficialExtension } from './extensionBridge';
 import { claudeForRegistration } from './claudeExecutable';
 import { registerChatLocationController, setChatLocation } from './chatLocationController';
+import { registerLimitOffer } from './extensionLimitOffer';
 import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
 
 let manager: Manager | undefined;
@@ -178,6 +179,18 @@ class Manager {
     } catch (error) { this.disabled = true; this.report(error); }
     await this.startHelpers().catch(error => { this.output.appendLine(`[heads] not started: ${this.describe(error)}`); });
     this.startLimitDetection();
+    this.context.subscriptions.push(registerLimitOffer({
+      limitEvents: this.limitEvents.event,
+      storageDir: this.context.globalStorageUri.fsPath,
+      offerEnabled: () => vscode.workspace.getConfiguration('hydra').get<boolean>('limits.offerHandoff', true),
+      job: jobId => this.helpers?.store.get(jobId),
+      otherReady: async provider => (await this.helperConnections()).find(connection => connection.provider === provider)?.connected ?? false,
+      continueWith: async (jobId, provider, markdown) => {
+        if (!this.helpers) throw new Error('Hydra heads are still starting.');
+        await this.helpers.service.continueWith(jobId, provider, markdown);
+      },
+      log: line => this.output.appendLine(line),
+    }));
     await this.publish();
   }
   private get limitEventsDirectory(): string { return path.join(this.context.globalStorageUri.fsPath, 'limit-events'); }

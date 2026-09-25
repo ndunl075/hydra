@@ -415,6 +415,9 @@ class Manager {
   }
   /** A connection made by an older Hydra (a different executable path) is refreshed; nothing is connected here that the user didn't connect. */
   private async refreshHelperConnections(): Promise<void> {
+    // A development or test window (another profile, another extension folder) would
+    // point the user's real Claude and Codex at itself; only an installed Hydra refreshes.
+    if (this.context.extensionMode !== vscode.ExtensionMode.Production) { this.output.appendLine('[heads] development window: leaving the Claude and Codex connections as they are'); return; }
     for (const connection of await this.helperConnections()) {
       if (connection.connected && !connection.current && !connection.error) {
         await this.connectHelpers(connection.provider).catch(error => this.output.appendLine(`[heads] could not refresh ${connection.provider}: ${this.describe(error)}`));

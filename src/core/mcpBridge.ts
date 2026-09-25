@@ -37,7 +37,8 @@ export function createBridge(options: BridgeOptions) {
       const port = Number(options.env.HYDRA_HELPER_PORT);
       return Number.isInteger(port) && port > 0 ? { port, token: options.env.HYDRA_HELPER_TOKEN! } : 'This head was started without a Hydra port.';
     }
-    const root = options.env.HYDRA_HELPERS_DIR;
+    // A lane's bridge looks in its own window's directory first (see laneLaunch).
+    const root = (lane && options.env.HYDRA_LANE_HELPERS_DIR) || options.env.HYDRA_HELPERS_DIR;
     if (!root) return 'Hydra heads are not set up for this CLI. Connect Claude Code or Codex to Hydra from Hydra\'s onboarding or Settings.';
     const record = await findWindowFor(root, options.cwd);
     if (!record) return `Hydra isn't open for this folder (${options.cwd}). Open the folder in Hydra to use heads.`;

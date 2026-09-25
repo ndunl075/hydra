@@ -179,8 +179,8 @@ test('a lane launches its CLI with the plan\'s arguments and environment', () =>
   const fresh = laneLaunch({ ...base, prompt: 'You are working in Hydra lane "Lane 1". Your task: fix 100% & ship' });
   assert.deepEqual(fresh.args, ['--mcp-config', 'C:\\s\\lane.mcp.json', 'You are working in Hydra lane "Lane 1". Your task: fix 100% & ship'], 'a real executable gets the prompt untouched');
   const server = JSON.parse(fresh.mcpConfig!).mcpServers.hydra;
-  assert.deepEqual(server, { type: 'stdio', command: bridge.command, args: bridge.args, env: { ...bridge.env, HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch }, timeout: 3_600_000 });
-  assert.deepEqual({ ...fresh.env, PATH: undefined }, { PATH: undefined, HOME: 'C:\\u', HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch, HYDRA_LEAD_PROVIDER: 'claude', HYDRA_HELPERS_DIR: 'C:\\h', TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+  assert.deepEqual(server, { type: 'stdio', command: bridge.command, args: bridge.args, env: { ...bridge.env, HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: 'C:\\h' }, timeout: 3_600_000 });
+  assert.deepEqual({ ...fresh.env, PATH: undefined }, { PATH: undefined, HOME: 'C:\\u', HYDRA_LANE_ID: id, HYDRA_LANE_NAME: 'Lane 1', HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: 'C:\\h', HYDRA_LEAD_PROVIDER: 'claude', HYDRA_HELPERS_DIR: 'C:\\h', TERM: 'xterm-256color', COLORTERM: 'truecolor' });
   assert.equal(fresh.env.ELECTRON_RUN_AS_NODE, undefined, 'the host\'s run-as-Node flag never reaches the lane');
   const connected = laneLaunch({ ...base, connected: true });
   assert.deepEqual(connected.args, [], 'a connected Claude already has Hydra; no goal starts it empty');
@@ -190,12 +190,12 @@ test('a lane launches its CLI with the plan\'s arguments and environment', () =>
 
   const codexLane = { ...lane, provider: 'codex' as const };
   const codexConnected = laneLaunch({ ...base, lane: codexLane, executable: 'C:\\bin\\codex.exe', connected: true, prompt: 'Go' });
-  assert.deepEqual(codexConnected.args, ['-c', `mcp_servers.hydra.env.HYDRA_LANE_ID='${id}'`, '-c', 'mcp_servers.hydra.env.HYDRA_LANE_NAME=\'Lane 1\'', '-c', `mcp_servers.hydra.env.HYDRA_LANE_BRANCH='${lane.branch}'`, 'Go'], 'Codex clears its servers\' environment, so the lane is passed in its config');
+  assert.deepEqual(codexConnected.args, ['-c', `mcp_servers.hydra.env.HYDRA_LANE_ID='${id}'`, '-c', 'mcp_servers.hydra.env.HYDRA_LANE_NAME=\'Lane 1\'', '-c', `mcp_servers.hydra.env.HYDRA_LANE_BRANCH='${lane.branch}'`, '-c', 'mcp_servers.hydra.env.HYDRA_LANE_HELPERS_DIR=\'C:\\h\'', 'Go'], 'Codex clears its servers\' environment, so the lane is passed in its config');
   assert.equal(codexConnected.env.HYDRA_LEAD_PROVIDER, 'codex');
   const codexAlone = laneLaunch({ ...base, lane: codexLane, executable: 'C:\\bin\\codex.exe', resume: true });
   assert.deepEqual(codexAlone.args.slice(-2), ['resume', '--last']);
   assert.deepEqual(codexAlone.args.slice(0, 4), ['-c', `mcp_servers.hydra.command='${bridge.command}'`, '-c', `mcp_servers.hydra.args=['${bridge.args[0]}']`]);
-  assert.ok(codexAlone.args.includes(`mcp_servers.hydra.env={ ELECTRON_RUN_AS_NODE = '1', HYDRA_HELPERS_DIR = 'C:\\h', HYDRA_LEAD_PROVIDER = 'claude', HYDRA_LANE_ID = '${id}', HYDRA_LANE_NAME = 'Lane 1', HYDRA_LANE_BRANCH = '${lane.branch}' }`));
+  assert.ok(codexAlone.args.includes(`mcp_servers.hydra.env={ ELECTRON_RUN_AS_NODE = '1', HYDRA_HELPERS_DIR = 'C:\\h', HYDRA_LEAD_PROVIDER = 'claude', HYDRA_LANE_ID = '${id}', HYDRA_LANE_NAME = 'Lane 1', HYDRA_LANE_BRANCH = '${lane.branch}', HYDRA_LANE_HELPERS_DIR = 'C:\\h' }`));
   assert.ok(codexAlone.args.includes('mcp_servers.hydra.default_tools_approval_mode=\'approve\''));
   assert.equal(codexAlone.mcpConfig, undefined);
   assert.throws(() => laneLaunch({ ...base, lane: codexLane, bridge: { ...bridge, command: 'C:\\it\'s\\Hydra.exe' } }), /quote/);
@@ -257,6 +257,10 @@ test('a lane\'s bridge names its lane in the lead session, and the window keeps 
     const called = await bridge.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'hydra_lanes', arguments: {} } }) as { result: { content: { text: string }[] } };
     assert.match(called.result.content[0]!.text, /"lane": "abcdef012345"/);
     assert.equal(seen.at(-1)!.lane, id);
+    // The user-level server's HYDRA_HELPERS_DIR can belong to another Hydra profile; the lane's own directory wins.
+    const otherProfile = createBridge({ env: { ...env, HYDRA_HELPERS_DIR: path.join(root, 'another-profile'), HYDRA_LANE_HELPERS_DIR: root }, cwd: path.join(worktree, 'src'), version: 'test' });
+    const viaLaneDir = await otherProfile.handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'hydra_lanes', arguments: {} } }) as { result: { content: { text: string }[]; isError?: boolean } };
+    assert.equal(viaLaneDir.result.isError, undefined, viaLaneDir.result.content[0]!.text);
 
     open.clear();
     const closed = createBridge({ env, cwd: worktree, version: 'test' });

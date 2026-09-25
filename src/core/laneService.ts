@@ -74,7 +74,9 @@ export function parseTestCommand(value: string): { executable: string; args: str
  */
 export function laneLaunch(input: LaneLaunchInput): LaneLaunch {
   const { lane } = input;
-  const laneEnv = { HYDRA_LANE_ID: lane.id, HYDRA_LANE_NAME: lane.name, HYDRA_LANE_BRANCH: lane.branch };
+  // HYDRA_LANE_HELPERS_DIR names this window even when the user-level server's own
+  // HYDRA_HELPERS_DIR (which wins over ours) belongs to another Hydra profile.
+  const laneEnv = { HYDRA_LANE_ID: lane.id, HYDRA_LANE_NAME: lane.name, HYDRA_LANE_BRANCH: lane.branch, HYDRA_LANE_HELPERS_DIR: input.helpersDir };
   const env: Record<string, string> = {};
   // The host may run as Node; the lane's own tools must not inherit that.
   for (const [key, value] of Object.entries(input.env)) if (typeof value === 'string' && key.toUpperCase() !== 'ELECTRON_RUN_AS_NODE') env[key] = value;

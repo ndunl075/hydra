@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { git } from '../src/core/git';
 import { JobStore, toHeadCheckView } from '../src/core/jobs';
+import { gateChip } from '../src/core/agentsCanvas';
 import { HelperService, type HelperServiceOptions } from '../src/core/helperService';
 import { LaneStore } from '../src/core/lanes';
 import { LaneService, gatesFingerprint, gatesPassNote } from '../src/core/laneService';
@@ -441,7 +442,7 @@ test('active packs: every state, and a changed user pack goes inactive with its 
     assert.equal(packs.seo!.copy, undefined);
     gates = await effectiveGates(lead, where, 'hydra.exe');
     assert.deepEqual(gates.gates.map(gate => gate.id), ['code-review']);
-    assert.deepEqual(gates.notRun.find(result => result.id === 'meta'), { id: 'meta', kind: 'command', required: true, state: 'notRun', passed: false, exitCode: null, durationMs: 0, outputTail: '', summary: 'The SEO pack changed since you allowed it. Review it again in Settings → Packs.', pack: 'seo' });
+    assert.deepEqual(gates.notRun.find(result => result.id === 'meta'), { id: 'meta', kind: 'command', required: true, state: 'notRun', passed: false, exitCode: null, durationMs: 0, outputTail: '', summary: 'The SEO pack changed since you allowed it. Review it again in Settings → Packs.', pack: 'seo', packTitle: 'SEO' });
     // Reviewing it again restores it.
     await allowListed(lead, where, ['seo']);
     assert.equal((await state()).seo!.state, 'on');
@@ -680,8 +681,10 @@ test('a pack review gate\'s role reaches the reviewer\'s prompt, and pack reache
   const prompt = reviewPrompt({ provider: 'codex', title: 'Add the facts', baseCommit: 'a'.repeat(40), diff: { text: '+ claim', cut: false }, earlier: [], screenshots: [], focus: 'Every claim has a source.', role: { title: 'Fact-checker (Research pack)', instructions: 'Check each claim against its source.\n' } });
   assert.match(prompt, /## Your role: Fact-checker \(Research pack\)\nCheck each claim against its source\.\n\nYou still only read; the reply below is what counts\.\n\n## What to focus on\nEvery claim has a source\./);
   assert.doesNotMatch(reviewPrompt({ provider: 'codex', baseCommit: 'a'.repeat(40), diff: { text: '', cut: false }, earlier: [], screenshots: [], focus: '' }), /Your role/);
-  assert.equal(toHeadCheckView({ id: 'code-review', required: true, passed: true, exitCode: 0, durationMs: 1, outputTail: '', kind: 'review', state: 'passed', pack: 'coding' }).pack, 'coding');
+  const view = toHeadCheckView({ id: 'code-review', required: true, passed: true, exitCode: 0, durationMs: 1, outputTail: '', kind: 'review', state: 'passed', pack: 'coding', packTitle: 'Coding' });
+  assert.deepEqual([view.pack, view.packTitle], ['coding', 'Coding']);
   assert.equal('pack' in toHeadCheckView({ id: 'unit', required: true, passed: true, exitCode: 0, durationMs: 1, outputTail: '' }), false);
+  assert.equal(gateChip({ ...view, summary: 'No findings.' }).title, 'No findings. · From the Coding pack', 'a pack gate\'s chip names the pack by its title');
 });
 
 test('cache: heads finishing at once share one copy; none removes another\'s', async () => {

@@ -372,13 +372,13 @@ function planProgress(plan: Plan, views: readonly PlanJobView[]): string {
  * this file) so the webview bundle never needs jobs.ts's Node-only imports.
  */
 export interface GateChipView { id: string; icon: '✓' | '✗' | '–'; label: string; tone: 'good' | 'bad' | 'neutral'; title: string }
-export function gateChip(check: Pick<HeadCheckView, 'id' | 'summary'> & { state?: JobCheckResult['state']; passed: boolean; pack?: string }): GateChipView {
+export function gateChip(check: Pick<HeadCheckView, 'id' | 'summary'> & { state?: JobCheckResult['state']; passed: boolean; pack?: string; packTitle?: string }): GateChipView {
   const state = check.state ?? (check.passed ? 'passed' : 'failed');
   const icon = state === 'passed' ? '✓' : state === 'notRun' ? '–' : '✗';
   const tone: GateChipView['tone'] = state === 'passed' ? 'good' : state === 'notRun' ? 'neutral' : 'bad';
   const base = state === 'notRun' ? (check.summary ? `Not run: ${check.summary}` : 'Not run') : (check.summary || (state === 'failed' ? 'Failed' : 'Passed'));
   // Packs (docs/Packs_Plan.md, "How roles show"): a pack gate's tooltip adds "From the Coding pack".
-  const title = check.pack ? `${base} · From the ${check.pack} pack` : base;
+  const title = check.pack ? `${base} · From the ${check.packTitle || check.pack} pack` : base;
   return { id: check.id, icon, label: `${icon} ${check.id}`, tone, title };
 }
 

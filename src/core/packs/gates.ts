@@ -32,15 +32,15 @@ function packGate(gate: Gate, pack: ProjectPack, nodeExecutable: string): Gate {
   const copy = pack.copy!;
   if (gate.type === 'command') {
     const { parts, env } = resolvePlaceholders(gate.command, copy, nodeExecutable);
-    return { ...gate, command: parts, ...(env ? { env } : {}), pack: pack.id };
+    return { ...gate, command: parts, ...(env ? { env } : {}), pack: pack.id, packTitle: pack.title };
   }
   if (gate.type === 'screenshots') {
     const { parts, env } = resolvePlaceholders(gate.start, copy, nodeExecutable);
-    return { ...gate, start: parts, ...(env ? { env } : {}), pack: pack.id };
+    return { ...gate, start: parts, ...(env ? { env } : {}), pack: pack.id, packTitle: pack.title };
   }
   const role = gate.role ? pack.pack?.valid?.manifest.roles.find(candidate => candidate.id === gate.role) : undefined;
   const instructions = role ? pack.pack?.valid?.instructions[role.id] : undefined;
-  return { ...gate, pack: pack.id, ...(role && instructions ? { reviewerRole: { title: `${role.title} (${pack.title} pack)`, instructions, ...(role.tools.includes('web') ? { web: true } : {}) } } : {}) };
+  return { ...gate, pack: pack.id, packTitle: pack.title, ...(role && instructions ? { reviewerRole: { title: `${role.title} (${pack.title} pack)`, instructions, ...(role.tools.includes('web') ? { web: true } : {}) } } : {}) };
 }
 
 /**
@@ -58,17 +58,17 @@ export function combineGates(base: GatesConfig, listed: readonly ProjectPack[], 
     const manifest = pack.pack?.valid?.manifest;
     if (pack.state !== 'on') {
       const reason = pack.reason ?? `The ${pack.title} pack isn't on.`;
-      if (!manifest) { notRunResults.push({ ...notRun({ id: pack.id, type: 'command', required: false }, reason), pack: pack.id }); continue; }
+      if (!manifest) { notRunResults.push({ ...notRun({ id: pack.id, type: 'command', required: false }, reason), pack: pack.id, packTitle: pack.title }); continue; }
       for (const gate of manifest.gates) {
         if (pack.entry?.skipGates?.includes(gate.id) || owner.has(gate.id)) continue;
-        notRunResults.push({ ...notRun(gate, reason), pack: pack.id });
+        notRunResults.push({ ...notRun(gate, reason), pack: pack.id, packTitle: pack.title });
       }
       continue;
     }
     for (const gate of manifest!.gates) {
       if (pack.entry?.skipGates?.includes(gate.id)) { dropped.push({ id: gate.id, pack: pack.id, reason: 'Skipped in this project.' }); continue; }
       if (owner.has(gate.id)) { dropped.push({ id: gate.id, pack: pack.id, reason: replacedBy(gate.id) }); continue; }
-      if (gates.length >= packCaps.effectiveGates) { notRunResults.push({ ...notRun(gate, `Not run: the project would have more than ${packCaps.effectiveGates} gates.`), pack: pack.id }); continue; }
+      if (gates.length >= packCaps.effectiveGates) { notRunResults.push({ ...notRun(gate, `Not run: the project would have more than ${packCaps.effectiveGates} gates.`), pack: pack.id, packTitle: pack.title }); continue; }
       gates.push(packGate(gate, pack, nodeExecutable));
       owner.set(gate.id, pack.id);
     }

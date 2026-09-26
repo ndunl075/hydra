@@ -16,7 +16,7 @@ import { LaneService, laneLaunch } from '../src/core/laneService';
 import { parseLaneMessage } from '../src/core/model';
 import { validatePlanJobs } from '../src/core/plans';
 import { combineGates } from '../src/core/packs/gates';
-import { codexDeveloperInstructions, developerInstructionsMax, findRole, roleFirstPrompt, roleLaunch, roleSummaries, type ResolvedRole, type RoleLaunch } from '../src/core/packs/launch';
+import { codexDeveloperInstructions, developerInstructionsMax, findRole, roleFirstPrompt, roleLaunch, roleSummaries, serverCommand, type ResolvedRole, type RoleLaunch } from '../src/core/packs/launch';
 import { PackService } from '../src/core/packs/service';
 import { fakePtyModule } from './lanePtyFake';
 
@@ -150,7 +150,7 @@ test('roleLaunch for Codex: -c servers with env_vars and approval, variables in 
   const world = await packWorld();
   try {
     const checker = await world.packs.resolve(world.repo, 'kit/checker');
-    const codex = roleLaunch(checker, { provider: 'codex', target: 'head', env: secrets });
+    const codex = roleLaunch(checker, { provider: 'codex', target: 'head', env: secrets, platform: 'linux' });
     assert.deepEqual(codex.codexConfig, [
       '-c', "mcp_servers.kit-lookup.command='npx'", '-c', "mcp_servers.kit-lookup.args=['-y', 'lookup-mcp@1.2.3']",
       '-c', "mcp_servers.kit-lookup.env_vars=['LOOKUP_KEY']", '-c', 'mcp_servers.kit-lookup.startup_timeout_sec=60',
@@ -307,7 +307,7 @@ test('heads: a role\'s agent when no provider is given; changes "optional" is ac
     assert.deepEqual(checked.changed_files, []); assert.deepEqual(checked.checks, [], 'nothing to check, so no gate ran');
     assert.equal(checked.role, 'kit/checker'); assert.equal(checked.role_title, 'Checker');
     const codexRun = f.runs.find(run => run.provider === 'codex')!;
-    assert.equal(codexRun.role!.webSearch, 'live'); assert.ok(codexRun.role!.codexConfig.includes("mcp_servers.kit-lookup.command='npx'"));
+    assert.equal(codexRun.role!.webSearch, 'live'); assert.ok(codexRun.role!.codexConfig.some(pair => pair.startsWith('mcp_servers.kit-lookup.command=')));
     assert.deepEqual(codexRun.role!.env, { LOOKUP_KEY: secrets.MY_LOOKUP_KEY });
     assert.match(codexRun.prompt, /\n\nYour role: Checker \(Kit pack\)\nCheck every claim\./);
 
@@ -454,7 +454,7 @@ test('laneLaunch: Codex gets the role\'s -c servers every time, and developer in
     assert.doesNotMatch(shim.args.join(' '), /secret-|"/);
     const resumed = laneLaunch(laneBase(checker, { lane: codexLane, executable: 'C:\\bin\\codex.exe', resume: true }));
     assert.deepEqual(resumed.args.slice(-2), ['resume', '--last']);
-    assert.ok(resumed.args.includes("mcp_servers.kit-lookup.command='npx'"), 'servers on resume too');
+    assert.ok(resumed.args.some(arg => arg.startsWith('mcp_servers.kit-lookup.command=')), 'servers on resume too');
     assert.ok(!resumed.args.some(arg => arg.startsWith('developer_instructions=')), 'a resumed thread keeps the instructions it started with (R2)');
     assert.ok(!laneLaunch(laneBase(undefined, { lane: codexLane, executable: 'C:\\bin\\codex.exe' })).args.some(arg => arg.startsWith('developer_instructions=') || arg.startsWith('mcp_servers.kit-')));
 
@@ -554,4 +554,16 @@ test('a pack review gate whose role has "web" marks its reviewer for the web; ot
   const gates = combineGates({ source: 'none', lanes: 'onMerge', gates: [] }, [pack as never], hydraExe).gates as { id: string; reviewerRole?: { web?: boolean } }[];
   assert.equal(gates.find(gate => gate.id === 'web-review')!.reviewerRole!.web, true);
   assert.equal(gates.find(gate => gate.id === 'plain-review')!.reviewerRole!.web, undefined);
+});
+
+test('on Windows a bare command such as npx starts through cmd.exe; an absolute one starts as it is; cmd syntax leaves the server out', () => {
+  const env = { SystemRoot: 'C:\\Windows' };
+  const cmd = 'C:\\Windows\\System32\\cmd.exe';
+  assert.deepEqual(serverCommand(['npx', '-y', '@playwright/mcp@0.0.82', '--headless'], 'win32', env), { command: cmd, args: ['/d', '/c', 'npx', '-y', '@playwright/mcp@0.0.82', '--headless'] });
+  assert.deepEqual(serverCommand(['pnpm.cmd', 'dlx', 'x'], 'win32', env), { command: cmd, args: ['/d', '/c', 'pnpm.cmd', 'dlx', 'x'] });
+  const hydra = 'C:\\Hydra\\Hydra.exe', script = 'C:\\cache\\server.mjs';
+  assert.deepEqual(serverCommand([hydra, script], 'win32', env), { command: hydra, args: [script] }, '{node} and full paths start as they are');
+  assert.deepEqual(serverCommand(['uvx.exe', 'x'], 'win32', env), { command: 'uvx.exe', args: ['x'] });
+  assert.deepEqual(serverCommand(['npx', '-y', 'x'], 'linux', env), { command: 'npx', args: ['-y', 'x'] });
+  assert.match((serverCommand(['npx', 'a&calc'], 'win32', env) as { skip: string }).skip, /cmd\.exe/);
 });

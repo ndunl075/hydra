@@ -436,7 +436,14 @@ class Manager {
   }
   /** The folder `hydra.packs.*` commands act on: the one given, else this window's lead folder. */
   private async packsFolder(folder?: unknown): Promise<string> {
-    if (typeof folder === 'string' && folder) return folder;
+    if (typeof folder === 'string' && folder) {
+      // Any extension can run these commands, so a folder must be this window's lead or one of its
+      // workspace folders: never a place to write .hydra/packs.json that the user hasn't opened.
+      const key = (value: string) => { const resolved = path.resolve(value); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; };
+      const open = [this.packsLeadFolder, ...(vscode.workspace.workspaceFolders || []).map(item => item.uri.fsPath)].filter((item): item is string => !!item);
+      if (!open.some(item => key(item) === key(folder))) throw new Error('Packs can only be changed for a folder open in this window.');
+      return folder;
+    }
     if (this.packsLeadFolder) return this.packsLeadFolder;
     throw new Error('Hydra packs are not ready in this window yet: open a project folder (a Git repository) first.');
   }

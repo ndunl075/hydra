@@ -211,12 +211,30 @@ function unsetVariables(values: readonly string[], env: RoleLaunchOptions['env']
 }
 const wholeReference = (value: string): string | undefined => /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value)?.[1];
 
+/**
+ * How a stdio server's command starts. On Windows a bare command such as `npx` is a `.cmd` shim,
+ * which neither Claude Code nor Codex starts by itself, so it runs through cmd.exe
+ * (`cmd.exe /d /c npx …`, as Claude Code's own docs advise for npx). cmd reads that line again,
+ * so a part it would read as syntax leaves the server out. An absolute command, such as `{node}`
+ * or a full path to an .exe, starts as it is.
+ */
+export function serverCommand(parts: readonly string[], platform: NodeJS.Platform, env: RoleLaunchOptions['env']): { command: string; args: string[] } | { skip: string } {
+  const [command, ...args] = parts as [string, ...string[]];
+  const extension = path.win32.extname(command);
+  if (platform !== 'win32' || /[\\/]/.test(command) || (extension && !/^\.(cmd|bat)$/i.test(extension))) return { command, args };
+  if (parts.some(part => cmdUnsafe.test(part))) return { skip: 'it starts through cmd.exe, which would read some of its arguments as commands' };
+  const root = envValue(env, 'SystemRoot', platform) || 'C:\\Windows';
+  return { command: path.win32.join(root, 'System32', 'cmd.exe'), args: ['/d', '/c', command, ...args] };
+}
+
 /** One server for Claude: the `--mcp-config` entry, with `{pack}` and `{node}` resolved and `${NAME}` kept. */
-function claudeServer(server: ResolvedServer, role: ResolvedRole): ClaudeServerConfig {
+function claudeServer(server: ResolvedServer, role: ResolvedRole, options: RoleLaunchOptions): ClaudeServerConfig | { skip: string } {
   const { spec } = server;
   if (spec.type === 'stdio') {
     const { parts, env } = resolvePlaceholders([spec.command, ...spec.args], role.copy, role.nodeExecutable);
-    return { type: 'stdio', command: parts[0]!, args: parts.slice(1), env: { ...spec.env, ...env } };
+    const start = serverCommand(parts, options.platform ?? process.platform, options.env);
+    if ('skip' in start) return start;
+    return { type: 'stdio', command: start.command, args: start.args, env: { ...spec.env, ...env } };
   }
   const authorization = Object.keys(spec.headers).some(key => key.toLowerCase() === 'authorization');
   // Claude takes a bearer token as the header itself; the reference stays a reference.
@@ -253,8 +271,10 @@ function codexServer(name: string, server: ResolvedServer, role: ResolvedRole, o
       if (current !== undefined && current !== wanted) return { skip: `${key} is already set in your environment` };
       env[key] = wanted;
     }
-    set('command', literal(resolved.parts[0]!));
-    set('args', `[${resolved.parts.slice(1).map(literal).join(', ')}]`);
+    const start = serverCommand(resolved.parts, platform, options.env);
+    if ('skip' in start) return start;
+    set('command', literal(start.command));
+    set('args', `[${start.args.map(literal).join(', ')}]`);
     if (plain.length) set('env', table(plain));
     if (byName.length) set('env_vars', `[${byName.map(literal).join(', ')}]`);
     // npx may download the server first: Codex's own 10 seconds is often too short.
@@ -306,7 +326,12 @@ export function roleLaunch(role: ResolvedRole, options: RoleLaunchOptions): Role
     const values = spec.type === 'stdio' ? [...spec.args, ...Object.values(spec.env)] : [spec.url, ...Object.values(spec.headers), ...(spec.bearerTokenEnvVar ? [`\${${spec.bearerTokenEnvVar}}`] : [])];
     const unset = unsetVariables(values, options.env, platform);
     if (unset.length) { skip(`${unset.map(variable => `\${${variable}}`).join(', ')} ${unset.length === 1 ? 'isn\'t' : 'aren\'t'} set in your environment`); continue; }
-    if (provider === 'claude') { mcpServers[name] = claudeServer(server, role); continue; }
+    if (provider === 'claude') {
+      const claude = claudeServer(server, role, options);
+      if ('skip' in claude) { skip(claude.skip); continue; }
+      mcpServers[name] = claude;
+      continue;
+    }
     const codex = codexServer(name, server, role, options, env);
     if ('skip' in codex) { skip(codex.skip); continue; }
     codexConfig.push(...codex.config);

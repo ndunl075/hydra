@@ -49,7 +49,7 @@ export async function runGateList(gates: readonly Gate[], worktree: string, base
   await mkdir(context.logDirectory, { recursive: true });
   let blocker: JobCheckResult | undefined;
   // A pack's gate says so on its result, for "From the Coding pack" (docs/Packs_Plan.md).
-  const fromPack = (gate: Gate, result: JobCheckResult): JobCheckResult => gate.pack ? { ...result, pack: gate.pack } : result;
+  const fromPack = (gate: Gate, result: JobCheckResult): JobCheckResult => gate.pack ? { ...result, pack: gate.pack, ...(gate.packTitle ? { packTitle: gate.packTitle } : {}) } : result;
   for (const gate of gateOrder(gates)) {
     if (context.signal?.aborted) { results.push(fromPack(gate, notRun(gate, 'Stopped before it ran.'))); continue; }
     if (blocker) { results.push(fromPack(gate, notRun(gate, `Skipped: ${blocker.id} failed first.`))); continue; }

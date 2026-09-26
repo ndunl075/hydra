@@ -19,6 +19,8 @@ interface GateBase {
   id: string; required: boolean;
   /** The pack this gate comes from (docs/Packs_Plan.md). Set only by the packs loader; gates.json can't set it. */
   pack?: string;
+  /** That pack's title, for "From the Coding pack". Set only by the packs loader. */
+  packTitle?: string;
 }
 /** Extra environment for the process a pack gate starts: `{node}` runs Hydra's executable with ELECTRON_RUN_AS_NODE. Set only by the packs loader. */
 interface GateProcess { env?: Record<string, string> }

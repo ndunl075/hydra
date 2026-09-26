@@ -78,6 +78,8 @@ export interface JobCheckResult {
   reviewer?: Provider;
   /** The pack the gate comes from (docs/Packs_Plan.md), for "From the Coding pack". */
   pack?: string;
+  /** That pack's title. */
+  packTitle?: string;
 }
 export const gateKind = (check: JobCheckResult): GateKind => check.kind ?? 'command';
 export const gateState = (check: JobCheckResult): GateState => check.state ?? (check.passed ? 'passed' : 'failed');
@@ -91,7 +93,7 @@ export const gateBlocks = (check: JobCheckResult): boolean => check.required && 
  * re-exports this type; it lives here so toHeadCheckView (below) and its unit
  * test never need model.ts.
  */
-export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[]; pack?: string }
+export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[]; pack?: string; packTitle?: string }
 /** A stored JobCheckResult, as extension.ts's headViews sends it to the dashboard. Pure, so the mapping is unit tested directly. */
 export function toHeadCheckView(check: JobCheckResult): HeadCheckView {
   return {
@@ -100,6 +102,7 @@ export function toHeadCheckView(check: JobCheckResult): HeadCheckView {
     ...(check.findings?.length ? { findings: check.findings } : {}),
     ...(check.evidence?.length ? { evidence: check.evidence } : {}),
     ...(check.pack ? { pack: check.pack } : {}),
+    ...(check.packTitle ? { packTitle: check.packTitle } : {}),
   };
 }
 

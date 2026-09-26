@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { testMcpServer, type McpServerSpec } from '../../core/mcpServers';
 import { resolvePlaceholders } from '../../core/packs/format';
 import { leadFolder } from '../leadFolder';
+import { postFromPacks } from './gates';
 import type { SettingsContext, SettingsPage } from '../types';
 import { packCard, savedNote, thirdPartyWarning, type PackCardView } from './packsHelpers';
 
@@ -27,6 +28,8 @@ async function postState(ctx: SettingsContext): Promise<void> {
       .sort((a, b) => Number(b.pack?.source === 'builtin') - Number(a.pack?.source === 'builtin'))
       .map(pack => packCard(pack, process.execPath));
     await ctx.post({ type: 'packsState', packs: cards, error: undefined });
+    // Settings → Gates shows the packs' gates too: keep it in step with what just changed.
+    await postFromPacks(ctx, root);
   } catch (error) {
     await ctx.post({ type: 'packsState', packs: [], error: error instanceof Error ? error.message : String(error) });
   }

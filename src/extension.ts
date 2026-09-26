@@ -45,7 +45,7 @@ import { createPlan, maxPlanJobs, PlanStore, type Plan, type PlanJob } from './c
 import { planBrief } from './core/planner';
 // ---- Plan lanes (docs/Plan_Lanes_Plan.md). Their own block. ----
 import { cycleMessage, dependentsOf, findCycle, jobRunAs, jobStarted, planIdPattern, planJobKeyPattern, type PlanJobRunAs } from './core/plans';
-import { planHeadKey, PlanRunner, type PlanJobView, type PlanLaneResultInput } from './core/planRunner';
+import { planHeadInput, PlanRunner, type PlanJobView, type PlanLaneResultInput } from './core/planRunner';
 import type { LanePlanJobView } from './core/model';
 // ---- Gates (docs/Gates_Plan.md). Their own block. ----
 import { otherStillLimited } from './core/limitOffer';
@@ -972,11 +972,7 @@ class Manager {
       // A plan's heads group under its lead `plan-<id>`; a retried head gets a new idempotency key.
       // Provider (docs/Packs_Plan.md, "Plans"): the job's own, then its role's, then hydra.defaultProvider.
       startHead: async (plan, job, dependsOn, inputs) => {
-        const result = await service.startForPlan({
-          title: job.title, brief: job.brief, write_scope: job.writeScope?.length ? job.writeScope : [''],
-          ...(job.provider ? { provider: job.provider } : {}), ...(job.role ? { role: job.role } : {}), idempotency_key: planHeadKey(plan, job),
-          depends_on: dependsOn, lead_label: `Plan · ${plan.title}`.slice(0, 60),
-        }, `plan-${plan.id}`, inputs, defaultProvider()) as { job_id: string };
+        const result = await service.startForPlan(planHeadInput(plan, job, dependsOn), `plan-${plan.id}`, inputs, defaultProvider()) as { job_id: string };
         return { jobId: result.job_id };
       },
       startLane: (plan, job, start) => this.lanes.startPlanLane(plan, job, start, defaultProvider()),

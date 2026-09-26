@@ -18,7 +18,7 @@ import type { SettingsContext, SettingsPage } from '../types';
 const gatesFile = (root: string) => path.join(root, '.hydra', 'gates.json');
 
 /** "From packs" (docs/Packs_Plan.md, "Settings → Gates"): read-only, from the active packs' gates. */
-async function postFromPacks(ctx: SettingsContext, root: string): Promise<void> {
+export async function postFromPacks(ctx: SettingsContext, root: string): Promise<void> {
   try {
     const [effective, state] = await Promise.all([ctx.packs.effectiveGates(root), ctx.packs.state(root)]);
     const titleOf = (id: string): string => state.packs.find(pack => pack.id === id)?.title ?? id;
@@ -26,7 +26,11 @@ async function postFromPacks(ctx: SettingsContext, root: string): Promise<void> 
     await ctx.post({
       type: 'gatesFromPacks',
       gates: fromPacks.map(gate => ({ id: gate.id, pack: titleOf(gate.pack!) })),
-      dropped: effective.dropped.map(gate => ({ id: gate.id, pack: titleOf(gate.pack), reason: gate.reason })),
+      dropped: [
+        ...effective.dropped.map(gate => ({ id: gate.id, pack: titleOf(gate.pack), reason: gate.reason })),
+        // A listed pack that can't run: its gates show as not run, with the reason, as on heads and merges.
+        ...effective.notRun.filter(result => result.pack).map(result => ({ id: result.id, pack: result.packTitle || titleOf(result.pack!), reason: result.summary || 'Not run.' })),
+      ],
     });
   } catch { await ctx.post({ type: 'gatesFromPacks', gates: [], dropped: [] }); }
 }

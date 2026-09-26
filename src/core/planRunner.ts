@@ -179,6 +179,18 @@ export function planRunRefusal(plan: Pick<Plan, 'jobs'>, terminals: boolean): st
 /** A plan head's idempotency key: a retried head gets `-r<attempt>`, because the old key would return the old head. */
 export const planHeadKey = (plan: Pick<Plan, 'id'>, job: Pick<PlanJob, 'key' | 'attempt'>): string => `plan-${plan.id}-${job.key}${job.attempt ? `-r${job.attempt}` : ''}`;
 
+/**
+ * What a plan's head job starts with (`hydra_start_head`'s input). A job with no write scope, such as
+ * one added by hand, may change the whole repository: `"."` (an empty entry is refused).
+ */
+export function planHeadInput(plan: Pick<Plan, 'id' | 'title'>, job: Pick<PlanJob, 'key' | 'attempt' | 'title' | 'brief' | 'writeScope' | 'provider' | 'role'>, dependsOn: string[]): Record<string, unknown> {
+  return {
+    title: job.title, brief: job.brief, write_scope: job.writeScope?.length ? job.writeScope : ['.'],
+    ...(job.provider ? { provider: job.provider } : {}), ...(job.role ? { role: job.role } : {}), idempotency_key: planHeadKey(plan, job),
+    depends_on: dependsOn, lead_label: `Plan · ${plan.title}`.slice(0, 60),
+  };
+}
+
 // ---- The runner ----
 
 /**

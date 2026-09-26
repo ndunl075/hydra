@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import path from 'node:path';
-import { git } from './core/git';
+import { git, gitMetaChanges, gitMetaFingerprint } from './core/git';
 import { findProvider } from './core/providers';
 import { claudeStatus, codexStatus, providerPaths, type HelperServerSpec } from './core/helperRegistration';
-import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePty';
+import { loadNodePty, terminalText, terminalsUnavailable, type PtyModule } from './core/lanePty';
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
 import { LaneService, gatesPassNote, maxOpenLanes } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
@@ -500,6 +500,7 @@ export class LanesController implements vscode.Disposable {
         // confirmation, when this project's gates.json says lanes: "onMerge" and there are gates.
         const gated = await this.gatesBefore(service, lane, interactive, 'Merge anyway?', 'Merge anyway');
         if (!gated) return undefined; // cancelled, sent to the lane, or gates couldn't run and this was interactive
+        if (!await this.gitMetaBefore(lane, interactive, 'Merge anyway', 'Merging runs git in your main checkout, which would run them.')) return undefined;
         const gatesNote = gated.note;
         if (interactive) {
           const pick = await vscode.window.showInformationMessage(`Merge lane ${lane.name} into ${lane.target}?`, { modal: true, detail: `${plural(check.commits, 'commit')}, ${plural(check.files, 'file')}. Merges cleanly.${gatesNote}` }, 'Merge');
@@ -622,6 +623,7 @@ export class LanesController implements vscode.Disposable {
     }
     const gated = await this.gatesBefore(service, lane, interactive, 'Mark the job done anyway?', 'Mark done anyway');
     if (!gated) return undefined;
+    if (!await this.gitMetaBefore(lane, interactive, 'Mark done anyway', 'Marking the job done runs git in this lane\'s worktree, which would run them.')) return undefined;
     let note = options.message;
     if (interactive) {
       note = await vscode.window.showInputBox({
@@ -634,6 +636,24 @@ export class LanesController implements vscode.Disposable {
     this.postState(true);
     if (interactive) void vscode.window.showInformationMessage(`Job ${job.jobTitle} is done at ${work.commit.slice(0, 7)}.${gated.note} The jobs after it can start.`);
     return { commit: work.commit };
+  }
+
+  /**
+   * 1.4 (docs/Hydra_Improvements.md): the git metadata check before Merge or Mark job done. `true`
+   * means carry on (no snapshot to compare against, the fingerprint couldn't be taken again, or
+   * nothing changed, or the user chose to go ahead anyway); `false` means stop. Non-interactive
+   * (`hydra.lanes.action`) refuses outright, naming the files, rather than asking.
+   */
+  private async gitMetaBefore(lane: Lane, interactive: boolean, anyway: string, reason: string): Promise<boolean> {
+    if (!lane.gitMeta) return true;
+    const now = await gitMetaFingerprint(lane.worktree).catch(() => undefined);
+    if (!now) return true;
+    const changed = gitMetaChanges(lane.gitMeta, now);
+    if (!changed.length) return true;
+    const message = `Your repository's git configuration or hooks changed since this lane started (${changed.join(', ')}). ${reason}`;
+    if (!interactive) throw new Error(message);
+    const pick = await vscode.window.showWarningMessage(message, { modal: true }, anyway);
+    return pick === anyway;
   }
 
   /**
@@ -678,13 +698,15 @@ export class LanesController implements vscode.Disposable {
   /** "Send to lane" (docs/Gates_Plan.md, "Merge"): the failures as one line in the lane's terminal input, never pressing Enter. */
   private sendGatesToLane(service: LaneService, lane: Lane, results: readonly JobCheckResult[]): void {
     const text = flattenGateFailureMessage(results);
-    if (service.input(lane.id, text)) {
+    // 1.3 (docs/Hydra_Improvements.md): this text includes gate output, which the checked agent
+    // (or a command it ran) produced, so it goes through typeText rather than input.
+    if (service.typeText(lane.id, text)) {
       void this.show('lanes', lane.id);
       void vscode.window.showInformationMessage(`The gate failures are typed into lane ${lane.name}. Press Enter there to send them.`);
       return;
     }
     // Its session has ended: nothing to type into. Keep the text for when it's resumed.
-    void vscode.env.clipboard.writeText(text);
+    void vscode.env.clipboard.writeText(terminalText(text));
     void vscode.window.showInformationMessage(`Lane ${lane.name} isn't running, so the gate failures are on the clipboard. Resume it and paste them.`, 'Resume')
       .then(async pick => { if (pick) { await service.resume(lane.id); await this.show('lanes', lane.id); } });
   }

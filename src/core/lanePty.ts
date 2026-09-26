@@ -41,6 +41,25 @@ export function loadNodePty(appRoot: string | undefined, load: (id: string) => u
   return { tried, errors };
 }
 
+/**
+ * 1.3 (docs/Hydra_Improvements.md): strip terminal control sequences from text Hydra itself is
+ * about to type into a lane (never applied to `LaneService.input`, which carries the user's own
+ * keystrokes — arrow keys and the like are escape sequences on purpose). Removes CSI sequences
+ * (`ESC [ … final byte`, which covers bracketed-paste markers `ESC[200~`/`ESC[201~`), OSC
+ * sequences (`ESC ] … BEL` or `ESC ] … ESC \`), any other `ESC` plus one character, and C0/C1
+ * control characters; line breaks and tabs become spaces rather than vanishing, so words don't
+ * run together. A head's gate output, once it reaches here, reads as plain text.
+ */
+export function terminalText(text: string): string {
+  return text
+    .replace(/\r\n|\r|\n|\t/g, ' ')
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[\s\S]?/g, '')
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/[\u0080-\u009f]/g, '');
+}
+
 export const replayLimit = 256 * 1024;
 export const batchMs = 16;
 export const minCols = 20, maxCols = 500, minRows = 5, maxRows = 200;

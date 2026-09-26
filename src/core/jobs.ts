@@ -4,6 +4,8 @@ import path from 'node:path';
 import { replaceAtomic } from './atomicFile';
 import type { Provider } from './model';
 import type { DependencyResult } from './headStart';
+import { gateIdPattern, type Gate } from './gates/config';
+import type { GitMetaFingerprint } from './git';
 
 /**
  * Hydra helper jobs (docs/Official_Extensions_Plan.md, Phase 2).
@@ -121,7 +123,11 @@ export function gateChip(check: Pick<JobCheckResult, 'id' | 'kind' | 'state' | '
   const title = state === 'notRun' ? (check.summary ? `Not run: ${check.summary}` : 'Not run') : (check.summary || (state === 'failed' ? 'Failed' : 'Passed'));
   return { id: check.id, icon, label: `${icon} ${check.id}`, tone, title };
 }
-export interface JobResult { summary: string; commit: string; changedFiles: string[]; checks: JobCheckResult[] }
+export interface JobResult {
+  summary: string; commit: string; changedFiles: string[]; checks: JobCheckResult[];
+  /** 1.6 (docs/Hydra_Improvements.md): set when .hydra/gates.json, checks.json or packs.json changed while this head ran. The gate floor (1.1) still ran the head's start-of-run gates regardless. */
+  note?: string;
+}
 export interface JobEvent { at: string; from: JobState | null; to: JobState; reason?: string }
 
 /** The chat that started a job: one lead bridge (one Claude Code or Codex conversation). Set by Hydra from the caller's token. */
@@ -171,6 +177,18 @@ export interface Job {
   // ---- Packs (docs/Packs_Plan.md, "Heads") ----
   /** The role it works in, from an active pack. Resolved again when it starts, from the pack's checked copy. */
   role?: JobRole;
+  // ---- Hardening (docs/Hydra_Improvements.md, Step 1) ----
+  /**
+   * 1.1: the gates in force when this head started (the same loader `hydra_done` otherwise uses),
+   * so a head that edits or removes a gate from .hydra/gates.json mid-run can't weaken what checks
+   * it — see gateFloor. Missing on jobs from before this change, and when gates.json couldn't be
+   * read at start: hydra_done then falls back to today's config only, exactly as it always did.
+   */
+  gatesAtStart?: JobGatesSnapshot;
+  /** 1.4: the git metadata fingerprint (gitMetaFingerprint) of the lead folder's shared .git when this head started. Compared again at hydra_done; a change refuses acceptance (a failed check, like a scope failure). */
+  gitMetaAtStart?: GitMetaFingerprint;
+  /** 1.6: hashes of .hydra/gates.json, checks.json and packs.json when this head started, for the tamper note on its result if any of them changed while it ran. */
+  tamperAtStart?: TamperSnapshot;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -179,6 +197,84 @@ export interface Job {
 }
 /** A head's role: "coding/builder", with the titles it had when the head was started, for the views. */
 export interface JobRole { ref: string; title: string; packTitle: string }
+
+// ---- Hardening (docs/Hydra_Improvements.md, Step 1) ----
+
+/** 1.1: a head's gates at start (HelperService.startHelper), the same shape `loadGates`/`effectiveGates` return. */
+export interface JobGatesSnapshot { gates: Gate[]; notRun: JobCheckResult[] }
+/** 1.6: SHA-256 hex digests of the lead's .hydra files, or null when a file is missing. */
+export interface TamperSnapshot { gatesJson: string | null; checksJson: string | null; packsJson: string | null }
+
+/** Caps on a stored gates snapshot (1.1), matching packCaps.effectiveGates in src/core/packs/format.ts: a project's gates.json plus its packs together are capped at 24. */
+const maxSnapshotGates = 24;
+const maxSnapshotBytes = 256 * 1024;
+const looksLikeGate = (value: unknown): value is { id: string; type: string } =>
+  !!value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' && gateIdPattern.test((value as { id: string }).id) && typeof (value as { type?: unknown }).type === 'string';
+/**
+ * A stored `gatesAtStart` snapshot, checked for shape and size only — the individual Gate and
+ * JobCheckResult fields are Hydra's own output, not user input, so (as elsewhere in this file,
+ * for example JobCheckResult on a loaded Job) they aren't re-validated field by field. A snapshot
+ * that fails these caps is dropped rather than trusted: hydra_done then falls back to today's
+ * gates only, exactly as it does for a job with no snapshot at all.
+ */
+function validateGatesSnapshot(value: unknown): JobGatesSnapshot | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as Partial<JobGatesSnapshot>;
+  const gates = Array.isArray(source.gates) ? source.gates : undefined;
+  const notRun = source.notRun === undefined ? [] : Array.isArray(source.notRun) ? source.notRun : undefined;
+  if (!gates || !notRun || gates.length > maxSnapshotGates || notRun.length > maxSnapshotGates) return undefined;
+  if (!gates.every(looksLikeGate) || !notRun.every(looksLikeGate)) return undefined;
+  try { if (Buffer.byteLength(JSON.stringify({ gates, notRun })) > maxSnapshotBytes) return undefined; } catch { return undefined; }
+  return { gates: gates as Gate[], notRun: notRun as JobCheckResult[] };
+}
+
+/**
+ * 1.1 (docs/Hydra_Improvements.md): the gates that actually run at hydra_done — the snapshot's
+ * own definition for every gate id it already knew about (so a head that edits or deletes a gate
+ * from .hydra/gates.json mid-run, or points its command somewhere weaker, can't change what runs
+ * for that id), plus any gate in today's config whose id the snapshot never had (a gate — or a
+ * newly turned-on pack's gate — added since the head started runs like any other). A gate that
+ * was "not run" at start (an inactive pack) but is a real gate in today's config is exactly such
+ * an addition, so it now runs too. `maxAttempts` always comes from today's config, never the
+ * snapshot: Settings -> Gates changes apply to heads started after they're made, never mid-run.
+ * With no snapshot (a job from before this change, or gates.json unreadable at start), today's
+ * config is all there is, exactly as before Step 1.
+ */
+export function gateFloor(snapshot: JobGatesSnapshot | undefined, current: { gates: Gate[]; notRun?: JobCheckResult[] }): { gates: Gate[]; notRun: JobCheckResult[] } {
+  if (!snapshot) return { gates: current.gates, notRun: current.notRun ?? [] };
+  const known = new Set(snapshot.gates.map(gate => gate.id));
+  const added = current.gates.filter(gate => !known.has(gate.id));
+  const notRun = (current.notRun ?? []).filter(result => !known.has(result.id));
+  return { gates: [...snapshot.gates, ...added], notRun };
+}
+
+const maxGitMetaEntries = 64, maxGitMetaKey = 300;
+const hexDigest = /^[a-f0-9]{64}$/;
+/** A stored `gitMetaAtStart` fingerprint (1.4): a plain map of relative path to a sha256 hex digest. */
+function validateGitMeta(value: unknown): GitMetaFingerprint | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > maxGitMetaEntries) return undefined;
+  const result: Record<string, string> = {};
+  for (const [name, digest] of entries) {
+    if (typeof name !== 'string' || !name || name.length > maxGitMetaKey || typeof digest !== 'string' || !hexDigest.test(digest)) return undefined;
+    result[name] = digest;
+  }
+  return result;
+}
+
+/** A stored `tamperAtStart` snapshot (1.6): three optional sha256 hex digests. */
+function validateTamperSnapshot(value: unknown): TamperSnapshot | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as Partial<Record<keyof TamperSnapshot, unknown>>;
+  const field = (name: keyof TamperSnapshot) => source[name] === null ? null : typeof source[name] === 'string' && hexDigest.test(source[name] as string) ? source[name] as string : undefined;
+  const gatesJson = field('gatesJson'), checksJson = field('checksJson'), packsJson = field('packsJson');
+  if (gatesJson === undefined || checksJson === undefined || packsJson === undefined) return undefined;
+  return { gatesJson, checksJson, packsJson };
+}
 
 export interface JobInput {
   title: string; brief: string; writeScope: string[];
@@ -194,6 +290,10 @@ export interface JobInput {
   role?: string;
   /** Internal only (HelperService): the role that name means. parseJobInput never sets it. */
   jobRole?: JobRole;
+  /** Internal only (HelperService.headStartSnapshot, Step 1 hardening): never set by parseJobInput. */
+  gatesAtStart?: JobGatesSnapshot;
+  gitMetaAtStart?: GitMetaFingerprint;
+  tamperAtStart?: TamperSnapshot;
 }
 
 const text = (value: unknown, name: string, max: number, min = 1): string => {
@@ -301,6 +401,9 @@ export class JobStore {
         provider: input.provider ?? 'claude', model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: defaultMaxAttempts, nudged: false,
         ...(input.inputs?.length ? { inputs: structuredClone(input.inputs) } : {}),
         ...(input.jobRole ? { role: { ref: input.jobRole.ref, title: input.jobRole.title, packTitle: input.jobRole.packTitle } } : {}),
+        ...(input.gatesAtStart ? { gatesAtStart: structuredClone(input.gatesAtStart) } : {}),
+        ...(input.gitMetaAtStart ? { gitMetaAtStart: structuredClone(input.gitMetaAtStart) } : {}),
+        ...(input.tamperAtStart ? { tamperAtStart: structuredClone(input.tamperAtStart) } : {}),
         replies: [], createdAt: at, updatedAt: at, history: [{ at, from: null, to: 'queued' }],
       };
       this.jobs.set(id, job);
@@ -422,6 +525,12 @@ function parseStoreFile(value: unknown): StoreFile {
   if (!source || source.version !== 1 || !Array.isArray(source.jobs)) throw new Error('Unsupported head job store.');
   for (const job of source.jobs) {
     if (!job || job.version !== 1 || typeof job.id !== 'string' || !/^[a-f0-9]{12}$/.test(job.id) || !jobStates.includes(job.state) || !Array.isArray(job.history)) throw new Error('A stored head job is malformed.');
+    // Step 1 hardening: capped, shape-checked rather than trusted outright. An invalid or
+    // oversized snapshot is dropped (never thrown on), so a corrupted jobs.json still loads and
+    // that one job simply behaves as though it had no snapshot.
+    (job as Job).gatesAtStart = validateGatesSnapshot((job as Job).gatesAtStart);
+    (job as Job).gitMetaAtStart = validateGitMeta((job as Job).gitMetaAtStart);
+    (job as Job).tamperAtStart = validateTamperSnapshot((job as Job).tamperAtStart);
   }
   return { version: 1, jobs: source.jobs };
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildHydraTree } from '../src/core/hydraTree';
-import type { HelperJobView, LaneView } from '../src/core/model';
+import type { HelperJobView, LaneView, SnapshotRole } from '../src/core/model';
 import { createPlan, type Plan } from '../src/core/plans';
 
 const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
@@ -25,6 +25,19 @@ test('the Hydra panel groups open lanes, running heads and live plans; merged/cl
   assert.deepEqual(tree.heads.map(item => item.id), ['h1']);
   assert.deepEqual(tree.plans.map(item => item.state), ['draft']);
   assert.equal(tree.empty, false);
+});
+
+test('a lane with a role shows it in the panel description (docs/Packs_Plan.md, "How roles show"): "Codex · Reviewer · lane/x"', () => {
+  const roles: SnapshotRole[] = [{ ref: 'coding/reviewer', pack: 'coding', packTitle: 'Coding', id: 'reviewer', title: 'Reviewer', description: '', provider: 'codex' }];
+  const tree = buildHydraTree(
+    [lane('111111111111', 'Lane 1', { provider: 'codex', branch: 'lane/x', role: { pack: 'coding', role: 'reviewer' } })],
+    [], [], {}, roles,
+  );
+  assert.equal(tree.lanes[0]!.description, 'Codex · Reviewer · lane/x');
+});
+test('a lane whose role isn\'t active shows no role in the description', () => {
+  const tree = buildHydraTree([lane('111111111111', 'Lane 1', { branch: 'lane/x', role: { pack: 'coding', role: 'reviewer' } })], [], [], {}, []);
+  assert.equal(tree.lanes[0]!.description, 'Claude · lane/x');
 });
 
 test('a lane\'s description names its conflicts, and its tree item carries state and dirtiness for the icon and inline actions', () => {

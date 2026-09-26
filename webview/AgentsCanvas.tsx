@@ -453,11 +453,14 @@ function PlanJobNode({ item, roles = [], onOpen, onMenu, onHandleDown, onHandleU
   item: CanvasPlanJob; roles?: readonly SnapshotRole[]; onOpen: () => void; onMenu: (x: number, y: number) => void;
   onHandleDown: (event: React.PointerEvent) => void; onHandleUp: (event: React.PointerEvent) => void;
 }) {
-  const job = item.job, providerLabel = job.provider === 'codex' ? 'Codex' : job.provider === 'claude' ? 'Claude' : 'Auto';
+  const job = item.job;
+  const matchedRole = job.role ? roles.find(role => role.ref === job.role) : undefined;
+  // Packs (docs/Packs_Plan.md, "How roles show"): the pill reads "Builder · Claude" — without its own
+  // provider, a job takes its role's, the same precedence runPlanById uses (Provider: job, then role, then default).
+  const effectiveProvider = job.provider ?? matchedRole?.provider;
+  const providerLabel = effectiveProvider === 'codex' ? 'Codex' : effectiveProvider === 'claude' ? 'Claude' : 'Auto';
   const kind = job.runAs === 'lane' ? 'Draft job · Lane' : 'Draft job';
-  // Packs (docs/Packs_Plan.md, "How roles show"): the draft job pill reads "Builder · Claude" when it has a role.
-  const roleTitle = job.role ? roles.find(role => role.ref === job.role)?.title : undefined;
-  const pill = roleTitle ? `${roleTitle} · ${providerLabel}` : providerLabel;
+  const pill = matchedRole ? `${matchedRole.title} · ${providerLabel}` : providerLabel;
   return <div className="canvas-node canvas-plan-job" data-plan-job={item.id} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
     role="button" tabIndex={0} aria-label={`${job.title}, draft ${job.runAs === 'lane' ? 'lane job' : 'job'}, ${pill}. Enter to edit; Shift+F10 for more.`}
     onClick={onOpen}

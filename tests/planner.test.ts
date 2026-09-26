@@ -11,6 +11,14 @@ test('the prompt asks for JSON only, 2-8 jobs, and the same rules as heads', () 
   assert.match(prompt, /Refactor checkout\.$/);
 });
 
+test('with active roles, the prompt lists them (ref, title, description) and allows an optional "role" per job', () => {
+  const withoutRoles = plannerPrompt('Refactor checkout.');
+  assert.doesNotMatch(withoutRoles, /"role"/);
+  const prompt = plannerPrompt('Refactor checkout.', [{ ref: 'coding/builder', title: 'Builder', description: 'Builds the feature with tests.' }]);
+  assert.match(prompt, /"role": "pack\/role" \(optional\)/);
+  assert.match(prompt, /coding\/builder: Builder\. Builds the feature with tests\./);
+});
+
 test('the CLI arguments match the plan exactly for each provider', () => {
   assert.deepEqual(plannerArguments('claude', 'PROMPT'), ['-p', '--output-format', 'json', '--permission-mode', 'plan', 'PROMPT']);
   assert.deepEqual(plannerArguments('codex', 'PROMPT'), ['exec', '--json', '--sandbox', 'read-only', 'PROMPT']);

@@ -30,7 +30,14 @@ export interface HelperJobView {
   merged?: boolean;
   startedAt?: string;
   writeScope?: string[];
+  /** Packs (docs/Packs_Plan.md): the role it works in, "coding/builder", with the titles it started with. */
+  role?: { ref: string; title: string; packTitle: string };
 }
+/**
+ * Packs (docs/Packs_Plan.md, "Picking a role"): one active role, for the New
+ * lane card, `hydra.newLane`, and the plan job popover's Role select.
+ */
+export interface SnapshotRole { ref: string; pack: string; packTitle: string; id: string; title: string; description: string; provider: Provider }
 export interface Snapshot {
   mode: 'editor' | 'agents'; busy: boolean; error?: string;
   helpers?: HelperJobView[];
@@ -42,6 +49,8 @@ export interface Snapshot {
   dismissedTray?: string[];
   /** Plan lanes (docs/Plan_Lanes_Plan.md): each plan's job statuses, by plan id, for plans that have run. Also sent with every `plans` message. */
   planJobs?: Record<string, PlanJobView[]>;
+  /** Packs (docs/Packs_Plan.md): the active packs' roles, in packs.json order, refreshed whenever packs change. */
+  roles?: SnapshotRole[];
 }
 export type ClientMessage =
   | LaneClientMessage
@@ -59,7 +68,8 @@ export type ClientMessage =
   | { type: 'planCreate'; title: string; brief: string }
   | { type: 'planCreateEmpty'; title: string }
   | { type: 'planRetry' | 'planCancel' | 'planDelete' | 'planAddJob' | 'planRun' | 'planStartEmpty'; id: string }
-  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider; runAs?: PlanJobRunAs }
+  /** `role` is "pack/role" (docs/Packs_Plan.md, "Picking a role"), or "" to clear it; missing keeps the job's current role. */
+  | { type: 'planSaveJob'; id: string; key: string; title: string; brief: string; provider?: Provider; runAs?: PlanJobRunAs; role?: string }
   | { type: 'planDeleteJob'; id: string; key: string }
   | { type: 'planDependsOn'; id: string; key: string }
   | { type: 'planAddDependency' | 'planRemoveDependency'; id: string; key: string; dependsOn: string }
@@ -108,7 +118,9 @@ export function parseMessage(value: unknown): ClientMessage {
   if (type === 'planSaveJob') {
     const runAs = message.runAs;
     if (runAs !== undefined && runAs !== 'head' && runAs !== 'lane') throw new Error('A job runs as a head or a lane.');
-    return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider(), ...(runAs ? { runAs } : {}) };
+    const role = message.role;
+    if (role !== undefined && (typeof role !== 'string' || (role !== '' && !/^[a-z0-9-]{1,24}\/[a-z0-9-]{1,24}$/.test(role)))) throw new Error('Name the job\'s role as "pack/role".');
+    return { type, id: planId(), key: jobKey(), title: string('title', 80), brief: string('brief', 4000), provider: provider(), ...(runAs ? { runAs } : {}), ...(role !== undefined ? { role } : {}) };
   }
   if (type === 'planDeleteJob') return { type, id: planId(), key: jobKey() };
   if (type === 'planDependsOn') return { type, id: planId(), key: jobKey() };
@@ -146,7 +158,11 @@ export interface LanePlanJobView {
   commit?: string; dependents: number; dependentsStarted: number;
 }
 /** A lane as the webview shows it: the record, its last sync, whether its terminal is alive and, for a plan lane, its job. */
-export type LaneView = Lane & { sync?: LaneSyncView; running: boolean; planJob?: LanePlanJobView };
+export type LaneView = Lane & {
+  sync?: LaneSyncView; running: boolean; planJob?: LanePlanJobView;
+  /** Packs (docs/Packs_Plan.md, "Lanes"): why its role wasn't available at its last start, for the tile. `role` itself is the record's. */
+  roleNote?: string;
+};
 export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh' | 'switchProvider' | 'runGates' | 'evidence'
   // ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 5) ----
   | 'markJobDone' | 'cancelJob' | 'showPlan';
@@ -159,7 +175,8 @@ export interface LaneLimitOfferView { provider: Provider; message: string; butto
 
 /** Webview to extension. */
 export type LaneClientMessage =
-  | { type: 'laneNew'; name: string; provider: Provider; goal?: string }
+  /** `role` is "pack/role" (docs/Packs_Plan.md, "Lanes"); `provider` is still the form's choice. */
+  | { type: 'laneNew'; name: string; provider: Provider; goal?: string; role?: string }
   /** After the Lanes view mounts: the extension replays every terminal's buffer. */
   | { type: 'laneAttach' }
   | { type: 'laneInput'; id: string; data: string }
@@ -211,11 +228,12 @@ export function parseLaneMessage(message: Record<string, unknown>, type: string)
   };
   switch (type) {
     case 'laneNew': {
-      const { name, provider, goal } = message;
+      const { name, provider, goal, role } = message;
       if (typeof name !== 'string' || /[\u0000-\u001f\u007f]/.test(name) || !name.trim() || name.trim().length > 40) throw new Error('Invalid lane name.');
       if (provider !== 'claude' && provider !== 'codex') throw new Error('Unknown provider.');
       if (goal !== undefined && (typeof goal !== 'string' || goal.length > 2000 || goal.includes('\0'))) throw new Error('Invalid lane goal.');
-      return { type, name: name.trim(), provider, ...(typeof goal === 'string' && goal.trim() ? { goal } : {}) };
+      if (role !== undefined && (typeof role !== 'string' || !/^[a-z0-9-]{1,24}[/][a-z0-9-]{1,24}$/.test(role))) throw new Error('Invalid lane role.');
+      return { type, name: name.trim(), provider, ...(typeof goal === 'string' && goal.trim() ? { goal } : {}), ...(role ? { role } : {}) };
     }
     case 'laneAttach': return { type };
     case 'laneInput': {

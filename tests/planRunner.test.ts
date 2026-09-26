@@ -4,7 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createPlan, PlanStore, type Plan, type PlanJob } from '../src/core/plans';
-import { planHeadKey, planRunRefusal, planSteps, PlanRunner, type PlanHeadLook, type PlanLaneLook, type PlanLook, type PlanRunnerOptions } from '../src/core/planRunner';
+import { planHeadInput, planHeadKey, planRunRefusal, planSteps, PlanRunner, type PlanHeadLook, type PlanLaneLook, type PlanLook, type PlanRunnerOptions } from '../src/core/planRunner';
+import { parseJobInput } from '../src/core/jobs';
 import type { DependencyResult } from '../src/core/headStart';
 
 /**
@@ -358,4 +359,13 @@ test('Mark job done can be pressed again while no dependent has started (decisio
     assert.deepEqual([g.byKey('a').outcome?.state, g.byKey('a').outcome?.reason], ['failed', 'Couldn\'t start: Codex CLI not found.']);
     assert.ok(g.byKey('b').jobId, 'one job\'s trouble never stops the rest');
   } finally { await g.close(); }
+});
+
+test('a plan head job with no write scope may change the whole repository; its input parses as a head\'s', () => {
+  const plan = { id: 'abcdef012345', title: 'Checkout' };
+  const input = planHeadInput(plan, { key: 'api', title: 'API', brief: 'Build it.', role: 'research/researcher' }, ['111111111111']);
+  assert.deepEqual(input.write_scope, ['.'], 'an empty entry would be refused');
+  assert.deepEqual(parseJobInput(input).writeScope, [''], 'parsed as the whole repository');
+  assert.deepEqual(planHeadInput(plan, { key: 'ui', title: 'UI', brief: 'b', writeScope: ['src/ui/'], attempt: 2 }, []).write_scope, ['src/ui/']);
+  assert.equal(planHeadInput(plan, { key: 'ui', title: 'UI', brief: 'b', attempt: 2 }, []).idempotency_key, 'plan-abcdef012345-ui-r2');
 });

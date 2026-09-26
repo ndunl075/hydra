@@ -1,5 +1,6 @@
 import type * as vscode from 'vscode';
 import type { SettingsImport } from '../extensionImport';
+import type { PackService } from '../core/packs/service';
 
 /** One row's search text: title and description shown left of a row's control. */
 export interface SettingsRow {
@@ -13,6 +14,13 @@ export interface SettingsContext {
   imports: SettingsImport;
   globalState: vscode.Memento;
   post(message: unknown): Thenable<boolean>;
+  /**
+   * Packs (docs/Packs_Plan.md, section 4): the Packs page calls `turnOn`/`allow`
+   * directly here, never through a public command — a command any extension could
+   * call would let a repository allow a pack by itself. Every other page only
+   * reads it (or not at all).
+   */
+  packs: PackService;
 }
 
 /**

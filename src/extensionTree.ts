@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { buildHydraTree, type HydraTree, type TreeHeadItem, type TreeLaneItem, type TreePlanItem } from './core/hydraTree';
-import type { HelperJobView, LaneView } from './core/model';
+import type { HelperJobView, LaneView, SnapshotRole } from './core/model';
 import type { Plan } from './core/plans';
 import type { PlanJobView } from './core/planRunner';
 
@@ -22,15 +22,18 @@ export class HydraTreeProvider implements vscode.TreeDataProvider<Row>, vscode.D
   private heads: readonly HelperJobView[] = [];
   private plans: readonly Plan[] = [];
   private planJobs: Readonly<Record<string, readonly PlanJobView[]>> = {};
+  /** The active packs' roles (docs/Packs_Plan.md, "How roles show"), for a lane's description. */
+  private roles: readonly SnapshotRole[] = [];
 
-  update(next: { lanes?: readonly LaneView[]; heads?: readonly HelperJobView[]; plans?: readonly Plan[]; planJobs?: Readonly<Record<string, readonly PlanJobView[]>> }): void {
+  update(next: { lanes?: readonly LaneView[]; heads?: readonly HelperJobView[]; plans?: readonly Plan[]; planJobs?: Readonly<Record<string, readonly PlanJobView[]>>; roles?: readonly SnapshotRole[] }): void {
     if (next.lanes) this.lanes = next.lanes;
     if (next.heads) this.heads = next.heads;
     if (next.plans) this.plans = next.plans;
     if (next.planJobs) this.planJobs = next.planJobs;
+    if (next.roles) this.roles = next.roles;
     this.emitter.fire(undefined);
   }
-  private tree(): HydraTree { return buildHydraTree(this.lanes, this.heads, this.plans, this.planJobs); }
+  private tree(): HydraTree { return buildHydraTree(this.lanes, this.heads, this.plans, this.planJobs, this.roles); }
 
   getTreeItem(row: Row): vscode.TreeItem {
     if (row.kind === 'group') {

@@ -5,9 +5,9 @@ import { findProvider } from './core/providers';
 import { claudeStatus, codexStatus, providerPaths, type HelperServerSpec } from './core/helperRegistration';
 import { loadNodePty, terminalsUnavailable, type PtyModule } from './core/lanePty';
 import { LaneStore, isLaneId, laneGoalMax, parseLaneName, type Lane } from './core/lanes';
-import { LaneService, maxOpenLanes } from './core/laneService';
+import { LaneService, gatesPassNote, maxOpenLanes } from './core/laneService';
 import { defaultCommitMessage, laneDiffFiles, type CloseMode } from './core/laneFinish';
-import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesOutcome } from './core/gates';
+import { flattenGateFailureMessage, loadGates, summarizeGateFailures, type GatesLoader, type GatesOutcome } from './core/gates';
 import type { JobCheckResult } from './core/jobs';
 import { laneActions, type AgentsView, type LaneAction, type LaneClientMessage, type LaneLimitOfferView, type LaneOfferButtonId, type LaneServerMessage, type LaneView, type Provider } from './core/model';
 import { otherProvider, type LimitEvent } from './core/limitEvents';
@@ -19,6 +19,8 @@ import { laneNameFromTitle, type LanePlanLink } from './core/lanes';
 import type { LanePlanJobView } from './core/model';
 import type { Plan, PlanJob } from './core/plans';
 import { planLaneBrief, type PlanLaneLook, type PlanLaneResultInput, type PlanLaneStart } from './core/planRunner';
+// ---- Packs (docs/Packs_Plan.md) ----
+import type { RoleSource } from './core/packs/launch';
 
 /**
  * The editor side of Hydra lanes (docs/Lanes_And_Planner_Plan.md): commands,
@@ -47,9 +49,14 @@ export interface LanesHost {
   markJobDone?(laneId: string, result: PlanLaneResultInput): Promise<void>;
   /** Cancel job: the job is cancelled and the lane stays open, as an ordinary lane. */
   cancelPlanJob?(laneId: string): Promise<void>;
+  // ---- Packs (docs/Packs_Plan.md): gates.json plus the active packs' gates. Undefined reads gates.json only. ----
+  gates?: GatesLoader;
+  /** The active packs' roles, resolved at each lane launch. Undefined: a lane's role is never available. */
+  roles?: RoleSource;
 }
 /** Options for `hydra.lanes.action` (automation): no dialogs, so choices are passed in. */
 export interface LaneActionOptions { message?: string; close?: CloseMode }
+
 
 const laneMessages: ReadonlySet<string> = new Set(['laneNew', 'laneAttach', 'laneInput', 'laneResize', 'laneAction', 'laneLimitAction', 'laneCancelSwitch', 'view']);
 export const isLaneMessage = (message: { type: string }): message is LaneClientMessage => laneMessages.has(message.type);
@@ -76,6 +83,8 @@ export class LanesController implements vscode.Disposable {
   private posted = '';
   private readonly disposables: vscode.Disposable[] = [];
   private storageDirectory?: string;
+  /** The main checkout lanes branch from: where the active packs are read. */
+  private repository?: string;
   // ---- The usage-limit banner (docs/Gates_Plan.md, section 2), one per lane at most ----
   private readonly limitOffers = new Map<string, LaneLimitOfferView & { event: LimitEvent }>();
   private readonly switchTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -109,6 +118,7 @@ export class LanesController implements vscode.Disposable {
   async start(repository: string, storageDirectory: string): Promise<void> {
     if (this.service) return;
     this.storageDirectory = storageDirectory;
+    this.repository = repository;
     const store = new LaneStore(storageDirectory, line => this.host.log(line));
     await store.load();
     const config = () => vscode.workspace.getConfiguration('hydra');
@@ -136,6 +146,8 @@ export class LanesController implements vscode.Disposable {
       gatesLimited: provider => this.host.gatesLimited(provider),
       gatesLogDirectory: path.join(storageDirectory, 'lanes', 'gates'),
       planOf: id => { const job = this.planJobOf(id); return job ? { title: job.planTitle, job: job.jobTitle, dependents: job.dependents } : undefined; },
+      ...(this.host.gates ? { gates: this.host.gates } : {}),
+      ...(this.host.roles ? { roles: this.host.roles } : {}),
     });
     this.disposables.push(vscode.workspace.registerTextDocumentContentProvider(baseScheme, { provideTextDocumentContent: uri => this.baseContent(uri) }));
     this.service.activate();
@@ -330,7 +342,10 @@ export class LanesController implements vscode.Disposable {
       ...(job.writeScope?.length ? { writeScope: job.writeScope.slice(0, 32) } : {}),
     };
     const file = planLaneBrief(plan.title, job, start.dependencies);
-    const lane = await service.create({ name: laneNameFromTitle(job.title), provider: job.provider ?? defaultProvider, goal }, { ...(start.baseCommit ? { baseCommit: start.baseCommit } : {}), plan: link, brief: file });
+    // Packs (docs/Packs_Plan.md, "Plans"): the job's provider, then its role's, then hydra.defaultProvider. A role
+    // that isn't active now still goes with the lane, which starts without it and says why on its tile.
+    const roleProvider = job.role && !job.provider ? (await this.host.roles?.roles(this.repository ?? '').catch(() => []))?.find(role => role.ref === job.role)?.provider : undefined;
+    const lane = await service.create({ name: laneNameFromTitle(job.title), provider: job.provider ?? roleProvider ?? defaultProvider, goal, ...(job.role ? { role: job.role } : {}) }, { ...(start.baseCommit ? { baseCommit: start.baseCommit } : {}), plan: link, brief: file });
     this.postState(true);
     return { laneId: lane.id };
   }
@@ -372,32 +387,43 @@ export class LanesController implements vscode.Disposable {
 
   // ---- Commands ----
 
-  /** `hydra.newLane`: provider, name, goal, then the lane starts and the Lanes view shows it. */
+  /** `hydra.newLane`: a Role step first when roles are active, then provider, name and goal (docs/Packs_Plan.md, "Picking a role"). */
   private async newLane(): Promise<void> {
     const service = this.requireService();
     if (!service.terminalsAvailable) { void vscode.window.showErrorMessage(`Hydra: ${terminalsUnavailable}`); return; }
     const config = vscode.workspace.getConfiguration('hydra');
     const preferred = config.get<Provider>('defaultProvider', 'claude') === 'codex' ? 'codex' : 'claude';
+    const roles = await this.host.roles?.roles(this.repository ?? '').catch(() => []) ?? [];
+    const steps = roles.length ? 4 : 3;
+    let role: { ref: string; provider: Provider } | undefined;
+    if (roles.length) {
+      const roleItems = [{ label: 'No role', role: undefined as { ref: string; provider: Provider } | undefined },
+        ...roles.map(candidate => ({ label: candidate.title, description: candidate.packTitle, role: { ref: candidate.ref, provider: candidate.provider } }))];
+      const pickedRole = await vscode.window.showQuickPick(roleItems, { title: `New lane (1/${steps})`, placeHolder: 'Role, optional', ignoreFocusOut: true });
+      if (!pickedRole) return;
+      role = pickedRole.role;
+    }
     const providers = await Promise.all((['claude', 'codex'] as const).map(async provider => ({ provider, available: (await findProvider(provider, config.get<string>(`${provider}Path`) || undefined).catch(() => ({ available: false }))).available })));
-    const items = providers.sort((a, b) => Number(b.provider === preferred) - Number(a.provider === preferred))
-      .map(({ provider, available }) => ({ label: providerLabel(provider), description: available ? (provider === preferred ? 'Default' : '') : 'Not installed', provider }));
-    const picked = await vscode.window.showQuickPick(items, { title: 'New lane (1/3)', placeHolder: 'Which agent runs in this lane?', ignoreFocusOut: true });
+    const defaultProvider = role?.provider ?? preferred;
+    const items = providers.sort((a, b) => Number(b.provider === defaultProvider) - Number(a.provider === defaultProvider))
+      .map(({ provider, available }) => ({ label: providerLabel(provider), description: available ? (provider === defaultProvider ? 'Default' : '') : 'Not installed', provider }));
+    const picked = await vscode.window.showQuickPick(items, { title: `New lane (${roles.length ? 2 : 1}/${steps})`, placeHolder: 'Which agent runs in this lane?', ignoreFocusOut: true });
     if (!picked) return;
     const taken = new Set(service.lanes().map(lane => lane.name.toLowerCase()));
     let number = service.lanes().length + 1;
     while (taken.has(`lane ${number}`)) number++;
     const name = await vscode.window.showInputBox({
-      title: 'New lane (2/3)', prompt: 'Name the lane', value: `Lane ${number}`, ignoreFocusOut: true,
+      title: `New lane (${roles.length ? 3 : 2}/${steps})`, prompt: 'Name the lane', value: `Lane ${number}`, ignoreFocusOut: true,
       validateInput: value => { try { parseLaneName(value); return undefined; } catch (error) { return describe(error); } },
     });
     if (name === undefined) return;
     const goal = await vscode.window.showInputBox({
-      title: 'New lane (3/3)', prompt: `Goal, optional: what should ${picked.label} do? Leave it empty to start without a prompt.`, ignoreFocusOut: true,
+      title: `New lane (${steps}/${steps})`, prompt: `Goal, optional: what should ${picked.label} do? Leave it empty to start without a prompt.`, ignoreFocusOut: true,
       validateInput: value => value.length <= laneGoalMax ? undefined : `Keep the goal under ${laneGoalMax} characters.`,
     });
     if (goal === undefined) return;
     const lane = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Starting lane ${name.trim()}…` },
-      () => service.create({ name, provider: picked.provider, goal }));
+      () => service.create({ name, provider: picked.provider, goal, ...(role ? { role: role.ref } : {}) }));
     await this.show('lanes', lane.id);
   }
 
@@ -617,13 +643,15 @@ export class LanesController implements vscode.Disposable {
    * work), `anyway`, or Cancel. Undefined means stop; `note` is what the confirmation adds.
    */
   private async gatesBefore(service: LaneService, lane: Lane, interactive: boolean, question: string, anyway: string): Promise<{ note: string } | undefined> {
-    const gatesConfig = await loadGates(lane.repository).catch(() => undefined);
-    if (!gatesConfig || gatesConfig.lanes !== 'onMerge' || !gatesConfig.gates.length) return { note: '' };
+    // With packs, a listed pack that can't run still shows its gates as not run (docs/Packs_Plan.md).
+    const load: GatesLoader = this.host.gates ?? loadGates;
+    const gatesConfig = await load(lane.repository).catch(() => undefined);
+    if (!gatesConfig || gatesConfig.lanes !== 'onMerge' || !(gatesConfig.gates.length || gatesConfig.notRun?.length)) return { note: '' };
     const reused = await service.reusableGates(lane.id).catch(() => undefined);
-    if (reused?.commit) return { note: ` Gates passed on ${reused.commit.slice(0, 7)} at ${new Date(reused.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` };
+    if (reused?.commit) return { note: gatesPassNote(reused.results, ` on ${reused.commit.slice(0, 7)} at ${new Date(reused.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`) };
     const outcome = await this.runGatesFlow(service, lane, interactive);
     if (!outcome) return undefined; // cancelled, or gates couldn't run and this was interactive
-    if (!outcome.failed.length) return { note: ' Gates passed.' };
+    if (!outcome.failed.length) return { note: gatesPassNote(outcome.results) };
     if (!interactive) throw new Error(`Gates failed for lane ${lane.name}:\n${summarizeGateFailures(outcome.results)}`);
     const choice = await vscode.window.showWarningMessage(`Gates failed for lane ${lane.name}. ${question}`, { modal: true, detail: summarizeGateFailures(outcome.results) }, 'Send to lane', anyway);
     if (choice === 'Send to lane') { this.sendGatesToLane(service, lane, outcome.results); return undefined; }

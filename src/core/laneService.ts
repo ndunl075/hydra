@@ -2,15 +2,16 @@ import { lstat, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { git, gitRun } from './git';
-import { processLaunch, shimSafe } from './process';
+import { isWindowsShim, processLaunch, shimSafe } from './process';
+import { RoleUnavailable, codexDeveloperInstructions, roleFirstPrompt, roleLaunch, type RoleLaunch, type RoleSource } from './packs/launch';
 import { createWorktree, defaultWorktreeRoot } from './worktrees';
 import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalsUnavailable, type PtyModule } from './lanePty';
 import { LaneSync, laneDiffBase, syncIntervalMs } from './laneSync';
 import { checkMerge, closeLaneWorktree, commitLane, laneDirty, laneFullyMerged, mergeLane, pushLane, updateLane, type CloseMode, type MergeCheck } from './laneFinish';
-import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, laneJobFolder, lanePreamble, newLaneId, parseLaneInput, type Lane, type LaneGatesRecord, type LanePlanLink, type LanePreambleOther, type LaneStore, type LaneSwitchReason } from './lanes';
+import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, laneJobFolder, lanePreamble, laneRolePrompt, laneRoleRef, newLaneId, parseLaneInput, type Lane, type LaneGatesRecord, type LanePlanLink, type LanePreambleOther, type LanePromptRole, type LaneStore, type LaneSwitchReason } from './lanes';
 import { otherProvider } from './limitEvents';
 import { buildHandoff, defaultHandoffDeps, type HandoffDeps } from './limitHandoff';
-import { freshDirectory, loadGates, runGates as runGatesCore, type GateContext, type GatesConfig, type GatesOutcome } from './gates';
+import { freshDirectory, loadGates, runGates as runGatesCore, type GateContext, type GatesConfig, type GatesLoader, type GatesOutcome } from './gates';
 import { gateBlocks, type JobCheckResult } from './jobs';
 import type { HelperServerSpec } from './helperRegistration';
 import type { LimitEvent } from './limitEvents';
@@ -46,6 +47,8 @@ export interface LaneLaunchInput {
   testCommand?: string;
   env: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  /** Packs (docs/Packs_Plan.md, section 5): the lane's role for this launch (roleLaunch), passed every time: fresh, Resume, Start fresh and Switch. */
+  role?: RoleLaunch;
 }
 export interface LaneLaunch { executable: string; args: string[]; env: Record<string, string>; mcpConfig?: string }
 
@@ -89,18 +92,28 @@ export function laneLaunch(input: LaneLaunchInput): LaneLaunch {
   // The host may run as Node, or have been started from inside a Claude Code session;
   // a lane is a fresh top-level session, so neither reaches it.
   for (const [key, value] of Object.entries(input.env)) if (typeof value === 'string' && !inheritedSessionVariable(key)) env[key] = value;
+  // A role's Codex servers read some variables by name (R4); roleLaunch never sets one of Hydra's or the CLI's own.
+  Object.assign(env, input.role?.env);
   // Like heads, a lane never updates the user's CLI behind their back.
   Object.assign(env, laneEnv, { HYDRA_LEAD_PROVIDER: lane.provider, HYDRA_HELPERS_DIR: input.helpersDir, TERM: 'xterm-256color', COLORTERM: 'truecolor', DISABLE_AUTOUPDATER: '1' });
   if (input.testCommand) return { ...parseTestCommand(input.testCommand), env };
-  const shim = (input.platform ?? process.platform) === 'win32' && /\.(cmd|bat)$/i.test(input.executable);
+  const shim = isWindowsShim(input.executable, input.platform ?? process.platform);
   const prompt = input.prompt && !input.resume ? (shim ? shimSafe(input.prompt) : input.prompt) : undefined;
+  const role = input.role;
   // The bridge reads the lane from its environment. Claude passes its own environment
   // on to the servers it starts; Codex doesn't, so the lane's values go into its server config.
   const serverEnv = { ...input.bridge.env, ...laneEnv };
   if (lane.provider === 'claude') {
-    const mcp = input.connected ? [] : ['--mcp-config', input.mcpConfigFile];
-    const mcpConfig = input.connected ? undefined : JSON.stringify({ mcpServers: { hydra: { type: 'stdio', command: input.bridge.command, args: input.bridge.args, env: serverEnv, timeout: 3_600_000 } } }, null, 2);
-    return { executable: input.executable, args: input.resume ? ['--continue', ...mcp] : [...mcp, ...(prompt ? [prompt] : [])], env, ...(mcpConfig ? { mcpConfig } : {}) };
+    // A role's servers go in the lane's own 0600 file even when Claude is connected (its user-level
+    // Hydra entry then serves the lane), with `${NAME}` references Claude fills in itself (R3).
+    const roleServers = role?.mcpServers ?? {};
+    const file = !input.connected || Object.keys(roleServers).length > 0;
+    const mcp = file ? ['--mcp-config', input.mcpConfigFile] : [];
+    const hydra = input.connected ? {} : { hydra: { type: 'stdio', command: input.bridge.command, args: input.bridge.args, env: serverEnv, timeout: 3_600_000 } };
+    const mcpConfig = file ? JSON.stringify({ mcpServers: { ...hydra, ...roleServers } }, null, 2) : undefined;
+    // The role's instructions file and skills on every launch: Resume keeps the system prompt the conversation started with (R1).
+    const roleArgs = role ? [...(role.systemPromptFile ? ['--append-system-prompt-file', role.systemPromptFile] : []), ...(role.pluginDir ? ['--plugin-dir', role.pluginDir] : []), ...(role.model ? ['--model', role.model] : [])] : [];
+    return { executable: input.executable, args: input.resume ? ['--continue', ...roleArgs, ...mcp] : [...roleArgs, ...mcp, ...(prompt ? [prompt] : [])], env, ...(mcpConfig ? { mcpConfig } : {}) };
   }
   const config = (key: string, value: string) => ['-c', `mcp_servers.hydra.${key}=${value}`];
   const overrides = input.connected
@@ -110,8 +123,19 @@ export function laneLaunch(input: LaneLaunchInput): LaneLaunch {
       ...config('env', `{ ${Object.entries(serverEnv).map(([key, value]) => `${key} = ${toml(value)}`).join(', ')} }`),
       ...config('startup_timeout_sec', '30'), ...config('tool_timeout_sec', '3600'), ...config('default_tools_approval_mode', '\'approve\''),
     ];
-  return { executable: input.executable, args: input.resume ? [...overrides, 'resume', '--last'] : [...overrides, ...(prompt ? [prompt] : [])], env };
+  // A role's servers on every launch (they are this process's config); its instructions and model only on a
+  // fresh thread, which keeps them on resume (R2). Text that can't pass as one TOML literal goes in the first prompt instead.
+  const developer = role && !input.resume ? codexDeveloperInstructions(role.text, shim) : undefined;
+  const roleConfig = [...role?.codexConfig ?? [], ...(developer ? ['-c', `developer_instructions='${developer}'`] : []), ...(role?.model && !input.resume ? ['-m', role.model] : [])];
+  return { executable: input.executable, args: input.resume ? [...overrides, ...roleConfig, 'resume', '--last'] : [...overrides, ...roleConfig, ...(prompt ? [prompt] : [])], env };
 }
+
+/**
+ * Whether a Codex lane's role goes in its first prompt (docs/Packs_Plan.md, section 5):
+ * on a fresh thread, when its text can't pass as developer instructions.
+ */
+export const codexRoleInPrompt = (role: RoleLaunch, provider: Provider, resume: boolean, shim: boolean): boolean =>
+  provider === 'codex' && !resume && codexDeveloperInstructions(role.text, shim) === undefined;
 
 // ---- The service ----
 
@@ -155,6 +179,11 @@ export interface LaneServiceOptions {
   // ---- Plan lanes (docs/Plan_Lanes_Plan.md) ----
   /** The plan job a lane runs, for the hydra_lanes answer: its plan, its job and how many jobs wait on it. */
   planOf?: (laneId: string) => { title: string; job: string; dependents: number } | undefined;
+  // ---- Packs (docs/Packs_Plan.md) ----
+  /** Where the repository's gates come from: gates.json plus the active packs' gates (PackService.gates). Defaults to gates.json only. */
+  gates?: GatesLoader;
+  /** The active packs' roles (PackService). Without it, a lane's role is never available and its tile says so. */
+  roles?: RoleSource;
 }
 
 /** How a plan lane starts (docs/Plan_Lanes_Plan.md, "Starting a lane job"). */
@@ -172,8 +201,17 @@ export type LaneHandOn =
   | { ok: false; reason: 'dirty' | 'nothing'; message: string };
 
 /** A fingerprint of a gates file's contents: a passing run is reused only while this is unchanged. */
-export function gatesFingerprint(config: Pick<GatesConfig, 'source' | 'gates' | 'maxAttempts'>): string {
-  return createHash('sha256').update(JSON.stringify({ source: config.source, maxAttempts: config.maxAttempts ?? null, gates: config.gates })).digest('hex').slice(0, 16);
+export function gatesFingerprint(config: Pick<GatesConfig, 'source' | 'gates' | 'maxAttempts'> & { notRun?: JobCheckResult[] }): string {
+  // Packs: a listed pack that can't run changes what a run means, so its not-run gates count too.
+  const notRun = config.notRun?.length ? { notRun: config.notRun.map(result => result.id) } : {};
+  return createHash('sha256').update(JSON.stringify({ source: config.source, maxAttempts: config.maxAttempts ?? null, gates: config.gates, ...notRun })).digest('hex').slice(0, 16);
+}
+
+/** The confirmation's note for gates that didn't fail. Packs (docs/Packs_Plan.md): a gate that didn't run is named, never counted as passed. */
+export function gatesPassNote(results: readonly JobCheckResult[], when = ''): string {
+  const skipped = results.filter(result => result.state === 'notRun').map(result => result.id);
+  if (!skipped.length) return ` Gates passed${when}.`;
+  return skipped.length === results.length ? ` Gates not run: ${skipped.join(', ')}.` : ` Gates passed${when}; not run: ${skipped.join(', ')}.`;
 }
 
 /**
@@ -206,6 +244,8 @@ export class LaneService {
   private disposed = false;
   /** A gates run in progress per lane (docs/Gates_Plan.md, "Cancel"): closing the lane or starting a new run cancels it. */
   private readonly gateRuns = new Map<string, AbortController>();
+  /** Packs: why a lane's role wasn't available at its last launch, for its tile: "Role Reviewer isn't available: the Coding pack is off." */
+  private readonly roleNotes = new Map<string, string>();
   constructor(private readonly options: LaneServiceOptions) { this.syncer = new LaneSync(options.now); }
 
   get terminalsAvailable(): boolean { return !!this.options.pty; }
@@ -222,8 +262,8 @@ export class LaneService {
   openWorktrees(): string[] { return this.lanes().map(lane => lane.worktree); }
   views(): LaneView[] {
     return this.lanes().map(lane => {
-      const sync = this.results.get(lane.id);
-      return { ...lane, ...(sync ? { sync: structuredClone(sync) } : {}), running: !!this.terminals.get(lane.id)?.running };
+      const sync = this.results.get(lane.id), roleNote = this.roleNotes.get(lane.id);
+      return { ...lane, ...(sync ? { sync: structuredClone(sync) } : {}), running: !!this.terminals.get(lane.id)?.running, ...(roleNote ? { roleNote } : {}) };
     });
   }
 
@@ -243,7 +283,7 @@ export class LaneService {
     let id: string; do { id = newLaneId(); } while (this.options.store.get(id));
     const created = await createWorktree(this.options.repository, input.name, id, this.options.worktreeRoot(), options.baseCommit, { branch: laneBranch(input.name, id), folder: laneFolder(id) });
     const lane: Lane = {
-      id, name: input.name, provider: input.provider, ...(input.goal ? { goal: input.goal } : {}),
+      id, name: input.name, provider: input.provider, ...(input.goal ? { goal: input.goal } : {}), ...(input.role ? { role: input.role } : {}),
       repository: this.options.repository, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit,
       target: isSafeBranchName(created.integrationTarget) ? created.integrationTarget : current,
       createdAt: this.now().toISOString(), state: 'running',
@@ -295,8 +335,7 @@ export class LaneService {
       await this.terminals.get(lane.id)?.kill();
       const switches = [...(lane.switches ?? []), { from: lane.provider, to, at: this.now().toISOString(), reason }];
       const updated = await this.options.store.update(lane.id, { provider: to, switches, state: 'running', exitCode: undefined, exitedAt: undefined, reason: undefined });
-      const prompt = laneContinuePrompt(updated, lane.provider, this.others(lane.id), handoff.markdown);
-      try { await this.launch(updated, false, undefined, prompt); }
+      try { await this.launch(updated, false, undefined, { from: lane.provider, markdown: handoff.markdown }); }
       catch (error) {
         await this.options.store.update(lane.id, { state: 'exited', exitedAt: this.now().toISOString(), reason: `Could not start: ${describe(error)}`.slice(0, 500) }).catch(() => undefined);
         this.changed();
@@ -379,7 +418,7 @@ export class LaneService {
       // Plan lanes: measured from laneDiffBase, and the commit is recorded when the lane was clean, so Merge can reuse the run.
       const cleanBefore = !await laneDirty(lane).catch(() => true);
       const base = await laneDiffBase(lane, head);
-      const config = await loadGates(lane.repository).catch(() => undefined);
+      const config = await (this.options.gates ?? loadGates)(lane.repository).catch(() => undefined);
       const logDirectory = await freshDirectory(this.options.gatesLogDirectory ?? path.join(this.options.configDirectory, '..', 'gates'), `${lane.id}-${Date.now()}`);
       const outcome = await runGatesCore(lane.repository, lane.worktree, base, {
         author: lane.provider, title: lane.name, brief: lane.goal, logDirectory,
@@ -387,7 +426,7 @@ export class LaneService {
         ...(this.options.gatesLimited ? { limited: this.options.gatesLimited } : {}),
         signal: controller.signal, ...(onProgress ? { onProgress } : {}), ...(this.options.log ? { log: this.options.log } : {}),
         ...(this.options.gatesRuntime ? { runtime: this.options.gatesRuntime } : {}),
-      });
+      }, this.options.gates);
       if (controller.signal.aborted) throw new Error('The gates run was cancelled.');
       const headAfter = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
       const commit = cleanBefore && headAfter === head && /^[a-f0-9]{40,64}$/.test(head) && !await laneDirty(lane).catch(() => true) ? head : undefined;
@@ -409,7 +448,7 @@ export class LaneService {
     if (!record?.commit || !record.config || record.results.some(gateBlocks)) return undefined;
     const head = (await gitRun(lane.worktree, ['rev-parse', 'HEAD'])).stdout.trim();
     if (head !== record.commit || await laneDirty(lane).catch(() => true)) return undefined;
-    const config = await loadGates(lane.repository).catch(() => undefined);
+    const config = await (this.options.gates ?? loadGates)(lane.repository).catch(() => undefined);
     return config && gatesFingerprint(config) === record.config ? record : undefined;
   }
 
@@ -497,6 +536,8 @@ export class LaneService {
           targetConflicts: sync?.targetConflicts ?? [], behind: sync?.behind ?? 0,
           runningHeads: this.options.runningHeads?.(lane.id) ?? 0,
           ...(sync?.error ? { error: sync.error } : {}),
+          // Packs (docs/Packs_Plan.md, "Lanes"): each lane's role, and why it isn't available when it wasn't at its last start.
+          ...(lane.role ? { role: laneRoleRef(lane.role), ...(this.roleNotes.has(lane.id) ? { roleNote: this.roleNotes.get(lane.id) } : {}) } : {}),
           // Plan lanes (docs/Plan_Lanes_Plan.md, section 5): other lanes' agents see which plan job a lane runs.
           ...this.planOf(lane.id),
         };
@@ -515,18 +556,32 @@ export class LaneService {
 
   // ---- internals ----
 
-  private async launch(lane: Lane, resume: boolean, executable?: string, promptOverride?: string): Promise<void> {
+  /**
+   * Start the lane's CLI. `handoff` is a provider switch's (docs/Gates_Plan.md, section 2): the first
+   * prompt is then the preamble plus the handoff. The lane's role is resolved again every time.
+   */
+  private async launch(lane: Lane, resume: boolean, executable?: string, handoff?: { from: Provider; markdown: string }): Promise<void> {
     const pty = this.options.pty;
     if (!pty) throw new Error(terminalsUnavailable);
     const testCommand = this.options.testCommand?.();
     executable ??= testCommand ? '' : await this.options.executable(lane.provider);
     const connected = testCommand ? true : await this.options.connected(lane.provider).catch(() => false);
-    const prompt = promptOverride ?? (!resume && lane.goal ? lanePreamble(lane, this.others(lane.id)) : undefined);
-    const spec = laneLaunch({ lane, executable, resume, prompt, connected, bridge: this.options.bridge(lane.provider), mcpConfigFile: this.mcpConfigFile(lane.id), helpersDir: this.options.helpersDir, testCommand, env: this.options.env?.() ?? process.env });
+    const env = this.options.env?.() ?? process.env;
+    const role = await this.laneRole(lane, executable, env);
+    // A Codex lane whose role can't pass as developer instructions gets it in the first prompt; with no goal,
+    // the role and then "Wait for the user's first request." (docs/Packs_Plan.md, section 5).
+    const inPrompt = role && codexRoleInPrompt(role, lane.provider, resume, isWindowsShim(executable));
+    const promptRole: LanePromptRole | undefined = role && { label: role.label, ...(inPrompt ? { text: (max: number) => roleFirstPrompt(role, max) } : {}) };
+    const withRole = { ...lane, ...(promptRole ? { promptRole } : {}) };
+    const prompt = handoff ? laneContinuePrompt(withRole, handoff.from, this.others(lane.id), handoff.markdown)
+      : resume ? undefined
+      : lane.goal ? lanePreamble(withRole, this.others(lane.id))
+      : promptRole?.text ? laneRolePrompt({ label: promptRole.label, text: promptRole.text }) : undefined;
+    const spec = laneLaunch({ lane, executable, resume, prompt, connected, bridge: this.options.bridge(lane.provider), mcpConfigFile: this.mcpConfigFile(lane.id), helpersDir: this.options.helpersDir, testCommand, env, ...(role ? { role } : {}) });
     if (spec.mcpConfig) {
       await mkdir(this.options.configDirectory, { recursive: true });
       await writeFile(this.mcpConfigFile(lane.id), spec.mcpConfig, { encoding: 'utf8', mode: 0o600 });
-    }
+    } else await rm(this.mcpConfigFile(lane.id), { force: true }).catch(() => undefined);
     // `.cmd` shims go through PowerShell -EncodedCommand, so arguments are never re-quoted by hand.
     const launched = processLaunch(spec.executable, spec.args);
     const size = this.sizes.get(lane.id) ?? defaultTerminalSize;
@@ -540,6 +595,28 @@ export class LaneService {
     });
     this.terminals.set(lane.id, terminal);
     this.options.log?.(`[lanes] ${lane.id} started ${testCommand ? 'the test command' : lane.provider}${resume ? ' (resumed)' : ''} in ${lane.worktree}`);
+  }
+
+  /**
+   * The lane's role for this launch (docs/Packs_Plan.md, "Lanes"), from its pack's checked copy. When
+   * it is gone (the pack is off, changed or uninstalled) the lane starts without it, and its tile says why.
+   */
+  private async laneRole(lane: Lane, executable: string, env: NodeJS.ProcessEnv): Promise<RoleLaunch | undefined> {
+    if (!lane.role) { this.roleNotes.delete(lane.id); return undefined; }
+    const ref = laneRoleRef(lane.role);
+    try {
+      if (!this.options.roles) throw new RoleUnavailable(ref, lane.role.role, 'packs aren\'t available in this Hydra window');
+      const resolved = await this.options.roles.resolve(lane.repository, ref);
+      const role = roleLaunch(resolved, { provider: lane.provider, target: 'lane', env, shim: isWindowsShim(executable) });
+      this.roleNotes.delete(lane.id);
+      if (role.notes.length) this.options.log?.(`[lanes] ${lane.id}: ${role.notes.join(' ')}`);
+      return role;
+    } catch (error) {
+      const note = error instanceof RoleUnavailable ? error.laneNote : `Role ${lane.role.role} isn't available: ${describe(error)}`;
+      this.roleNotes.set(lane.id, note.slice(0, 300));
+      this.options.log?.(`[lanes] ${lane.id}: ${note}`);
+      return undefined;
+    }
   }
 
   /** Mark the lane running first, so an immediate exit is recorded; undo that if the launch fails. */

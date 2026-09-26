@@ -36,13 +36,16 @@ import { codexLaneFanout } from './core/limitEvents';
 import { LimitOfferTracker } from './core/limitOffer';
 import { LanesController, isLaneMessage } from './extensionLanes';
 import { HydraTreeProvider } from './extensionTree';
-import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type Handoff, type HandoffTask } from './core/model';
+// ---- Packs (docs/Packs_Plan.md). Its own block. ----
+import { createPackService } from './extensionPacks';
+import type { PackService } from './core/packs/service';
+import { parseMessage, type HelperJobView, type Provider, type ProviderDiagnostic, type Snapshot, type SnapshotRole, type Handoff, type HandoffTask } from './core/model';
 // ---- Planner (docs/Lanes_And_Planner_Plan.md, section 4). Its own block; Phase 1 (Lanes) wires its own imports separately. ----
 import { createPlan, maxPlanJobs, PlanStore, type Plan, type PlanJob } from './core/plans';
 import { planBrief } from './core/planner';
 // ---- Plan lanes (docs/Plan_Lanes_Plan.md). Their own block. ----
 import { cycleMessage, dependentsOf, findCycle, jobRunAs, jobStarted, planIdPattern, planJobKeyPattern, type PlanJobRunAs } from './core/plans';
-import { planHeadKey, PlanRunner, type PlanJobView, type PlanLaneResultInput } from './core/planRunner';
+import { planHeadInput, PlanRunner, type PlanJobView, type PlanLaneResultInput } from './core/planRunner';
 import type { LanePlanJobView } from './core/model';
 // ---- Gates (docs/Gates_Plan.md). Their own block. ----
 import { otherStillLimited } from './core/limitOffer';
@@ -118,11 +121,18 @@ class Manager {
   // ---- Canvas tidy-up (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"): the Finished tray's Clear button, kept across reloads. ----
   private readonly dismissedTrayKey = 'hydra.tray.dismissed.v1';
   private dismissedTrayIds = new Set<string>();
+  // ---- Packs (docs/Packs_Plan.md): gates.json plus the active packs' gates, for heads and lanes ----
+  private readonly packs: PackService;
+  /** The active packs' roles (Snapshot.roles), refreshed whenever packs change. */
+  private roles: SnapshotRole[] = [];
+  /** Set once startHelpers finds it; the folder `hydra.packs.*` commands and the roles refresh use by default. */
+  private packsLeadFolder?: string;
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
     this.quota = new ProviderQuota(context, this.settingsImport.available);
-    this.settings = new AppearanceSettings(context, this.settingsImport);
+    this.packs = createPackService(context, line => this.output.appendLine(line));
+    this.settings = new AppearanceSettings(context, this.settingsImport, this.packs);
     this.onboarding = new Onboarding(context, this.settingsImport, this.settings);
     context.subscriptions.push(this.settings, this.onboarding, this.accounts, this.quota, this.limitEvents, this.tree);
     const identity = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()).sort().join('|') || 'empty';
@@ -141,6 +151,7 @@ class Manager {
       planJob: laneId => this.planJobOfLane(laneId),
       markJobDone: (laneId, result) => this.markPlanJobDone(laneId, result),
       cancelPlanJob: laneId => this.cancelPlanJobOfLane(laneId),
+      gates: this.packs.gates, roles: this.packs,
     }, this.limitOfferTracker);
     context.subscriptions.push(this.lanes);
     const storedDismissed = context.workspaceState.get<string[]>(this.dismissedTrayKey);
@@ -188,6 +199,29 @@ class Manager {
     command('hydra.plans.retry', async (id: unknown) => { await this.requirePlanRunner().retry(planIdArgument(id)); return structuredClone(this.requirePlans().store.get(planIdArgument(id))); });
     command('hydra.plans.cancelJob', async (id: unknown, key: unknown) => { await this.requirePlanRunner().cancelJob(planIdArgument(id), jobKeyArgument(key), 'Cancelled.'); return structuredClone(this.requirePlans().store.get(planIdArgument(id))); });
     command('hydra.plans.startJob', async (id: unknown, key: unknown) => { await this.requirePlanRunner().startJob(planIdArgument(id), jobKeyArgument(key)); return structuredClone(this.requirePlans().store.get(planIdArgument(id))); });
+    // ---- Packs (docs/Packs_Plan.md, section 6). The Packs page and smoke tests call these; there is ----
+    // ---- no hydra.packs.allow command — allowing a pack only ever happens from the review panel's   ----
+    // ---- own button (src/settings/pages/packs.ts), never through a command any extension could call. ----
+    command('hydra.packs.state', async (folder?: unknown) => structuredClone(await this.packs.state(await this.packsFolder(folder))));
+    command('hydra.packs.setEnabled', async (folder: unknown, id: unknown, on: unknown) => {
+      const root = await this.packsFolder(folder);
+      const packId = String(id), enable = !!on;
+      // Turning on here never allows a pack: an off pack that isn't already allowed for this project stays "Needs your OK".
+      if (enable && !(await this.packs.isAllowed(root, packId))) throw new Error(`The ${packId} pack needs your review first. Turn it on from Settings → Packs.`);
+      await this.packs.setEnabled(root, packId, enable);
+      await this.rolesChanged();
+      return structuredClone(await this.packs.state(root));
+    });
+    command('hydra.packs.skipGate', async (folder: unknown, id: unknown, gate: unknown, skip: unknown) => {
+      const root = await this.packsFolder(folder);
+      await this.packs.skipGate(root, String(id), String(gate), !!skip);
+      return structuredClone(await this.packs.state(root));
+    });
+    command('hydra.packs.addFolder', async (source: unknown) => {
+      if (typeof source !== 'string' || !source) throw new Error('Pass the folder to add.');
+      return structuredClone(await this.packs.addFolder(source));
+    });
+    command('hydra.packs.reload', async () => { await this.rolesChanged(); return true; });
     command('hydra.helperConnections', () => this.helperConnections());
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
@@ -370,6 +404,8 @@ class Manager {
         jobReady: (laneId, note) => this.lanes.jobReady(laneId, note) },
       // ---- Gates (docs/Gates_Plan.md) ----
       providerLimited: provider => otherStillLimited(this.latestLimits.get(provider), new Date()),
+      // ---- Packs (docs/Packs_Plan.md) ----
+      gates: this.packs.gates, roles: this.packs,
     });
     this.context.subscriptions.push(service.onLimit(event => this.limitEvents.fire(event)));
     this.context.subscriptions.push(this.limitEvents.event(event => { this.latestLimits.set(event.provider, event); }));
@@ -388,6 +424,57 @@ class Manager {
     this.tree.update({ lanes: this.lanes.state().lanes, heads: this.headViews() ?? [], plans: planStore.list(), planJobs: this.planJobViews() });
     this.output.appendLine(`[heads] ready for ${leadFolder}`);
     void this.refreshHelperConnections();
+    // ---- Packs (docs/Packs_Plan.md): the active roles for the pickers, and the notification for a ----
+    // ---- project whose packs.json lists a pack that still needs your OK on this machine. ----
+    this.packsLeadFolder = leadFolder;
+    await this.rolesChanged();
+    void this.notifyPacksIfNeeded(leadFolder);
+    const packsWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(leadFolder), '.hydra/{packs.json,packs/**}'));
+    const onPacksChange = () => void this.rolesChanged();
+    packsWatcher.onDidChange(onPacksChange); packsWatcher.onDidCreate(onPacksChange); packsWatcher.onDidDelete(onPacksChange);
+    this.context.subscriptions.push(packsWatcher);
+  }
+  /** The folder `hydra.packs.*` commands act on: the one given, else this window's lead folder. */
+  private async packsFolder(folder?: unknown): Promise<string> {
+    if (typeof folder === 'string' && folder) {
+      // Any extension can run these commands, so a folder must be this window's lead or one of its
+      // workspace folders: never a place to write .hydra/packs.json that the user hasn't opened.
+      const key = (value: string) => { const resolved = path.resolve(value); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; };
+      const open = [this.packsLeadFolder, ...(vscode.workspace.workspaceFolders || []).map(item => item.uri.fsPath)].filter((item): item is string => !!item);
+      if (!open.some(item => key(item) === key(folder))) throw new Error('Packs can only be changed for a folder open in this window.');
+      return folder;
+    }
+    if (this.packsLeadFolder) return this.packsLeadFolder;
+    throw new Error('Hydra packs are not ready in this window yet: open a project folder (a Git repository) first.');
+  }
+  /** Re-read the active roles (Snapshot.roles) and publish, so every picker sees a pack change at once. */
+  private async rolesChanged(): Promise<void> {
+    if (!this.packsLeadFolder) { this.roles = []; return; }
+    try {
+      const roles = await this.packs.roles(this.packsLeadFolder);
+      this.roles = roles.map(role => ({ ref: role.ref, pack: role.pack, packTitle: role.packTitle, id: role.id, title: role.title, description: role.description, provider: role.provider }));
+    } catch (error) { this.roles = []; this.output.appendLine(`[packs] roles: ${this.describe(error)}`); }
+    this.tree.update({ roles: this.roles });
+    await this.publish();
+  }
+  /**
+   * "This project uses the Coding pack. Nothing from it runs until you review
+   * it." (docs/Packs_Plan.md, "Notification"): once per window per project,
+   * never in a test run.
+   */
+  private async notifyPacksIfNeeded(folder: string): Promise<void> {
+    if (process.env.HYDRA_TEST_REPOSITORY) return;
+    try {
+      const { packs } = await this.packs.state(folder);
+      const needsOk = packs.find(pack => pack.state === 'needsOk');
+      if (!needsOk) return;
+      const key = 'hydra.packs.notified.v1';
+      const notified = new Set(this.context.workspaceState.get<string[]>(key, []));
+      if (notified.has(needsOk.id)) return;
+      await this.context.workspaceState.update(key, [...notified, needsOk.id]);
+      const pick = await vscode.window.showInformationMessage(`This project uses the ${needsOk.title} pack. Nothing from it runs until you review it.`, 'Review', 'Not now');
+      if (pick === 'Review') this.settings.show('packs');
+    } catch { /* packs aren't available in this window; say nothing */ }
   }
   // ---- Lanes (docs/Lanes_And_Planner_Plan.md). The editor side is LanesController (src/extensionLanes.ts). ----
   /** Unfinished heads started from a lane. */
@@ -633,6 +720,7 @@ class Manager {
       checks: job.result?.checks.map(toHeadCheckView) ?? [],
       repository: service.leadFolder, worktree: job.worktree, dependsOn: job.dependsOn,
       lead: job.lead, merged: service.isMerged(job.id), startedAt: job.startedAt, writeScope: job.writeScope,
+      ...(job.role ? { role: { ref: job.role.ref, title: job.role.title, packTitle: job.role.packTitle } } : {}),
     })).reverse();
   }
   /** Head changes go to the webview at once (the Agents canvas animates them); the full snapshot follows, debounced. */
@@ -660,6 +748,7 @@ class Manager {
       handoff: this.handoff, officialExtensions: ['claude', 'codex'].map(provider => officialExtensionInfo(provider as 'claude' | 'codex')),
       dismissedTray: [...this.dismissedTrayIds],
       planJobs: this.planJobViews(),
+      roles: this.roles,
     };
     await this.broadcast({ type: 'snapshot', snapshot });
   }
@@ -751,7 +840,8 @@ class Manager {
       if (!helpers) throw new Error('Hydra heads are not ready in this window yet.');
       const provider: Provider = vscode.workspace.getConfiguration('hydra').get('defaultProvider', 'claude');
       const executable = await this.helperExecutable(provider);
-      const result = await planBrief({ provider, executable, repository: helpers.service.leadFolder, brief, signal: controller.signal });
+      const roles = this.roles.map(role => ({ ref: role.ref, title: role.title, description: role.description }));
+      const result = await planBrief({ provider, executable, repository: helpers.service.leadFolder, brief, signal: controller.signal, ...(roles.length ? { roles } : {}) });
       const current = plans.store.get(id);
       if (!current || current.state !== 'planning') return; // deleted, or cancelled and already marked failed
       await plans.store.save(result.ok ? { ...current, jobs: result.jobs, state: 'draft', error: undefined } : { ...current, state: 'failed', error: result.error });
@@ -788,13 +878,21 @@ class Manager {
       return { ...plan, jobs: [...plan.jobs, job] };
     });
   }
-  private async planSaveJob(id: string, key: string, title: string, brief: string, provider?: Provider, runAs?: PlanJobRunAs): Promise<void> {
+  /**
+   * `role` (docs/Packs_Plan.md, "Picking a role") is "pack/role" to set it, ""
+   * to clear it, or undefined to leave it as it was. A role that isn't active
+   * is refused unless it's the job's own unchanged value, so a role whose pack
+   * went away stays on the job instead of being silently dropped.
+   */
+  private async planSaveJob(id: string, key: string, title: string, brief: string, provider?: Provider, runAs?: PlanJobRunAs, role?: string): Promise<void> {
     await this.editPlan(id, plan => {
       const job = plan.jobs.find(item => item.key === key);
       if (!job) throw new Error(`No job "${key}" in this plan.`);
       // A job that has started keeps what drives it (docs/Plan_Lanes_Plan.md, "Editing").
       if (runAs && runAs !== jobRunAs(job) && jobStarted(job)) throw new Error(`Job ${job.title} has started, so it can't switch between Head and Lane.`);
-      return { ...plan, jobs: plan.jobs.map(item => item.key === key ? { ...item, title, brief, provider, ...(runAs ? { runAs } : {}) } : item) };
+      if (role !== undefined && role !== '' && role !== job.role && !this.roles.some(candidate => candidate.ref === role)) throw new Error(`There's no active role "${role}".`);
+      const nextRole = role === undefined ? job.role : role === '' ? undefined : role;
+      return { ...plan, jobs: plan.jobs.map(item => item.key === key ? { ...item, title, brief, provider, ...(runAs ? { runAs } : {}), ...(nextRole ? { role: nextRole } : { role: undefined }) } : item) };
     });
   }
   private async planDeleteJob(id: string, key: string): Promise<void> {
@@ -872,12 +970,9 @@ class Manager {
         lanesAvailable: () => this.lanes.available,
       },
       // A plan's heads group under its lead `plan-<id>`; a retried head gets a new idempotency key.
+      // Provider (docs/Packs_Plan.md, "Plans"): the job's own, then its role's, then hydra.defaultProvider.
       startHead: async (plan, job, dependsOn, inputs) => {
-        const result = await service.startForPlan({
-          title: job.title, brief: job.brief, write_scope: job.writeScope?.length ? job.writeScope : [''],
-          provider: job.provider ?? defaultProvider(), idempotency_key: planHeadKey(plan, job),
-          depends_on: dependsOn, lead_label: `Plan · ${plan.title}`.slice(0, 60),
-        }, `plan-${plan.id}`, inputs) as { job_id: string };
+        const result = await service.startForPlan(planHeadInput(plan, job, dependsOn), `plan-${plan.id}`, inputs, defaultProvider()) as { job_id: string };
         return { jobId: result.job_id };
       },
       startLane: (plan, job, start) => this.lanes.startPlanLane(plan, job, start, defaultProvider()),
@@ -1010,7 +1105,7 @@ class Manager {
     if (message.type === 'planDelete') { await this.planDelete(message.id); return; }
     if (message.type === 'planStartEmpty') { await this.planStartEmpty(message.id); return; }
     if (message.type === 'planAddJob') { await this.planAddJob(message.id); return; }
-    if (message.type === 'planSaveJob') { await this.planSaveJob(message.id, message.key, message.title, message.brief, message.provider, message.runAs); return; }
+    if (message.type === 'planSaveJob') { await this.planSaveJob(message.id, message.key, message.title, message.brief, message.provider, message.runAs, message.role); return; }
     if (message.type === 'planDeleteJob') { await this.planDeleteJob(message.id, message.key); return; }
     if (message.type === 'planDependsOn') { await this.planDependsOn(message.id, message.key); return; }
     if (message.type === 'planAddDependency') { await this.planAddDependency(message.id, message.key, message.dependsOn); return; }

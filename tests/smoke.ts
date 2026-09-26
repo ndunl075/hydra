@@ -39,6 +39,10 @@ export async function run(): Promise<void> {
   assert.ok(contributes?.viewsContainers?.activitybar?.some(container => container.id === 'hydra'), 'The Hydra activity-bar container is contributed');
   assert.ok(contributes?.views?.hydra?.some(view => view.id === 'hydra.overview'), 'The hydra.overview tree view is contributed');
   console.log('PASS: the Hydra activity-bar container and its overview tree view are contributed.');
+  // Packs (docs/Packs_Plan.md, section 6): Settings -> Packs is contributed, after Gates.
+  const { pageOrder } = await import('../src/settings/pageOrder');
+  assert.ok(pageOrder.includes('packs') && pageOrder.indexOf('gates') < pageOrder.indexOf('packs'), 'Settings -> Packs is contributed, after Gates');
+  console.log('PASS: Settings -> Packs is contributed, after Gates.');
   // The lane-aware usage-limit setting (docs/Gates_Plan.md, section 2).
   const onLimit = contributes?.configuration?.properties?.['hydra.lanes.onLimit'];
   assert.deepEqual(onLimit?.enum, ['ask', 'switch']);
@@ -288,8 +292,32 @@ export async function run(): Promise<void> {
       console.log('PASS: bundled extension host refuses desktop-only quota commands without refreshing state or starting a provider turn.');
     }
   }
+  if (repository) await packsSmoke(repository);
   if (repository && process.env.HYDRA_TEST_FIXTURE) await laneSmoke(repository, process.env.HYDRA_TEST_FIXTURE);
   if (repository && process.env.HYDRA_TEST_FIXTURE) await planLaneSmoke(process.env.HYDRA_TEST_FIXTURE);
+}
+
+/**
+ * Packs (docs/Packs_Plan.md, "Acceptance -> Smoke"). `hydra.packs.state` lists the built-in
+ * packs; `hydra.packs.setEnabled` writing packs.json plus the effective gates including
+ * "code-review" needs a pack already allowed for this project, and allowing one is
+ * deliberately reachable only from the review panel's own button in the Settings webview
+ * (section 4; src/settings/pages/packs.ts), never a command this smoke test could call --
+ * so that half of the acceptance case is left to phase 5's live checklist (item 1), which
+ * drives the review panel by hand and checks packs.json and the gates it adds. What this
+ * does check is the security boundary itself: the command refuses to turn a pack on without
+ * that review, so a repository (or another extension) can never allow one by itself.
+ */
+async function packsSmoke(repository: string): Promise<void> {
+  const state = await vscode.commands.executeCommand<{ packs: { id: string; state: string }[] }>('hydra.packs.state', repository);
+  const ids = state.packs.map(pack => pack.id);
+  assert.ok(ids.includes('coding'), 'hydra.packs.state lists Coding');
+  assert.ok(ids.includes('research'), 'hydra.packs.state lists Research');
+  console.log('PASS: hydra.packs.state lists Coding and Research.');
+  await assert.rejects(async () => await vscode.commands.executeCommand('hydra.packs.setEnabled', repository, 'coding', true), /review/i, 'setEnabled never allows a pack itself');
+  console.log('PASS: hydra.packs.setEnabled refuses to turn on a pack that has not been reviewed and allowed from the Packs page.');
+  assert.equal((await vscode.commands.getCommands(true)).includes('hydra.packs.allow'), false, 'there is no hydra.packs.allow command');
+  console.log('PASS: there is no hydra.packs.allow command.');
 }
 
 /**

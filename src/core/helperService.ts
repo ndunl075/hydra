@@ -1,8 +1,11 @@
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { git } from './git';
+import { isWindowsShim } from './process';
+import { roleLaunch, type RoleLaunch, type RoleSource } from './packs/launch';
 import { createWorktree } from './worktrees';
 import { defaultMaxAttempts, finalJobStates, gateBlocks, gateKind, gateState, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
-import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig } from './gates';
+import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig, type GatesLoader } from './gates';
 import { dependencyBase, dependencyBrief, dependencyNoun, type DependencyResult } from './headStart';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
 import type { HelperRun, StartHelperRun } from './helperRunner';
@@ -51,9 +54,20 @@ export interface HelperServiceOptions {
   providerLimited?: (provider: Provider) => boolean;
   /** Gates: test seams for the reviewer, the browser and the clock. */
   gateRuntime?: Partial<GateRuntime>;
+  // ---- Packs (docs/Packs_Plan.md) ----
+  /** Where a folder's gates come from: gates.json plus the active packs' gates (PackService.gates). Defaults to gates.json only. */
+  gates?: GatesLoader;
+  /** The active packs' roles (PackService). Without it, no head has a role and a head that names one is refused. */
+  roles?: RoleSource;
 }
 
-interface Active { run: HelperRun; token: string; startedAt: number; blockedSince?: number; blockedTotal: number; answer?: (reply: string) => void }
+interface Active {
+  run: HelperRun; token: string; startedAt: number; blockedSince?: number; blockedTotal: number; answer?: (reply: string) => void;
+  /** Packs: the role it started with, for `changes`. */
+  role?: RoleLaunch;
+  /** Packs: the Claude head's `--mcp-config` file for its role's servers, removed when the head ends. */
+  mcpConfigFile?: string;
+}
 const clip = (value: string, max: number) => value.length > max ? `${value.slice(0, max)}…` : value;
 
 export class HelperService {
@@ -98,6 +112,8 @@ export class HelperService {
         case 'hydra_lanes':
           if (!this.options.lanes) throw new Error('Lanes are not available in this Hydra window.');
           return this.options.lanes.describe(caller.lane);
+        // Packs (docs/Packs_Plan.md, decision 6): a lead's bridge asks once, for its instructions and hydra_start_head's `role`.
+        case 'hydra_active_roles': return { roles: await this.activeRoles() };
         // ---- Plan lanes (docs/Plan_Lanes_Plan.md, decision 6): a lane's agent asks the user; it never marks the job itself ----
         case 'hydra_job_ready': {
           if (!caller.lane || !this.options.lanes?.jobReady) throw new Error('hydra_job_ready works only in a Hydra lane that runs a plan job.');
@@ -151,7 +167,9 @@ export class HelperService {
   async dispose(): Promise<void> {
     this.disposed = true; clearInterval(this.watchdog);
     await this.dispatchRun.catch(() => undefined);
+    const files = [...this.active.values()].flatMap(active => active.mcpConfigFile ? [active.mcpConfigFile] : []);
     await Promise.all([...this.active.keys()].map(id => this.finish(id, 'failed', 'The Hydra window closed while this head was running.').catch(() => undefined)));
+    await Promise.all(files.map(file => rm(file, { force: true }).catch(() => undefined)));
     for (const job of this.list()) if (job.state === 'queued') await this.options.store.transition(job.id, 'failed', 'The Hydra window closed before this head started.').catch(() => undefined);
     this.changed();
   }
@@ -164,15 +182,23 @@ export class HelperService {
    * the plan's lead (`plan-<id>`), plus `inputs`, the results of the lane jobs it
    * depends on. Only Hydra passes inputs; a lead's call never can.
    */
-  async startForPlan(args: Record<string, unknown>, leadSessionId: string, inputs: readonly DependencyResult[] = []) {
+  async startForPlan(args: Record<string, unknown>, leadSessionId: string, inputs: readonly DependencyResult[] = [], defaultProvider?: Provider) {
     if (inputs.length > 16 || inputs.some(input => !isDependencyResult(input))) throw new Error('A plan head\'s inputs are malformed.');
-    return this.startHelper(args, { role: 'lead', leadKey: this.options.leadKey, leadSessionId }, inputs);
+    return this.startHelper(args, { role: 'lead', leadKey: this.options.leadKey, leadSessionId }, inputs, defaultProvider);
   }
 
-  private async startHelper(args: Record<string, unknown>, caller?: HelperCaller, inputs: readonly DependencyResult[] = []) {
-    const input = parseJobInput(args);
+  /**
+   * Start a head. Its provider is the one asked for, else its role's (docs/Packs_Plan.md, "Heads"),
+   * else `defaultProvider` (a plan's hydra.defaultProvider), else Claude. A role must be active now;
+   * it is resolved again from its pack's checked copy when the head starts.
+   */
+  private async startHelper(args: Record<string, unknown>, caller?: HelperCaller, inputs: readonly DependencyResult[] = [], defaultProvider?: Provider) {
+    const parsed = parseJobInput(args);
     const open = this.list().filter(job => !finalJobStates.has(job.state)).length;
     if (open >= 16) throw new Error('This window already has 16 unfinished heads. Wait for some to finish or cancel them.');
+    const repeat = this.list().find(existing => existing.idempotencyKey === parsed.idempotencyKey);
+    const role = parsed.role && !repeat ? await this.pickRole(parsed.role) : undefined;
+    const input = { ...parsed, provider: parsed.provider ?? role?.provider ?? defaultProvider ?? 'claude', ...(role ? { jobRole: { ref: role.ref, title: role.title, packTitle: role.packTitle } } : {}) };
     // A head started from a lane is grouped under it, labelled with the lane's name, and
     // branches from the lane's HEAD rather than the main checkout's (docs/Gates_Plan.md, section 3).
     const laneName = caller?.lane ? this.options.lanes?.name(caller.lane) : undefined;
@@ -183,8 +209,7 @@ export class HelperService {
     const lead = caller?.leadSessionId ? { sessionId: caller.leadSessionId, ...(caller.provider ? { provider: caller.provider } : {}), ...(laneName ? { lane: caller.lane } : {}) } : undefined;
     // A plan head that depends only on lane jobs starts from their results, which never move, so its
     // base is known now: hydra_get_head shows it at once, and results that conflict refuse the start.
-    const repeated = this.list().some(existing => existing.idempotencyKey === input.idempotencyKey);
-    const inputBase = inputs.length && !input.dependsOn?.length && !repeated ? await dependencyBase(this.options.leadFolder, input.title, inputs) : undefined;
+    const inputBase = inputs.length && !input.dependsOn?.length && !repeat ? await dependencyBase(this.options.leadFolder, input.title, inputs) : undefined;
     const withInputs = inputs.length ? { ...input, inputs: [...inputs] } : input;
     const { job, created } = await this.options.store.create(this.options.leadKey, lead && laneName ? { ...withInputs, leadLabel: laneName } : withInputs, lead);
     // A dependent starts from what it waits for, so its base is known only when it starts.
@@ -194,13 +219,27 @@ export class HelperService {
     void this.dispatch();
     const base = created ? (dependent ? inputBase : head) : this.options.store.get(job.id)?.baseCommit;
     return {
-      job_id: job.id, state: job.state, created,
+      job_id: job.id, state: job.state, created, provider: job.provider,
+      ...(job.role ? { role: job.role.ref } : {}),
       ...(base ? { base_commit: base } : {}),
       ...(dependent && !base ? { starts_from: `The result of the ${job.inputs?.length ? 'jobs' : 'heads'} it depends on, merged if there are several. hydra_get_head shows its base_commit once it starts.` } : {}),
       ...(created && dirty ? { warning: laneWorktree
         ? 'Your lane has uncommitted changes. The head starts from the lane\'s last commit and will not see them; commit first if it needs them.'
         : 'Your folder has uncommitted changes. The head starts from the last commit and will not see them; commit first if it needs them.' } : {}),
     };
+  }
+
+  // ---- Packs (docs/Packs_Plan.md, "Heads") ----
+
+  /** The active roles as a lead's bridge hears of them. None without packs, or when packs.json can't be read. */
+  private async activeRoles() {
+    const roles = await this.options.roles?.roles(this.options.leadFolder).catch(error => { this.options.log?.(`[heads] roles: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+    return roles.map(role => ({ name: role.name, title: role.title, packTitle: role.packTitle, description: role.description, provider: role.provider }));
+  }
+  /** The active role a lead or a plan named, or why it can't be used, listing the active roles. */
+  private async pickRole(name: string) {
+    if (!this.options.roles) throw new Error(`There's no active role "${name}": packs aren't available in this Hydra window.`);
+    return this.options.roles.pick(this.options.leadFolder, name);
   }
 
   private async waitForHelpers(args: Record<string, unknown>, signal: AbortSignal) {
@@ -257,11 +296,19 @@ export class HelperService {
     // can't write a worktree's .git metadata, so a helper may be unable to commit.
     if ((await git(worktree, ['status', '--porcelain=v1', '--untracked-files=all'])).trim()) await commitAll(worktree, `${job.title} (Hydra head ${job.id})`);
     const commit = (await git(worktree, ['rev-parse', 'HEAD'])).trim();
-    if (commit === base) return { accepted: false, message: 'You have not changed anything yet. Make the changes, then call hydra_done again.' };
+    if (commit === base) {
+      // A role with changes "optional" (a reviewer, a fact-checker) may finish without changing
+      // anything: its summary is the result, and with nothing to check no gate runs.
+      if (this.active.get(jobId)?.role?.changes !== 'optional') return { accepted: false, message: 'You have not changed anything yet. Make the changes, then call hydra_done again.' };
+      await this.options.store.transition(jobId, 'checking');
+      await this.options.store.transition(jobId, 'done', undefined, { result: { summary, commit, changedFiles: [], checks: [] } });
+      this.changed();
+      return { accepted: true, message: 'Accepted: you changed nothing, so your summary is the result. Stop now.' };
+    }
     // Gates come from the lead's folder, never the head's worktree. A gates file Hydra can't
     // read is the project's problem, not the head's: no attempt is spent on it.
-    let gates: GatesConfig;
-    try { gates = await loadGates(this.options.leadFolder); }
+    let gates: Awaited<ReturnType<GatesLoader>>;
+    try { gates = await (this.options.gates ?? loadGates)(this.options.leadFolder); }
     catch (error) { return { accepted: false, message: `Hydra can't check your work: ${error instanceof Error ? error.message : String(error)} That isn't your fault. Call hydra_stuck and ask the lead to fix it, then call hydra_done again.` }; }
     const maxAttempts = gates.maxAttempts ?? defaultMaxAttempts;
     const changedFiles = (await git(worktree, ['diff', '--name-only', '-z', '--no-renames', base, commit, '--'])).split('\0').filter(Boolean);
@@ -271,7 +318,8 @@ export class HelperService {
     const attempts = job.attempts + 1;
     if (outside.length) return this.checkFailed(jobId, attempts, maxAttempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`);
     // The scope check first, then the gates in order (docs/Gates_Plan.md, "Heads").
-    const checks = gates.gates.length ? await runGateList(gates.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [];
+    // A listed pack that can't run reports its gates as not run (docs/Packs_Plan.md); those never block.
+    const checks = [...gates.gates.length ? await runGateList(gates.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [], ...gates.notRun ?? []];
     if (this.options.store.get(jobId)?.state !== 'checking') return { accepted: false, message: 'This head was stopped. Stop now.' };
     if (signal?.aborted) {
       // The head's call ended mid-check: not its failure, so no attempt is spent.
@@ -388,9 +436,19 @@ export class HelperService {
   private async launch(job: Job): Promise<void> {
     await this.options.store.transition(job.id, 'starting');
     this.changed();
-    let token: string | undefined;
+    let token: string | undefined, mcpConfigFile: string | undefined;
     try {
       const executable = await this.options.executable(job.provider);
+      // Packs: the role from its pack's checked copy, before anything is created. A role that has
+      // gone away fails the head here: "the role coding/builder isn't available (the Coding pack is off)."
+      const role = job.role ? await this.roleFor(job, executable) : undefined;
+      if (role?.notes.length) this.options.log?.(`[heads] ${job.id}: ${role.notes.join(' ')}`);
+      if (role && Object.keys(role.mcpServers).length) {
+        // Only `${NAME}` references and plain values: Claude fills them in from its environment (R3).
+        mcpConfigFile = this.mcpConfigFile(job.id);
+        await mkdir(this.options.logDirectory, { recursive: true });
+        await writeFile(mcpConfigFile, JSON.stringify({ mcpServers: role.mcpServers }, null, 2), { encoding: 'utf8', mode: 0o600 });
+      }
       // A dependent starts from its dependencies' result commits (merged, if several) and hears what they did:
       // the heads it waited on, and a plan's lane jobs it was given as inputs.
       const dependencies = [...this.dependencyResults(job), ...(job.inputs ?? [])];
@@ -406,14 +464,19 @@ export class HelperService {
       const startedAt = this.now();
       await this.options.store.transition(job.id, 'running');
       const run = this.options.startRun({
-        provider: job.provider, executable, worktree: created.worktree, model: job.model,
-        prompt: helperPrompt({ ...job, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit }, dependencies.length ? dependencyBrief(dependencies) : undefined, dependencyNoun(dependencies)),
+        // Decision 4: the lead's model first, then the role's, which roleLaunch gives only on the role's own provider.
+        provider: job.provider, executable, worktree: created.worktree, model: job.model ?? role?.model,
+        prompt: helperPrompt({ ...job, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit }, dependencies.length ? dependencyBrief(dependencies) : undefined, dependencyNoun(dependencies), role),
         maxTurns: job.limits.maxTurns, maxBudgetUsd: job.limits.maxBudgetUsd,
         bridge: { command: this.options.bridge.command, args: this.options.bridge.args, env: { ...(this.options.bridge.env || {}), HYDRA_HELPER_PORT: String(this.options.endpoint.port), HYDRA_HELPER_TOKEN: token } },
         logFile: path.join(this.options.logDirectory, `${job.id}.jsonl`),
         spawned: pid => { this.helperPids.add(pid); },
+        ...(role ? { role: {
+          ...(mcpConfigFile ? { mcpConfigFile } : {}), ...(role.pluginDir ? { pluginDir: role.pluginDir } : {}),
+          allowedTools: role.allowedTools, codexConfig: role.codexConfig, webSearch: role.webSearch, env: role.env,
+        } } : {}),
       });
-      const active: Active = { run, token, startedAt, blockedTotal: 0 };
+      const active: Active = { run, token, startedAt, blockedTotal: 0, ...(role ? { role } : {}), ...(mcpConfigFile ? { mcpConfigFile } : {}) };
       this.active.set(job.id, active);
       run.onTurnEnd(() => { void this.turnEnded(job.id); });
       void run.exited.then(({ code }) => this.exited(job.id, code));
@@ -425,6 +488,7 @@ export class HelperService {
       if (token) this.options.endpoint.revokeJob(job.id);
       await this.active.get(job.id)?.run.stop().catch(() => undefined);
       this.active.delete(job.id);
+      if (mcpConfigFile) await rm(mcpConfigFile, { force: true }).catch(() => undefined);
       await this.options.store.transition(job.id, 'failed', `Could not start: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
     }
     this.changed();
@@ -449,6 +513,8 @@ export class HelperService {
   private async exited(id: string, code: number | null): Promise<void> {
     const active = this.active.get(id);
     if (!active) return;
+    // The process is gone for good: its role's server file goes with it (docs/Packs_Plan.md, section 4).
+    if (active.mcpConfigFile) await rm(active.mcpConfigFile, { force: true }).catch(() => undefined);
     if (await this.limitReached(id)) { this.active.delete(id); this.changed(); void this.dispatch(); return; }
     active.answer?.(undefined as unknown as string);
     this.active.delete(id);
@@ -519,6 +585,16 @@ export class HelperService {
     await active.run.stop().catch(() => undefined);
   }
 
+  /** A Claude head's `--mcp-config` file for its role's servers (docs/Packs_Plan.md, section 4). */
+  private mcpConfigFile(id: string): string { return path.join(this.options.logDirectory, `${id}.mcp.json`); }
+
+  /** A head's role for this launch (docs/Packs_Plan.md, section 5), resolved from its pack's checked copy. */
+  private async roleFor(job: Job, executable: string): Promise<RoleLaunch> {
+    if (!this.options.roles) throw new Error(`the role ${job.role!.ref} isn't available (packs aren't available in this Hydra window).`);
+    const resolved = await this.options.roles.resolve(this.options.leadFolder, job.role!.ref);
+    return roleLaunch(resolved, { provider: job.provider, target: 'head', env: { ...process.env, DISABLE_AUTOUPDATER: '1' }, shim: isWindowsShim(executable) });
+  }
+
   /** A dependent's finished dependencies, in the order it named them. */
   private dependencyResults(job: Job): DependencyResult[] {
     return job.dependsOn.flatMap(id => {
@@ -537,6 +613,7 @@ export class HelperService {
   private describe(job: Job, detail: boolean) {
     return {
       job_id: job.id, title: job.title, state: job.state, provider: job.provider,
+      ...(job.role ? { role: job.role.ref, role_title: job.role.title } : {}),
       ...(job.branch ? { branch: job.branch } : {}), ...(job.worktree ? { worktree: job.worktree } : {}), ...(job.baseCommit ? { base_commit: job.baseCommit } : {}),
       ...(job.progress ? { progress: job.progress } : {}), ...(job.question && job.state === 'blocked' ? { question: job.question } : {}),
       ...(job.reason && job.state !== 'running' ? { reason: job.reason } : {}),
@@ -588,18 +665,21 @@ function describeGate(check: JobCheckResult) {
     ...(check.findings?.length ? { findings: check.findings } : {}),
     ...(check.evidence?.length ? { evidence: check.evidence } : {}),
     ...(state !== 'passed' && check.outputTail ? { output_tail: check.outputTail } : {}),
+    ...(check.pack ? { pack: check.pack } : {}),
   };
 }
 
 /**
  * The head's first message. `dependencies` is "What the heads you depend on did"
  * (dependencyBrief), for a head that starts from their work; `noun` is "jobs" when
- * any of them is a plan's lane job.
+ * any of them is a plan's lane job. A head with a role (docs/Packs_Plan.md, "Heads")
+ * hears it first: "Your role: Builder (Coding pack)", its instructions and its skill index.
  */
-export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeScope' | 'worktree' | 'branch' | 'baseCommit'>, dependencies?: string, noun: 'heads' | 'jobs' = 'heads'): string {
+export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeScope' | 'worktree' | 'branch' | 'baseCommit'>, dependencies?: string, noun: 'heads' | 'jobs' = 'heads', role?: Pick<RoleLaunch, 'label' | 'text' | 'changes'>): string {
   return [
     `You are a Hydra head (job ${job.id}): ${job.title}`,
     '',
+    ...(role ? [`Your role: ${role.label}`, role.text, ''] : []),
     job.brief,
     ...(dependencies ? ['', dependencies] : []),
     '',
@@ -608,6 +688,7 @@ export function helperPrompt(job: Pick<Job, 'id' | 'title' | 'brief' | 'writeSco
     `- You may change only these paths: ${job.writeScope.length ? job.writeScope.map(entry => entry || '(whole repository)').join(', ') : '(whole repository)'}. Changes elsewhere are refused.`,
     '- Nobody will approve anything for you. Tools you are not allowed to use are denied; work around them.',
     '- When you are finished, call the hydra_done tool with a summary. Hydra commits any uncommitted changes for you (you may also commit yourself), runs the project\'s gates on the changes (its checks, and possibly a review by another agent), and tells you if anything must be fixed.',
+    ...(role?.changes === 'optional' ? ['- Your role may finish without changing any file: then your summary is the result, so put everything the lead needs in it.'] : []),
     '- If you cannot continue without a decision, call hydra_stuck with one clear question. The answer comes back as the tool result.',
     '- Never stop without calling hydra_done or hydra_stuck.',
   ].join('\n');

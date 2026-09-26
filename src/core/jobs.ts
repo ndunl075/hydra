@@ -76,6 +76,10 @@ export interface JobCheckResult {
   summary?: string;
   /** Who reviewed, for a review gate. */
   reviewer?: Provider;
+  /** The pack the gate comes from (docs/Packs_Plan.md), for "From the Coding pack". */
+  pack?: string;
+  /** That pack's title. */
+  packTitle?: string;
 }
 export const gateKind = (check: JobCheckResult): GateKind => check.kind ?? 'command';
 export const gateState = (check: JobCheckResult): GateState => check.state ?? (check.passed ? 'passed' : 'failed');
@@ -89,7 +93,7 @@ export const gateBlocks = (check: JobCheckResult): boolean => check.required && 
  * re-exports this type; it lives here so toHeadCheckView (below) and its unit
  * test never need model.ts.
  */
-export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[] }
+export interface HeadCheckView { id: string; passed: boolean; kind: GateKind; state: GateState; required: boolean; summary?: string; findings?: GateFinding[]; evidence?: string[]; pack?: string; packTitle?: string }
 /** A stored JobCheckResult, as extension.ts's headViews sends it to the dashboard. Pure, so the mapping is unit tested directly. */
 export function toHeadCheckView(check: JobCheckResult): HeadCheckView {
   return {
@@ -97,6 +101,8 @@ export function toHeadCheckView(check: JobCheckResult): HeadCheckView {
     ...(check.summary ? { summary: check.summary } : {}),
     ...(check.findings?.length ? { findings: check.findings } : {}),
     ...(check.evidence?.length ? { evidence: check.evidence } : {}),
+    ...(check.pack ? { pack: check.pack } : {}),
+    ...(check.packTitle ? { packTitle: check.packTitle } : {}),
   };
 }
 
@@ -162,20 +168,32 @@ export interface Job {
    * lead's call; kept with the job so a queued head keeps them across a restart.
    */
   inputs?: DependencyResult[];
+  // ---- Packs (docs/Packs_Plan.md, "Heads") ----
+  /** The role it works in, from an active pack. Resolved again when it starts, from the pack's checked copy. */
+  role?: JobRole;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
   finishedAt?: string;
   history: JobEvent[];
 }
+/** A head's role: "coding/builder", with the titles it had when the head was started, for the views. */
+export interface JobRole { ref: string; title: string; packTitle: string }
 
 export interface JobInput {
-  title: string; brief: string; writeScope: string[]; provider: Provider; model?: string;
+  title: string; brief: string; writeScope: string[];
+  /** Missing: the role's agent, else Claude (HelperService decides; parseJobInput leaves it out when the lead did). */
+  provider?: Provider;
+  model?: string;
   dependsOn?: string[]; idempotencyKey: string; limits?: Partial<JobLimits>;
   /** Optional name for the chat that started it, shown on the Agents canvas. */
   leadLabel?: string;
   /** Internal only (HelperService.startForPlan): a plan's lane results it starts from. parseJobInput never sets it. */
   inputs?: DependencyResult[];
+  /** A role's name as the lead or plan gave it: "builder", or "coding/builder". Checked against the active roles by HelperService. */
+  role?: string;
+  /** Internal only (HelperService): the role that name means. parseJobInput never sets it. */
+  jobRole?: JobRole;
 }
 
 const text = (value: unknown, name: string, max: number, min = 1): string => {
@@ -202,8 +220,11 @@ export function parseWriteScope(value: unknown): string[] {
 export function parseJobInput(value: unknown): JobInput {
   if (!value || typeof value !== 'object') throw new Error('Job input must be an object.');
   const source = value as Record<string, unknown>;
-  const provider = source.provider ?? 'claude';
-  if (provider !== 'claude' && provider !== 'codex') throw new Error('provider must be "claude" or "codex".');
+  // A head without a provider takes its role's (docs/Packs_Plan.md, "Heads"), so "not given" stays missing here.
+  const provider = source.provider;
+  if (provider !== undefined && provider !== 'claude' && provider !== 'codex') throw new Error('provider must be "claude" or "codex".');
+  const role = source.role;
+  if (role !== undefined && (typeof role !== 'string' || !/^(?:[a-z0-9-]{1,24}\/)?[a-z0-9-]{1,24}$/.test(role))) throw new Error('role must be a role\'s name, like "builder" or "coding/builder".');
   const dependsOn = source.depends_on ?? source.dependsOn ?? [];
   if (!Array.isArray(dependsOn) || dependsOn.length > 16 || dependsOn.some(item => typeof item !== 'string' || !/^[a-f0-9]{12}$/.test(item))) throw new Error('depends_on must list job ids.');
   const limits = (source.limits && typeof source.limits === 'object' ? source.limits : {}) as Record<string, unknown>;
@@ -211,7 +232,8 @@ export function parseJobInput(value: unknown): JobInput {
     title: text(source.title, 'title', 200),
     brief: text(source.brief, 'brief', maxBriefLength),
     writeScope: parseWriteScope(source.write_scope ?? source.writeScope),
-    provider,
+    ...(provider ? { provider } : {}),
+    ...(role ? { role } : {}),
     model: source.model === undefined ? undefined : text(source.model, 'model', 100),
     dependsOn: [...new Set(dependsOn as string[])],
     idempotencyKey: text(source.idempotency_key ?? source.idempotencyKey, 'idempotency_key', 200),
@@ -276,8 +298,9 @@ export class JobStore {
       const job: Job = {
         version: 1, id, leadKey, ...(lead ? { lead: { ...lead, ...(input.leadLabel ? { label: input.leadLabel } : {}) } } : {}),
         idempotencyKey: input.idempotencyKey, title: input.title, brief: input.brief, writeScope: input.writeScope,
-        provider: input.provider, model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: defaultMaxAttempts, nudged: false,
+        provider: input.provider ?? 'claude', model: input.model, dependsOn: input.dependsOn || [], state: 'queued', limits, attempts: 0, maxAttempts: defaultMaxAttempts, nudged: false,
         ...(input.inputs?.length ? { inputs: structuredClone(input.inputs) } : {}),
+        ...(input.jobRole ? { role: { ref: input.jobRole.ref, title: input.jobRole.title, packTitle: input.jobRole.packTitle } } : {}),
         replies: [], createdAt: at, updatedAt: at, history: [{ at, from: null, to: 'queued' }],
       };
       this.jobs.set(id, job);

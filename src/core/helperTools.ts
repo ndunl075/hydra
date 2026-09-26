@@ -44,6 +44,12 @@ export const leadTools: readonly HelperToolDefinition[] = [
     description: 'List the Hydra lanes open in this window. A lane is a Claude Code or Codex terminal the user drives, in its own git worktree and branch. For each lane: its goal, branch and state, the files it is changing, the lanes it would conflict with (and in which files), files that would conflict with its target branch, how many commits it is behind, its running heads, and the plan job it runs, if any. `you` is your own lane, if you are in one. Checks fresh before answering. Call it before you start and before large changes, and avoid editing files other lanes are changing.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
+  // ---- Packs (docs/Packs_Plan.md, decision 6). Never listed to the model: a lead's bridge asks for the roles itself, when it starts. ----
+  {
+    name: 'hydra_active_roles',
+    description: 'The roles of the packs active in this project, for hydra_start_head\'s role.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
   // ---- Plan lanes (docs/Plan_Lanes_Plan.md, decision 6). Listed only in a lane that runs a plan job (see the bridge). ----
   {
     name: jobReadyTool,
@@ -59,6 +65,41 @@ export const helperTools: readonly HelperToolDefinition[] = [
 ];
 
 export const toolsFor = (role: HelperRole): readonly HelperToolDefinition[] => role === 'lead' ? leadTools : helperTools;
+
+// ---- Packs (docs/Packs_Plan.md, decision 6: leads learn the active roles from their instructions and hydra_start_head's `role`) ----
+
+/** The lead action a bridge asks for the active roles with. The model never sees it. */
+export const activeRolesTool = 'hydra_active_roles';
+/** A role as a lead hears of it. `name` is what it passes: "builder", or "coding/builder" when two active packs have a builder. */
+export interface LeadRole { name: string; title: string; packTitle: string; description: string; provider: 'claude' | 'codex' }
+const roleLine = (role: LeadRole) => `${role.name}: ${role.title} (${role.packTitle} pack, ${role.provider === 'codex' ? 'Codex' : 'Claude'}). ${role.description.length > 200 ? `${role.description.slice(0, 199)}…` : role.description}`;
+/** The paragraph a lead's instructions add when roles are active: one line per role. */
+export function rolesGuidance(roles: readonly LeadRole[]): string | undefined {
+  if (!roles.length) return undefined;
+  return ['Roles from this project\'s packs: pass one as `role` to hydra_start_head when a piece of work fits it. The head then works as that role says and, unless you give `provider`, on its agent.', ...roles.map(role => `- ${roleLine(role)}`)].join('\n');
+}
+/**
+ * The lead's tools as a bridge lists them: hydra_start_head gains `role`, an enum of the
+ * active roles' names with one line on each, only when there are any; the roles lookup is
+ * never listed.
+ */
+export function leadToolsWithRoles(roles: readonly LeadRole[]): HelperToolDefinition[] {
+  return leadTools.filter(tool => tool.name !== activeRolesTool).map(tool => {
+    if (tool.name !== 'hydra_start_head' || !roles.length) return tool;
+    const schema = tool.inputSchema as { properties: Record<string, unknown> };
+    return {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+          ...schema.properties,
+          provider: string('Which agent runs the head. Defaults to its role\'s agent, else claude.', { enum: ['claude', 'codex'] }),
+          role: string(`Optional: a role from this project's packs. The head works as it says. ${roles.map(roleLine).join(' ')}`, { enum: roles.map(role => role.name) }),
+        },
+      },
+    };
+  });
+}
 export const toolAllowed = (role: HelperRole, name: string): boolean => toolsFor(role).some(tool => tool.name === name);
 
 /** Guidance sent to the lead's agent when it connects (MCP `instructions`). */

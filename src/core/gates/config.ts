@@ -15,10 +15,27 @@ export type GateType = 'command' | 'screenshots' | 'review';
 /** Who reviews: the other agent (the default), the same one, or a fixed one. */
 export type ReviewerChoice = 'other' | 'same' | 'claude' | 'codex';
 export type LanePolicy = 'onMerge' | 'off';
-interface GateBase { id: string; required: boolean }
-export interface CommandGate extends GateBase { type: 'command'; command: string[]; timeoutSeconds: number }
-export interface ScreenshotsGate extends GateBase { type: 'screenshots'; start: string[]; url: string; widths: number[]; readyTimeoutSeconds: number }
-export interface ReviewGate extends GateBase { type: 'review'; reviewer: ReviewerChoice; focus: string }
+interface GateBase {
+  id: string; required: boolean;
+  /** The pack this gate comes from (docs/Packs_Plan.md). Set only by the packs loader; gates.json can't set it. */
+  pack?: string;
+  /** That pack's title, for "From the Coding pack". Set only by the packs loader. */
+  packTitle?: string;
+}
+/** Extra environment for the process a pack gate starts: `{node}` runs Hydra's executable with ELECTRON_RUN_AS_NODE. Set only by the packs loader. */
+interface GateProcess { env?: Record<string, string> }
+export interface CommandGate extends GateBase, GateProcess { type: 'command'; command: string[]; timeoutSeconds: number }
+export interface ScreenshotsGate extends GateBase, GateProcess { type: 'screenshots'; start: string[]; url: string; widths: number[]; readyTimeoutSeconds: number }
+export interface ReviewGate extends GateBase {
+  type: 'review'; reviewer: ReviewerChoice; focus: string;
+  /** A pack's review gate may name one of that pack's roles. gates.json can't. */
+  role?: string;
+  /**
+   * That role, filled in by the packs loader, so the reviewer's prompt includes its instructions.
+   * `web`: its tools include "web", so the read-only reviewer may open pages (research R9).
+   */
+  reviewerRole?: { title: string; instructions: string; web?: boolean };
+}
 export type Gate = CommandGate | ScreenshotsGate | ReviewGate;
 export interface GatesConfig {
   /** Where the gates came from: gates.json, checks.json (as command gates), or neither. */
@@ -66,14 +83,18 @@ export function validScreenshotUrl(url: string): boolean {
   return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') && !parsed.username && !parsed.password;
 }
 
-function parseGate(value: unknown, index: number): Gate {
+/**
+ * One gate, from gates.json or from a pack. A pack's review gate may also name
+ * one of the pack's roles (`options.roles`); everything else is the same.
+ */
+export function parseGate(value: unknown, index: number, options: { roles?: readonly string[] } = {}): Gate {
   const source = record(value, `Gate ${index + 1}`);
   const id = source.id;
   if (typeof id !== 'string' || !gateIdPattern.test(id)) throw new Error(`Gate ${index + 1} needs an "id" of 1–24 lowercase letters, digits or dashes.`);
   const what = `Gate "${id}"`;
   const type = source.type;
   if (type !== 'command' && type !== 'screenshots' && type !== 'review') throw new Error(`${what} has an unknown "type"; use "command", "screenshots" or "review".`);
-  onlyKeys(source, gateKeys[type], what);
+  onlyKeys(source, options.roles && type === 'review' ? [...gateKeys.review, 'role'] : gateKeys[type], what);
   if (source.required !== undefined && typeof source.required !== 'boolean') throw new Error(`${what}: "required" must be true or false.`);
   const required = source.required !== false;
   if (type === 'command') {
@@ -93,7 +114,8 @@ function parseGate(value: unknown, index: number): Gate {
   const reviewer = source.reviewer ?? 'other';
   if (!reviewerChoices.includes(reviewer as ReviewerChoice)) throw new Error(`${what}: "reviewer" must be "other", "same", "claude" or "codex".`);
   if (source.focus !== undefined && (typeof source.focus !== 'string' || source.focus.length > 2000)) throw new Error(`${what}: "focus" must be text of up to 2000 characters.`);
-  return { id, type, required, reviewer: reviewer as ReviewerChoice, focus: typeof source.focus === 'string' ? source.focus.trim() : '' };
+  if (source.role !== undefined && (typeof source.role !== 'string' || !options.roles?.includes(source.role))) throw new Error(`${what}: "role" must name one of this pack's roles.`);
+  return { id, type, required, reviewer: reviewer as ReviewerChoice, focus: typeof source.focus === 'string' ? source.focus.trim() : '', ...(typeof source.role === 'string' ? { role: source.role } : {}) };
 }
 
 /** Validate the contents of a gates.json. Throws the first problem found, in plain English. */
@@ -104,7 +126,7 @@ export function parseGatesConfig(value: unknown): Omit<GatesConfig, 'source'> {
   if (lanes !== 'onMerge' && lanes !== 'off') throw new Error('"lanes" must be "onMerge" or "off".');
   if (!Array.isArray(source.gates)) throw new Error('The gates file needs a "gates" list.');
   if (source.gates.length > maxGates) throw new Error(`There can be at most ${maxGates} gates (found ${source.gates.length}).`);
-  const gates = source.gates.map(parseGate);
+  const gates = source.gates.map((gate, index) => parseGate(gate, index));
   const seen = new Set<string>();
   for (const gate of gates) { if (seen.has(gate.id)) throw new Error(`Two gates have the id "${gate.id}".`); seen.add(gate.id); }
   return {

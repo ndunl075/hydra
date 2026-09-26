@@ -1,6 +1,6 @@
 # Packs
 
-Status: **plan** (2026-09-25).
+Status: **built** (2026-09-25). See "As built" at the end.
 
 ## Goal
 
@@ -37,15 +37,15 @@ A **pack** bundles what one kind of work needs: **roles** for lanes and plan job
 
 ## What the CLIs support
 
-Checked against the installed Claude Code 2.1.282 and Codex 0.154.0 on 2026-09-25. Items marked R1–R9 are settled live in phase 1 (see "Research to settle in phase 1"). The design keeps a fallback for each.
+Checked against the installed Claude Code 2.1.282 and Codex 0.154.0 on 2026-09-25. Items marked R1–R9 were settled live in phase 1; what was run and seen is in "Research to settle in phase 1".
 
 | Need | Claude Code | Codex |
 | --- | --- | --- |
-| Extra instructions for one session | `--append-system-prompt <text>` is listed. `--append-system-prompt-file` is named in the help text but not listed as an option: **R1**. | No flag. `-c key=value` overrides any config key; a developer-instructions key: **R2**. Multi-line text can't pass through the npm `codex.cmd` shim (cmd.exe), so only a file-based key helps. Codex also reads `AGENTS.md` from the repository and `~/.codex`; Hydra writes neither for packs. |
-| Extra MCP servers for one session | `--mcp-config <configs...>` takes several files or strings, and `--strict-mcp-config` limits the session to them. Both are used today. `${VAR}` in these files, and passing an inline config plus a file: **R3**. | `-c mcp_servers.<name>.*`, used today. `env_vars` (pass variables through by name) and tool approval for these servers under `codex exec`: **R4**. |
-| Extra skills for one session | `--plugin-dir <path>`: "Load a plugin from a directory or .zip for this session only", repeatable. A plugin can hold `skills/`. Details: **R5**. | `codex features list` shows plugin and skill features as stable. But `codex plugin add` installs at user level, and there is no per-session flag. A `-c` key for an extra skills folder: **R6**. |
-| Web tools for a head | Add `WebSearch` and `WebFetch` to `--allowedTools`. | `--search` is a top-level flag; its `exec` equivalent: **R7**. |
-| Reading pack files from a head | Files outside the worktree may need `--add-dir`: **R8**. | Read access outside the worktree under `workspace-write` on Windows: **R8**. |
+| Extra instructions for one session | `--append-system-prompt-file <file>` works, though the help doesn't list it (**R1**). A resumed conversation keeps the system prompt it started with. | `-c developer_instructions='<text>'` adds to Codex's own instructions (**R2**). It is one TOML value on the command line, so it must be one line through the `codex.cmd` shim. There is no file-based key that adds: `model_instructions_file` replaces Codex's instructions. Codex also reads `AGENTS.md` from the repository and `~/.codex`; Hydra writes neither for packs. |
+| Extra MCP servers for one session | Several `--mcp-config=` flags (the inline Hydra config plus a file) load together under `--strict-mcp-config`. `${VAR}` and `${VAR:-default}` are expanded in a file's args and env (**R3**). | `-c mcp_servers.<name>.*`. `env_vars=['NAME']` passes a variable through by name. Under `codex exec` with approval `never`, a server's tools are refused unless it has `default_tools_approval_mode='approve'` (**R4**). |
+| Extra skills for one session | `--plugin-dir <path>` loads a plugin's `skills/` as `<plugin>:<skill>`, in `-p` stream-json sessions and on `--continue` (**R5**). | No per-session skill folder (**R6**). Codex does read `.agents/skills/` in the repository. |
+| Web tools for a head | Add `WebSearch` and `WebFetch` to `--allowedTools`. | Web search is **on by default** in `codex exec`. `-c web_search='live'` or `'disabled'` sets it (**R7**). |
+| Reading pack files from a head | `Read` in `--allowedTools` reads any path under `dontAsk`, with no `--add-dir` (**R8**). | `workspace-write` limits writes, not reads (**R8**). |
 
 ## 1. What a pack contains
 
@@ -170,7 +170,7 @@ A pack's hash is SHA-256 over its files: the sorted relative paths, then each fi
 | Gate | `code-review`: review, reviewer `other`, required | Focus: correctness, missing tests for new behaviour, security (injection, secrets, unsafe paths), and whether the change does what the brief asks. Ignores style. |
 | Skill | `test-first` | Write a failing test, make it pass, then tidy. |
 | Skill | `ui-check` | How to run the project's dev server, check a page at three widths, and read the screenshots gate's report. |
-| MCP servers | None | See open question 3. |
+| MCP server | `playwright`: `npx -y @playwright/mcp@0.0.82 --headless --isolated` | Decisions 3 and 5: pinned to one exact version, and only the UI builder lists it. The review panel says it downloads from npm on first use. |
 
 **Research** (`research`)
 
@@ -276,12 +276,12 @@ Hydra resolves the role at every launch, from the active pack's cache copy, with
 
 | | Claude lane | Codex lane | Claude head | Codex head |
 | --- | --- | --- | --- | --- |
-| Instructions | `--append-system-prompt-file <cache>/roles/<id>.md` (R1). Fallback: `--append-system-prompt` with the text, when the executable isn't a `.cmd` shim. | A file-based `-c` key if R2 finds one. Fallback: the instructions in the first prompt, flattened and capped at 1500 characters. | A "Your role" section in the first message (`helperPrompt`) | Same |
-| Skills | `--plugin-dir <cache>/claude/<role>` (R5) | R6, else the skill index | `--plugin-dir`, the skill tool in `--allowedTools` (R5), and `--add-dir <cache>` (R8) | R6, else the skill index in the first message (R8) |
-| MCP servers | `--mcp-config <file>` with the role's servers, even when Claude is connected; plus `hydra` when it isn't | `-c mcp_servers.<pack>-<id>.*` for each server | A second `--mcp-config` file next to the inline Hydra config (R3), still `--strict-mcp-config`, with `mcp__<pack>-<id>` added to `--allowedTools` | `-c mcp_servers.<pack>-<id>.*`, with tool approval per R4 |
-| `tools: ["web"]` | No flag; you approve as usual | No flag | `WebSearch` and `WebFetch` in `--allowedTools` | R7 |
+| Instructions | `--append-system-prompt-file <cache>/roles/<id>.md` (R1). Resume keeps the role the conversation started with. | `-c developer_instructions='<instructions and skill index>'` on a fresh start (R2), one line and shim-safe. Resume keeps it. | A "Your role" section in the first message (`helperPrompt`) | Same |
+| Skills | `--plugin-dir <cache>/claude/<role>` (R5) | The skill index, in the developer instructions (R6) | `--plugin-dir`, with `Skill` in `--allowedTools` (R5). No `--add-dir` (R8). | The skill index in the first message (R6, R8) |
+| MCP servers | `--mcp-config <file>` with the role's servers, even when Claude is connected; plus `hydra` when it isn't | `-c mcp_servers.<pack>-<id>.*` for each server, `env_vars` for `${NAME}` values, `default_tools_approval_mode='approve'` (R4) | A second `--mcp-config=<file>` next to the inline Hydra config (R3), still `--strict-mcp-config`, with `mcp__<pack>-<id>` added to `--allowedTools` | `-c mcp_servers.<pack>-<id>.*`, `env_vars`, and `default_tools_approval_mode='approve'` (R4) |
+| `tools: ["web"]` | No flag; you approve as usual | No flag | `WebSearch` and `WebFetch` in `--allowedTools` | `-c web_search='live'`. Without it, `-c web_search='disabled'` (R7). |
 
-When the Codex fallback is used, a Codex lane with a role but no goal still gets a first prompt: the role, then "Wait for the user's first request."
+A text that can't pass as one argument (a `'`, or more than the cap after flattening) falls back to the first prompt. A Codex lane with a role but no goal then still gets one: the role, then "Wait for the user's first request."
 
 ### Lanes
 
@@ -373,12 +373,14 @@ When the Codex fallback is used, a Codex lane with a role but no goal still gets
 | File | What |
 | --- | --- |
 | `src/core/packs/format.ts` | Pure: `parsePackManifest`, `parsePacksFile`, the caps, `{pack}`, and the env and Codex-safety rules |
-| `src/core/packs/registry.ts` | Finds built-in and user packs, validates and hashes them, and lists their problems |
+| `src/core/packs/files.ts` | Reads a pack folder once, refusing links, and hashes it |
+| `src/core/packs/registry.ts` | Finds built-in, user and project packs, validates and hashes them, and lists their problems |
 | `src/core/packs/allowed.ts` | The local record (`globalStorage/packs/allowed.json`), with atomic writes |
 | `src/core/packs/cache.ts` | The copy each pack runs from, the per-role Claude plugin folders, and the role files |
 | `src/core/packs/project.ts` | Reading and writing `.hydra/packs.json`; `activePacks(folder)` |
 | `src/core/packs/gates.ts` | `effectiveGates` |
 | `src/core/packs/launch.ts` | Pure `roleLaunch(role, provider, paths)` for heads and lanes |
+| `src/core/packs/service.ts` | `PackService`: each project's state, the gates loader, and the Packs page's writes, with no editor API |
 | `src/extensionPacks.ts` | The pack service in the window: commands, watchers on `packs.json` and the packs folder, the notification, and `Snapshot.roles` |
 | `src/settings/pages/packs.ts`, `packsHelpers.ts` | The page, and its pure helpers |
 | `packs/coding/`, `packs/research/` | The built-in packs |
@@ -406,21 +408,30 @@ When the Codex fallback is used, a Codex lane with a role but no goal still gets
 | 5 | Integration, the live checks below, and docs (README, Heads.md, this plan's "As built"). | **Opus** |
 | 6 | Local gate, PR, CI, merge, light refresh of the installed app, and ping Nico. | **Opus** |
 
-### Research to settle in phase 1
+### Research settled in phase 1
 
-Each item is tried live with Claude Code 2.1.282 and Codex 0.154.0. What was run and what was seen goes into this plan.
+Tried live on 2026-09-25 with Claude Code 2.1.282 and Codex 0.154.0.
 
-| # | Question | If the answer is no |
-| --- | --- | --- |
-| R1 | Does `--append-system-prompt-file` work in an interactive session, and with `--continue`? | `--append-system-prompt` with the text when the executable isn't a shim; else the first-prompt fallback. |
-| R2 | Does Codex 0.154 have a config key that adds developer instructions from a file (adding to its base instructions, not replacing them), usable with `-c`? | The first-prompt fallback. |
-| R3 | Does Claude expand `${VAR}` in `--mcp-config` files? Can a session take the inline Hydra config and a file together? | Hydra writes the resolved values into the 0600 file, and puts the head's servers in one file (with the token-free Hydra entry kept inline). |
-| R4 | Does Codex pass `env_vars` through to a `-c` server? Are its tools callable under `codex exec` with approval `never`, and what does `default_tools_approval_mode` do for them? | Env values go in `-c`, where they're visible in the process list (the review panel says so), or the servers aren't offered to Codex heads. |
-| R5 | Do skills from `--plugin-dir` load in interactive and `-p` stream-json sessions, and with `--continue`? What is the skill tool called in `--allowedTools`? What happens if an installed plugin has the same name? | Claude uses the skill index, like the Codex fallback. |
-| R6 | Can Codex load an extra skills folder for one session, for example through a `-c` key? | The skill index. |
-| R7 | How does `codex exec` turn on web search: a `-c` key or a flag? | `tools: ["web"]` works for Claude heads only, and the Packs page says so. |
-| R8 | Can a Claude head (`dontAsk`, `--add-dir`) and a Codex head (`workspace-write`) read files in Hydra's global storage? | Copy the role's skill files into a folder in the worktree that Hydra excludes through `.git/info/exclude`, and read them there. |
-| R9 | Can a read-only reviewer (`claude -p --permission-mode plan`, or `codex exec --sandbox read-only`) open a web page? | The `fact-check` focus only asks that every claim has a plausible source link; the Fact-checker role does the fetching. |
+**How it was run:**
+- Everything ran in a temporary folder, with tiny prompts, on `--model haiku` and `-m gpt-5.6-luna` with low effort.
+- Claude ran with `DISABLE_AUTOUPDATER=1`, without the parent session's variables, and with `--setting-sources ""` and `--strict-mcp-config`, so no user settings, hooks or servers loaded. Runs used `--no-session-persistence`, except the `--continue` checks.
+- Codex ran with `--ignore-user-config`, and with `--ephemeral` except the resume checks. Those resumed a thread by its id, never `--last`, so no real session could be picked up.
+- The MCP probe was a 30-line stdio server. It logged its arguments and `PROBE_*` variables, and offered one tool.
+- Hydra's probes changed no user config. The CLIs wrote their own session files: Claude's transcripts for the `--continue` checks, and Codex's for the resume checks.
+- **Codex wrote to `~/.codex/config.toml` by itself.** The R8 run (`-s workspace-write`, `windows.sandbox='elevated'`) added `[projects.'<that folder>'] trust_level = "trusted"`, even with `--ignore-user-config`. Codex heads and lanes in new worktrees will do the same, so live check 4 must compare `config.toml` without the `[projects.*]` trust entries.
+- **Not tested non-interactively:** the interactive (TUI) sessions that lanes use. The flags are parsed the same way there, and `--help` lists `--plugin-dir` as "for this session only", but a lane check stays in the live list.
+
+| # | Question | What was run, and what was seen | Approach |
+| --- | --- | --- | --- |
+| R1 | Does `--append-system-prompt-file` work in an interactive session, and with `--continue`? | `-p --append-system-prompt-file role.md "What is your role?"` answered with the code from the file. On `--continue`, the role came back **with or without** the flag. A conversation started **without** the flag and continued **with** it answered "NONE": Claude records the system prompt on the first request and resends that record on resume (`--system-prompt-snapshot`, on by default). With `--system-prompt-snapshot off`, the added file took effect on `--continue`. | Claude lanes pass `--append-system-prompt-file <cache>/roles/<id>.md` on every launch. On Resume, the conversation keeps the role it started with; a role that changed takes effect on **Start fresh**, and the tile says so. `--system-prompt-snapshot off` would apply a change on Resume, but it gives up the recorded prompt, so it isn't used. No text fallback is needed. |
+| R2 | Does Codex 0.154 have a config key that adds developer instructions from a file (adding to its base instructions, not replacing them), usable with `-c`? | The binary's config keys include `developer_instructions`, `model_instructions_file` and `instructions`. `-c developer_instructions='Your role code is PELICAN-7.'` answered "Codex,PELICAN-7", so it **adds** to Codex's own instructions. `-c model_instructions_file=<file>` made Codex answer with the file's name for itself, so it **replaces** them. A thread started with `developer_instructions` kept them on `exec resume <id>` without the flag. A thread started without them ignored them when they were added on resume ("NONE"). | Codex lanes and heads get `-c developer_instructions='<the role's instructions>'` at the start of a thread. It is one TOML literal: through the `codex.cmd` shim it is flattened to one line with `shimSafe`, with no `'`, and capped (about 2000 characters) to stay inside cmd.exe's line limit. Resume keeps it, as with Claude. There's no file-based key. The first-prompt fallback is only for text that can't pass. |
+| R3 | Does Claude expand `${VAR}` in `--mcp-config` files? Can a session take the inline Hydra config and a file together? | `--mcp-config=<inline JSON> --mcp-config=<file> --strict-mcp-config`: both servers `connected`. In the file, `"arg=${PROBE_ARG}"` reached the server as `arg=arg-7`, `"${PROBE_SOURCE}"` in env as its value, and `"${PROBE_MISSING:-fallback}"` as `fallback`. An **unset** `${NAME}` with no default reached the server as the literal text `${NAME}`, with no error. Claude also passes its whole environment to stdio servers. | A head keeps Hydra's token-bearing entry inline and adds a second `--mcp-config=<file>` with the role's servers, still `--strict-mcp-config`. The file keeps `${NAME}` references; values never go in it. Before launch, Hydra checks that every `${NAME}` without a default is set, and skips the server with a note otherwise. |
+| R4 | Does Codex pass `env_vars` through to a `-c` server? Are its tools callable under `codex exec` with approval `never`, and what does `default_tools_approval_mode` do for them? | With `-c mcp_servers.probe.env_vars=['PROBE_VALUE']`, the server saw `PROBE_VALUE` and not another variable set in Codex's environment. Without `default_tools_approval_mode`, the tool call ended "MCP tool call requires approval, but approval policy is never". With `-c mcp_servers.probe.default_tools_approval_mode='approve'`, the tool ran and returned its text. | A pack env value `${NAME}` is passed by name: Hydra sets the server's variable in the Codex process's own environment (not on the command line) and adds it to `env_vars`. Plain values go in `-c mcp_servers.<pack>-<id>.env`. Every pack server gets `default_tools_approval_mode='approve'`, as Hydra's own server does. |
+| R5 | Do skills from `--plugin-dir` load in interactive and `-p` stream-json sessions, and with `--continue`? What is the skill tool called in `--allowedTools`? What happens if an installed plugin has the same name? | A plugin folder (`.claude-plugin/plugin.json` named `hydra-probe`, plus `skills/heron-check/SKILL.md`) showed in the stream-json `init` message as the skill `hydra-probe:heron-check`, the plugin `hydra-probe@inline`, and the slash command. The tool is **`Skill`**. Under `dontAsk`, the model used it both with and without `Skill` in `--allowedTools`, with no permission denials. On `--continue` with `--plugin-dir`, the skills loaded. Two `--plugin-dir` folders with the **same** plugin name both loaded, and their skills were merged under the one name. **Not tested:** a clash with an *installed* plugin. That needs the user's settings, which would run the installed claude-mem hooks. | Hydra passes `--plugin-dir <cache>/claude/<role>` and adds `Skill` to a head's `--allowedTools` anyway, to be explicit. Plugins are named `hydra-<pack>`. A same-named plugin would merge rather than replace, so the name stays Hydra-specific. |
+| R6 | Can Codex load an extra skills folder for one session, for example through a `-c` key? | `skills.config` entries only turn existing skills on or off. `-c "skills.config=[{path='<SKILL.md elsewhere>', enabled=true}]"` didn't add the skill ("NO"). Codex found a skill in `.agents/skills/heron-check/SKILL.md` inside the repository ("YES"). `codex plugin add` installs at user level. | **The skill index**, in the Codex role's developer instructions (lanes) or first message (heads). Copying skills into a worktree's `.agents/skills` is avoided: `hydra_done` commits whatever is uncommitted, and a worktree's `info/exclude` is shared with the main checkout. |
+| R7 | How does `codex exec` turn on web search: a `-c` key or a flag? | `--search` is top-level only. The config key is `web_search`. With no setting, `exec --sandbox read-only` **searched** and answered "Example Domain". `-c web_search='disabled'` answered "NO-WEB", and `-c web_search='live'` searched. | Codex heads get `-c web_search='live'` when their role has `tools: ["web"]`, and `-c web_search='disabled'` otherwise. That also turns off today's default search for heads without a role. |
+| R8 | Can a Claude head (`dontAsk`, `--add-dir`) and a Codex head (`workspace-write`) read files in Hydra's global storage? | Claude, `dontAsk`, `--allowedTools Read`, no `--add-dir`: read a file outside its folder, with no denials. `--allowedTools Glob` alone couldn't. `--allowedTools Write` alone **wrote** a file outside its folder. Codex, `workspace-write` with the user's `windows.sandbox='elevated'`: read the file with a shell command. It also wrote next to it, because the test folder was under `%TEMP%`, which `workspace-write` allows. Writing to global storage itself wasn't tried. Without the elevated setting, every shell command was "blocked by policy". | Heads read skills and role files straight from the cache in global storage. `--add-dir` isn't needed and isn't passed. **Heads can write outside their worktree** (`Write`, and `Bash` in any case), so Hydra verifies a cache copy's hash before every use and rebuilds it or refuses it (`src/core/packs/cache.ts`). |
+| R9 | Can a read-only reviewer (`claude -p --permission-mode plan`, or `codex exec --sandbox read-only`) open a web page? | `claude -p --permission-mode plan`: `WebFetch` was denied (`permission_denials`, "NO-FETCH"). With `--allowedTools WebFetch`, still in plan mode, it fetched and answered "Example Domain". Codex `--sandbox read-only` searched and opened the page by default (R7). | A review gate with a `role` whose `tools` include `"web"` gives a Claude reviewer `--allowedTools WebFetch,WebSearch` (still plan mode) and a Codex reviewer `-c web_search='live'`. Other reviews get no web: Claude as today, Codex with `-c web_search='disabled'`. |
 
 ## Acceptance
 
@@ -464,7 +475,7 @@ Each item is tried live with Claude Code 2.1.282 and Codex 0.154.0. What was run
 1. Turn on Coding. The review panel lists its roles, gate and skills, and `packs.json` is written.
 2. A Claude lane as Builder follows its role (ask it "What is your role?"), and still does after Resume. A Codex lane as Reviewer does too.
 3. A Claude lane as UI builder lists `hydra-coding:ui-check` among its skills. A Claude head as Builder uses `test-first`.
-4. With a test user pack that has a tiny stdio MCP server, a connected Claude lane and a Codex lane both list its tools. `~/.claude.json` and `~/.codex/config.toml` are byte-identical before and after.
+4. With a test user pack that has a tiny stdio MCP server, a connected Claude lane and a Codex lane both list its tools. `~/.claude.json` and `~/.codex/config.toml` are byte-identical before and after, apart from the `[projects.*]` trust entries Codex adds by itself for new folders (research R8).
 5. A head as Researcher fetches a web page; a head with no role can't.
 6. `code-review` runs on a head and on a lane merge, and its chip says "From the Coding pack".
 7. Edit the user pack's `pack.json`. The pack shows Changed and its gate isn't run, with the reason. Reviewing it again restores it.
@@ -472,16 +483,219 @@ Each item is tried live with Claude Code 2.1.282 and Codex 0.154.0. What was run
 
 **Done** when the local gate passes (check, build, tests, smoke), the live checklist passes, the PR is merged with CI green, the installed app is refreshed, and Nico has the summary.
 
-## Open questions for the owner
+## Decisions (Nico, 2026-09-25)
 
-1. **Packs folder:** `~/.hydra/packs` (visible, easy to share) or Hydra's global storage (hidden)? And should a project be able to carry its own packs in `.hydra/packs/<id>/`, treated as third-party and pinned by hash?
-2. **Built-in packs in a committed `packs.json`:** ask once per project, as this plan does, or trust them the way a committed `gates.json` is trusted today?
-3. **Playwright MCP in Coding:** ship it for the UI builder, pinned to a version? It downloads from npm on first use, which built-in packs otherwise never do.
-4. **A model per role:** add an optional `model` to roles?
-5. **Servers per role or per pack:** this plan gives a server only to the roles that list it. Should a pack be able to give a server to every lane in the project?
-6. **How a lead learns the roles:** put the active roles in its instructions, let it learn them from the error when it guesses wrong, or add a `hydra_roles` action?
-7. **Pack scripts and Node:** `["node", "{pack}/…"]` needs Node on PATH. Add a `{node}` placeholder that runs Hydra's own executable as Node?
+1. **User packs live in `~/.hydra/packs`.** It's visible and easy to share. A project may also carry packs in `.hydra/packs/<id>/`: they're treated as third-party, pinned by content hash, and need your review before anything runs.
+2. **A committed `packs.json` asks once per project**, built-in packs included, through the review panel, because packs can run commands.
+3. **The Coding pack ships Playwright MCP** for the UI builder, pinned to one version. The review panel says it downloads from npm on first use.
+4. **Roles may set an optional `model`.**
+5. **A pack's MCP servers go only to the roles that list them.**
+6. **Leads learn the active roles from their instructions,** plus the `role` enum on `hydra_start_head`.
+7. **A `{node}` placeholder** runs Hydra's own executable as Node (`ELECTRON_RUN_AS_NODE`), so pack scripts don't need Node on PATH.
 
 ## As built
 
-Not built yet. When it is, record where it lives, the changes from the plan, what was verified live, and what's not done.
+Built in five phases on 2026-09-25. Each phase below records where its work lives and how it differs from the plan. Phase 5 records the live checks.
+
+### Phase 1 (2026-09-25)
+
+**Where it lives:**
+- `src/core/packs/`: `format.ts`, `files.ts`, `registry.ts`, `allowed.ts`, `cache.ts`, `project.ts`, `gates.ts` and `service.ts`.
+- `src/extensionPacks.ts` builds the `PackService`.
+- `packs/coding/` and `packs/research/` hold the built-in skeletons: ids, roles, minimal instructions and skills, the review gates, and Coding's Playwright server. Phase 3 writes the real content.
+- Tests are in `tests/packs.test.ts`.
+
+**Changes from the plan:**
+- **Project packs** (decision 1) are read from `<lead>/.hydra/packs/<id>/`. They're pinned by hash like your packs. A project pack wins over one of yours with the same id, and yours says so. The allow record keeps each entry's source, so a switch between them asks again.
+- **The cache is checked at every use.** Research R8 showed heads can write outside their worktree. So each use re-hashes the copy, and a copy that doesn't match is rebuilt from the bytes that were checked. Copies are written from the bytes the registry read and hashed, never re-read from the pack's folder. Role plugins sit beside a copy, in `<id>-<hash12>.plugins/<role>/`, so they don't change its hash.
+- **Allowing needs the hash you reviewed.** `PackService.allow` and `turnOn` take the hash the review panel showed, and refuse if the pack changed since.
+- **`{node}`** can only be a whole command (the first entry). `{pack}` can only start an argument, alone or after `--name=`, followed by a path that must exist in the pack. Both also work in a stdio server's command and args; phase 2 resolves them there.
+- **Pack skills' front matter** may have only `name`, `description` and `license`. `allowed-tools`, hooks and anything else are refused, because they could widen what an agent may do.
+- **A secret-sounding name with a short plain value** (`SESSION_TIMEOUT: "30"`, `AUTH_ENABLED: "true"`) is allowed. `${HYDRA_*}` references are refused.
+- **`model`** (decision 4) is parsed and checked: a safe model-name pattern. It applies when a role runs on its own provider; phase 2 wires it.
+- **A `packs.json` Hydra can't use** throws, as a broken `gates.json` does. A head then gets "Hydra can't check your work", and no attempt is spent.
+- **The lane Merge confirmation** names gates that didn't run ("Gates passed; not run: fact-check.") instead of saying only "Gates passed."
+
+**For later phases:**
+- **Phase 2:** `resolvePlaceholders`, `codexProblem`, `buildRolePlugin`, `PackServerInfo.variables`, and `ProjectPack.copy`.
+- **Phase 4:**
+  - `PackService.state`, `turnOn(folder, id, reviewedHash)`, `setEnabled`, `skipGate`, `forget` and `effectiveGates` (its `dropped` list is the "From packs" group).
+  - `ProjectPack` carries the pack's file bytes (`pack.files`). Never post it to a webview as it is.
+  - Allowing must come from the review panel's own button, never from a public command, since any extension can run commands.
+
+**Not done in phase 1:** the launch effects (phase 2), the real pack content (phase 3), the UI and its commands (phase 4), and live checks.
+
+### Phase 2 (2026-09-25)
+
+**Where it lives:**
+- `src/core/packs/launch.ts` (pure): role names (`roleSummaries`, `findRole`, `parseRoleRef`), `RoleUnavailable` and its wording, `roleLaunch`, the skill index, `codexDeveloperInstructions` and `roleFirstPrompt`.
+- `PackService.roles`, `pick` and `resolve` (`service.ts`). `resolve` re-hashes the copy at every launch and builds the role's plugin. The window passes your own servers' names, read as the MCP servers page reads them (`extensionPacks.ts`).
+- **Heads:** `Job.role` and `JobInput.role` (`jobs.ts`); `HeadRoleArguments` (`helperRunner.ts`); resolution, the `--mcp-config` file, `changes` and the "Your role" section (`helperService.ts`); the roles lookup, the lead's instructions and the `role` enum (`helperTools.ts`, `mcpBridge.ts`).
+- **Lanes:** `Lane.role`, `parseLaneRole`, the role sentence and `laneRolePrompt` (`lanes.ts`); `laneLaunch`, `codexRoleInPrompt` and the tile note (`laneService.ts`); `extensionLanes.ts`; `LaneView.roleNote`, `laneNew.role` and `HelperJobView.role` (`model.ts`).
+- **Plans:** `PlanJob.role` (`plans.ts`). `extension.ts` passes it to heads and lanes.
+- **Review gates:** `reviewArguments(provider, images, web)` (`gates/review.ts`), and `reviewerRole.web`, set by the packs loader.
+- `src/core/process.ts`: the PowerShell quote fix, plus `shimSafe` and `isWindowsShim`.
+- Tests are in `tests/packsLaunch.test.ts`, with updated expectations in the gates, helperService, helperEndpoint, jobs and lanes tests.
+
+**What each launcher passes now:**
+
+| | Role | Without a role |
+| --- | --- | --- |
+| Claude head | "Your role" and the skill index in the first message. A second `--mcp-config=<logDirectory>/<jobId>.mcp.json` (0600, removed when the process ends) under `--strict-mcp-config`. `--plugin-dir`. `Skill`, `mcp__<pack>-<id>`, and `WebSearch`,`WebFetch` for web in `--allowedTools`. `--model` from the role on its own provider, unless the lead gave one. | As before |
+| Codex head | The same first message. `-c mcp_servers.<pack>-<id>.*` on every exec and resume, and the variables in its own environment. `-c web_search='live'` for web. `-m` as for Claude. | `-c web_search='disabled'` (R7) |
+| Claude lane | `--append-system-prompt-file`, `--plugin-dir` and `--model` on every launch. A `--mcp-config` file with the role's servers, even when connected, plus `hydra` when not. "Your role: X (Y pack)." in the preamble. | As before |
+| Codex lane | `-c mcp_servers.*` on every launch. `-c developer_instructions='…'` and `-m` on a fresh thread only. When the text can't pass, it goes in the first prompt. | As before |
+| Review | Web role: Claude gets `--allowedTools WebFetch,WebSearch` (still plan mode), Codex gets `-c web_search='live'`. | Codex gets `-c web_search='disabled'` |
+
+**Changes from the plan:**
+- **A PowerShell injection is fixed.** `processLaunch` (the `.cmd` shim path) quoted only `'`, but PowerShell also reads ‘ ’ ‚ ‛ as quotes. A lane goal, plan brief or pack text containing "it’s" ended the argument, and the rest ran as PowerShell. A local `.cmd` shim confirmed it. All four are now doubled, and they reach the CLI unchanged.
+- **Developer instructions keep apostrophes.** `'` and `"` become ’ and ” in the text, instead of sending any text that contains an apostrophe to the first prompt. The text is flattened with `shimSafe` only when it goes through a `.cmd` shim, as the prompt already was.
+- **The first-prompt fallback** uses the text itself when it fits in the preamble's remaining room. Otherwise it gives the path of the instructions file and up to 6 `SKILL.md` paths. A role's text can be 8000 characters, and the prompt is capped at 4000.
+- **How a lead learns the roles (decision 6):**
+  - The bridge asks the window at `initialize`, through a lead action the model never sees (`hydra_active_roles`), and waits at most 5 seconds. This moves the lead token request from the first call to startup.
+  - Without a window, or on a timeout, the lead gets no roles, which is today's behaviour.
+  - The roles also appear in the `role` parameter's description, since Codex doesn't read MCP instructions.
+  - The enum lists the name a lead passes: `builder`, or `coding/builder` when two active packs have a builder.
+- **A head's role is checked twice.** It must be active when the head is started; otherwise the start is refused with the reason and the active roles. A plan job's head is refused the same way, and the job's outcome carries that reason. When the head launches, the role is resolved again.
+- **Job fields:**
+  - `Job.role` is `{ ref, title, packTitle }`, so views keep the titles after a pack goes away.
+  - `JobInput.jobRole` is internal, like `inputs`.
+  - `hydra_start_head` answers with `provider` and `role`; `hydra_get_head` adds `role` and `role_title`.
+- **Name clashes** are checked per agent against your user-level servers, for heads too. `--strict-mcp-config` keeps yours out of a Claude head, but the check stays consistent with the Packs page's note.
+- **Codex server details:**
+  - Stdio servers get `startup_timeout_sec=60`, because `npx` may download first.
+  - HTTP servers use `url`, `http_headers`, `env_http_headers` (whole `${NAME}` values) and `bearer_token_env_var`.
+  - Header names are limited to `[A-Za-z0-9_-]`.
+- **A server that reads a variable under another name** (`"API_KEY": "${MY_KEY}"`):
+  - For Codex, the variable is set in its environment only when it isn't already set to something else.
+  - It is never set for names that steer the CLI, Node or Windows: `HYDRA_`, `CODEX_`, `OPENAI_`, `ANTHROPIC_`, `CLAUDE`, `ELECTRON_`, `NODE_` and `NPM_` prefixes, and `PATH`, `HOME`, proxies and the like. The server is left out with a note instead.
+- **Paths through a `.cmd` shim:** when a plugin folder or instructions file path has characters cmd.exe reads as syntax, it is left out with a note.
+- **A role's model on a Codex lane** is passed only on a fresh thread; a Claude lane gets `--model` on every launch.
+- **An optional-changes head** hears one more line under "How to work": its summary can be the result.
+- **A Claude lane's `--mcp-config` file** is now also removed at a launch that doesn't need it, not only when the lane closes.
+- **`LaneView.roleNote`** is kept in memory and set at each launch, so after a window restart it shows again at the lane's next launch.
+
+**For later phases:**
+- **Phase 4:**
+  - `PackService.roles(folder)` has what `Snapshot.roles` needs.
+  - The data is ready: the `laneNew` message takes `role`, `LaneView.roleNote` is the tile's note, and `HelperJobView.role` gives "Claude head · Builder".
+  - Still to build: the `hydra.newLane` Role step, roles in the planner, and R1's "the tile says so" when a role changed since a Claude lane started.
+  - Servers left out (`RoleLaunch.notes`) are only logged; the Packs page can show them.
+- **Phase 3:** role instructions can use apostrophes freely. Coding's Playwright server is a bare `npx`; see live check 2.
+- **Phase 5, live checks to add:**
+  1. A Codex lane through `codex.cmd` receives `developer_instructions` with ’ intact, and follows them.
+  2. A bare `npx` server command starts on Windows for Claude and for Codex. Codex spawns commands directly, so it may need `npx.cmd` (`resolveCommand`) or `cmd /c`.
+  3. Codex accepts the HTTP keys and `startup_timeout_sec` as passed, and `-c` before `resume --last`.
+  4. A Claude head runs with two `--mcp-config=` and `--plugin-dir` under `--strict-mcp-config` in `-p` stream-json, and `mcp__<pack>-<id>` in `--allowedTools` lets its tools run.
+  5. A lead chat's startup: the lead check at `initialize` finishes within 5 seconds on Windows, the delay is acceptable, and the roles show in the instructions and the enum.
+  6. The longest Codex lane command line through the shim (Hydra's server, a role's servers, 2000 characters of instructions and a 4000-character prompt) stays under cmd.exe's 8191 characters. Nothing measures it yet.
+  7. A variable Hydra sets under another name reaches a Codex server through `env_vars`.
+  8. R9: a web role's review opens a page, and other Codex reviews can't.
+  9. A head's `.mcp.json` is gone after it ends, and a lane's holds only references.
+
+**Not done in phase 2:** the UI (phase 4), the pack content (phase 3), and live checks (phase 5). The lead-check test in `tests/helperEndpoint.test.ts` fails when the tests run inside a Claude Code session, as it did before this phase; it reads the real process tree.
+
+### Phase 4 (2026-09-25)
+
+**Where it lives:**
+- `src/settings/pages/packs.ts` and `packsHelpers.ts`: the page, and its pure logic (commands shown exactly, secrets masked, the right button per state, the review panel's content).
+- `src/settings/leadFolder.ts`: the lead folder Settings → Gates and Settings → Packs both read and write.
+- `src/core/packs/registry.ts` (`addUserPack`), `cache.ts` (`writeFiles`, exported), and `service.ts` (`addFolder`, `userFolder`, `isAllowed`).
+- `src/settings/types.ts` and `shell.ts`: `SettingsContext.packs`, so the Packs page can call `PackService.turnOn` directly.
+- `src/extension.ts`: the `hydra.packs.*` commands, `Snapshot.roles` (`roles`, `packsFolder`, `rolesChanged`), the file watcher on `.hydra/packs.json` and `.hydra/packs/`, and `notifyPacksIfNeeded`.
+- `src/core/model.ts`: `SnapshotRole`, `planSaveJob`'s `role`.
+- `src/core/plans.ts` / `planner.ts`: role-aware `parsePlanJobDraft`/`parsePlannerOutput` and `plannerPrompt`.
+- Roles in the UI: `webview/LanesView.tsx` (`NewLaneCard`'s Role select, `groupRolesByPack`, the lane tile's role chip and `roleNote`), `webview/AgentsCanvas.tsx` (`JobEditPopover`'s Role select, the lane lead's "Lane · Reviewer", the head card's "Claude head · Builder", the draft job's "Builder · Claude" pill), `src/core/hydraTree.ts` (the panel's "Codex · Reviewer · lane/x"), `src/core/agentsCanvas.ts` (`gateChip`'s "From the Coding pack" tooltip), `src/extensionLanes.ts` (`hydra.newLane`'s Role step).
+- Tests: `tests/packsPage.test.ts` (new), plus additions to `tests/planner.test.ts`, `tests/plans.test.ts`, `tests/hydraTree.test.ts`, and a fix to `tests/settingsShell.test.ts` for the new `pageOrder` and `AppearanceSettings` signature. `tests/smoke.ts` gained `packsSmoke`.
+
+**Changes from the plan:**
+- **No `hydra.packs.allow` command**, as decided in phase 1: the review panel's own button in `packs.ts` calls `ctx.packs.turnOn` directly, the only caller anywhere. `hydra.packs.setEnabled(folder, id, true)` refuses with "needs your review first" unless `PackService.isAllowed` (new) says the pack is already allowed for this project — so listing a pack in `packs.json` through the command can never itself let anything run.
+- **"Add pack from folder…"** needed a copy step the plan named but phase 1 hadn't built: `registry.addUserPack` re-validates the source folder with the same `loadPack` the registry uses, then writes its own checked bytes (never re-reads the source) into `<your packs folder>/<id>` with `cache.ts`'s `writeFiles` (now exported), refusing a name your packs folder already has.
+- **Testing a pack's server** resolves `{pack}`/`{node}` to the pack's own folder and Hydra's executable, and `${NAME}` to your own environment (refusing with the missing name), then runs `testMcpServer` exactly as the MCP servers page does — nothing is written anywhere.
+- **The Packs page needs the `PackService` instance**, not just commands, for the one call security requires to bypass commands. `SettingsContext` gained a `packs` field, and `Manager`'s `PackService` is now constructed before `AppearanceSettings` (order only; no behaviour change).
+- **`Snapshot.roles` refresh:** a `vscode.workspace.createFileSystemWatcher` on `<lead>/.hydra/{packs.json,packs/**}` calls the same `rolesChanged()` a `hydra.packs.*` command does, so a hand-edited `packs.json` or a pack folder Hydra didn't itself change also refreshes the pickers and the panel. Built-in and your-packs-folder changes outside the lead folder aren't watched; **Reload** on the Packs page (and its command) forces a refresh either way, since nothing here is cached beyond the on-disk pack cache `projectPacks` already re-checks on every read.
+- **The New lane card's Role select** groups roles by pack with `<optgroup>`, matching the table in "How roles show"; the same grouping (`groupRolesByPack`) is exported for `hydra.newLane`'s own quick-pick step, which now asks Role first (when any are active) before Agent, Name and Goal — a fourth step, as the plan says.
+- **The job popover's Role select** keeps the job's own role selectable even after its pack goes away (labelled "… (not active)"), so opening the popover and saving without touching Role never drops it; `planSaveJob` validates a *changed* role against the active roles server-side and refuses an unknown one, but never refuses re-saving an unchanged one. Clearing the role sends `role: ""`; leaving the field alone (a caller other than this popover) omits it and keeps whatever the job had.
+- **The draft job pill and the job popover's "Auto"** both resolve to the *role's* provider when the job has none of its own — the same precedence `runPlanById` already used for a running job (job → role → `hydra.defaultProvider`), so the pill never contradicts what actually starts.
+- **The Hydra panel's lane description** and **the lane tile's role chip** both look the lane's `{pack, role}` ids up against `Snapshot.roles`/the tree's own roles list to get a title, rather than the record itself carrying a title (unlike `HelperJobView.role`, which phase 2 gave `{ref, title, packTitle}` at start time) — simpler, at the cost of showing nothing (not even the stale title) once a role goes fully uninstalled and disappears from the active list; `Lane.roleNote` already covers that case with a proper sentence.
+- **A pack gate's chip tooltip** appends "· From the &lt;pack id&gt; pack" (the id, not the pack's title — `JobCheckResult.pack` only ever carried the id); good enough for "who added this", not a polish item worth threading titles through gate results for.
+- **Settings → Gates' "From packs" group** shows each pack gate's id and pack title (looked up from `PackService.state`), and every dropped gate with its reason, exactly as `effectiveGates`' `dropped` list already gives them; it links to Settings → Packs.
+
+**What's not built, and why:**
+- **A live "role isn't available any more" update on an already-open Claude lane** (phase 2's note, R1) — still not built; it needs the lane to notice mid-session, which phase 2 also deferred.
+- **The Packs page's own webview script re-implements** the card/review-panel HTML in plain JS from the server-computed `PackCardView`/`PackContentsView` (the same split as Gates and MCP servers), so nothing beyond what `packsHelpers.ts` computes ever needs a second copy of the masking or button rules — but it does mean the script is one more sizeable string literal, as the other Settings pages already are.
+- **The acceptance smoke case** "`setEnabled` writes `.hydra/packs.json`, and the effective gates include `code-review`" is only half covered by `tests/smoke.ts`'s new `packsSmoke`: it confirms `hydra.packs.state` lists Coding and Research and that `setEnabled` refuses to turn a pack on before it is reviewed and allowed — proving the security boundary — but never turns one on, since doing that from a smoke test would need either a real click on the review panel's button (which the smoke harness doesn't drive) or a test-only bypass of the allow step, which would contradict the "never allow from a command" rule this phase exists to enforce. Phase 5's live checklist item 1 (turn on Coding, see `packs.json` written) is where this gets exercised for real.
+- **"A test user pack whose command gate fails sends a head back with that gate's output"** (the plan's fourth smoke case) needs a running head, which this phase's rules keep out of scope (no live CLIs); it is unit-covered already by phase 1/2's `tests/packs.test.ts` and `gates.test.ts`, and phase 5's live checklist covers it end to end.
+
+**For phase 5's live checks, look specifically at:**
+1. The Packs page's review panel end to end: turning on Coding writes `packs.json`, shows the "Saved in .hydra/packs.json…" note, and the card moves to On with a Turn off button.
+2. **Add pack from folder…** with a real third-party folder: the warning shows, "Trust and turn on" is the button, and the copy lands in your packs folder untouched by later edits to the source.
+3. Test on a pack's MCP server actually starts it (a real `${NAME}` from your environment, a real `{pack}`/`{node}` path) and lists its tools.
+4. The notification appears once per project on a fresh window with a committed `packs.json` that needs review, and Review opens Settings → Packs already scrolled/expanded to that pack (today it opens the page; whether it should also auto-expand that one card is worth deciding live).
+5. The file watcher: hand-editing `.hydra/packs.json` outside Hydra (a teammate's pull, or an editor save) refreshes the Packs page, the role pickers and the Hydra panel without needing Reload.
+6. A lane and a plan job actually started with a role: the tile chip, the canvas labels, the panel description and the draft pill all agree with what the head or lane actually runs as (cross-check against phase 2's live checks 2-3).
+7. The planner, run with a pack active, actually assigns `role` to a job sometimes, and a plan started from that job launches with it.
+
+### Phase 5 (2026-09-25)
+
+**Verified live.** The checks ran in an isolated probe window with the real CLIs, on a scratch repository:
+- The probe's packs folder pointed at a scratch folder.
+- A test user pack (Probe) had one role on Haiku, a `{node}` MCP server whose env reads `${PROBE_VALUE}`, a `{node}` command gate and one skill.
+- To spare Codex usage, Codex only answered one question and listed its servers.
+
+1. **Turning on Coding:**
+   - The review panel listed its roles, the gate and when it runs, the Playwright command with the npm note, and the skills.
+   - **Turn on** wrote `.hydra/packs.json`, and the card moved to On.
+   - The user pack showed the third-party warning and **Trust and turn on**. **Test** started its server and listed its tool.
+2. **Role instructions:**
+   - A Claude lane as Prober answered with the role code from `--append-system-prompt-file`. It still did after Resume, which got `--continue` and the role's flags again.
+   - A Codex lane as Prober got `developer_instructions` through `codex.cmd` with "it’s" and "don’t" intact, answered with the role code, and needed no first prompt.
+3. **Skills:**
+   - The Claude lane loaded the pack's skill from `--plugin-dir`. It answered with a phrase that only the `SKILL.md` holds.
+   - The Researcher head's file followed the `cite-sources` skill.
+4. **MCP servers:**
+   - The Claude lane's `--mcp-config` file held only the `${PROBE_VALUE}` reference, and the tool returned the value. The file was passed even though Claude is connected.
+   - Coding's Playwright server, a bare `npx`, connected in a Claude lane and in a Codex lane (25 tools each).
+   - Your Claude MCP servers, `~/.claude/settings.json` and `~/.codex/config.toml` were unchanged, apart from Codex's own folder-trust entry, which was removed afterwards.
+5. **Web access:**
+   - A head as Researcher got `WebSearch`, `WebFetch`, `Skill` and its plugin, and fetched example.com.
+   - A head with no role got none of them and wrote "CANNOT FETCH".
+6. **Gates:**
+   - On a Codex lane's Merge, `code-review` (Coding, reviewed by Claude) and `probe-check` (the test pack) ran. The chips read "From the Coding pack" and "From the Probe pack".
+   - Heads ran `probe-check` too.
+7. **A changed pack:**
+   - Editing the test pack made it **Changed**, and Settings → Gates listed its gate as not run, with the reason.
+   - **Review changes**, then **Trust and turn on**, restored it.
+8. **A fresh clone with the committed `packs.json`:**
+   - Every pack read **Needs your OK**, and the notification said "This project uses the Coding pack. Nothing from it runs until you review it."
+   - **Review** opened Settings → Packs.
+   - Allowing Coding there left the checkout clean.
+
+**Also seen live:**
+- **Skip in this project** wrote `skipGates`, and Settings → Gates showed "Skipped in this project".
+- The lane bridge called `hydra_active_roles` at startup.
+- A head's `.mcp.json` was gone after it ended.
+- The draft pill read "Researcher · Claude", and the head card "Claude head · Researcher".
+
+**Found and fixed live:**
+- **Bare commands on Windows:** a bare server command such as `npx` is a `.cmd` shim that neither CLI starts by itself. It now runs through `%SystemRoot%\System32\cmd.exe /d /c`, and a part cmd.exe would read as syntax leaves the server out with a note (`serverCommand`).
+- **Plan heads with no write scope:** a plan head job with no write scope, such as one added by hand, was started with `['']`, which `hydra_start_head` refuses. It now gets `['.']`, the whole repository (`planHeadInput`). This was already on main.
+- **Gate tooltips** named the pack by its id. Pack gates now carry the pack's title as well.
+- **Settings → Gates:** the "From packs" group didn't refresh after a change on the Packs page, and left out gates that won't run.
+- **Pack cards:** their text was squeezed by the buttons. The "Saved in .hydra/packs.json…" note went into the red error line, where the next refresh hid it.
+- **CRLF checkouts:** `packs.json` was rewritten even when nothing changed, so a CRLF checkout looked modified.
+- **`hydra.packs.*` commands** accepted any folder. They now take only a folder open in the window.
+
+**Not verified live:**
+- **Add pack from folder…** needs the native folder picker, which the probe can't drive safely. Copying a folder in and pressing **Reload** was verified.
+- **A Builder head using `test-first`:** skills in heads were verified with the Researcher.
+- **`code-review` on a head:** it uses the same loader as lanes, and was skipped to spare Codex usage.
+- **R9's web review:** the Research pack's `fact-check` gate was skipped for the same reason.
+- **The planner assigning roles:** unit-tested.
+- **The longest Codex command line** through the shim, against cmd.exe's 8191 characters.
+- **Timing of `hydra_active_roles`:** the lane bridge's call was seen, but a lead chat's startup wasn't timed.
+
+**Not done:**
+- **A role that goes away mid-session:** an open Claude lane isn't told (phases 2 and 4).
+- **The file watcher** covers the project's `.hydra` only. A change in your packs folder needs **Reload**.
+- **Heads can write outside their worktree** through Bash or PowerShell (R8). Pack copies are re-hashed at every use, but a head could still edit the lead folder's `gates.json` or `packs.json`. This predates Packs.

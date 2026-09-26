@@ -74,6 +74,20 @@ test('parsePlannerOutput handles fenced and noisy replies and rejects invalid ou
   assert.throws(() => parsePlannerOutput(JSON.stringify({ jobs: [{ key: 'a', title: 'A', brief: 'b', dependsOn: ['nope'] }, { key: 'b', title: 'B', brief: 'b', dependsOn: [] }] })), /depends on unknown job/);
 });
 
+test('parsePlannerOutput keeps a job\'s "role" only when it names one of the active roles; any other value is dropped (docs/Packs_Plan.md, "Plans and the planner")', () => {
+  const withRole = JSON.stringify({ jobs: [
+    { key: 'api', title: 'API', brief: 'Build the API.', dependsOn: [], role: 'coding/builder' },
+    { key: 'ui', title: 'UI', brief: 'Build the UI.', dependsOn: [] },
+  ] });
+  const kept = parsePlannerOutput(withRole, ['coding/builder']);
+  assert.equal(kept[0]!.role, 'coding/builder');
+  assert.equal(kept[1]!.role, undefined);
+  const dropped = parsePlannerOutput(withRole); // no active roles given: any "role" the model wrote is dropped
+  assert.equal(dropped[0]!.role, undefined);
+  const wrongRole = JSON.stringify({ jobs: [{ key: 'a', title: 'A', brief: 'b', dependsOn: [], role: 'coding/reviewer' }, { key: 'b', title: 'B', brief: 'b', dependsOn: [] }] });
+  assert.equal(parsePlannerOutput(wrongRole, ['coding/builder'])[0]!.role, undefined, 'a role the model guessed wrong is dropped, not refused');
+});
+
 async function withStore(run: (store: PlanStore, directory: string) => Promise<void>) {
   const directory = await mkdtemp(path.join(tmpdir(), 'hydra-plans-'));
   try { const store = new PlanStore(directory); await store.load(); await run(store, directory); }

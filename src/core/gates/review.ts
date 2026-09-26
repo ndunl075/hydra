@@ -33,11 +33,16 @@ const other = (provider: Provider): Provider => provider === 'claude' ? 'codex' 
  * far too long for a Windows command line. Codex gets each screenshot with
  * `-i`, before `--sandbox`, so the image list can't swallow the `-` that means
  * "read the prompt from stdin"; Claude reads them by path.
+ *
+ * Web (docs/Packs_Plan.md, research R9): a pack review gate whose role has the "web" tool
+ * lets the reviewer open pages: Claude, still in plan mode, with WebFetch and WebSearch
+ * allowed; Codex with `web_search='live'`. Every other Codex review has web search off,
+ * since `codex exec` searches by default (R7). A Claude review gets no web, as before.
  */
-export function reviewArguments(provider: Provider, images: readonly string[] = []): string[] {
+export function reviewArguments(provider: Provider, images: readonly string[] = [], web = false): string[] {
   return provider === 'codex'
-    ? ['exec', '--json', ...images.flatMap(image => ['-i', image]), '--sandbox', 'read-only', '-']
-    : ['-p', '--output-format', 'json', '--permission-mode', 'plan'];
+    ? ['exec', '--json', '-c', `web_search='${web ? 'live' : 'disabled'}'`, ...images.flatMap(image => ['-i', image]), '--sandbox', 'read-only', '-']
+    : ['-p', '--output-format', 'json', '--permission-mode', 'plan', ...(web ? ['--allowedTools', 'WebFetch,WebSearch'] : [])];
 }
 
 export type ReviewerAvailability = { ok: true; executable: string } | { ok: false; reason: string };
@@ -94,6 +99,8 @@ export interface ReviewPromptInput {
   earlier: readonly JobCheckResult[];
   screenshots: readonly string[];
   focus: string;
+  /** A pack review gate's role (docs/Packs_Plan.md): the reviewer works as it says. */
+  role?: { title: string; instructions: string };
 }
 
 /** What the reviewer is asked: the task, the change, what the earlier gates found, the screenshots, the focus, and JSON back. */
@@ -129,6 +136,7 @@ export function reviewPrompt(input: ReviewPromptInput): string {
       input.provider === 'codex' ? 'They are attached to this message, in this order:' : 'Open each of these images to see how the app renders:',
       ...input.screenshots.map(file => `- ${file}`));
   }
+  if (input.role) lines.push('', `## Your role: ${input.role.title}`, input.role.instructions.trim(), '', 'You still only read; the reply below is what counts.');
   if (input.focus) lines.push('', '## What to focus on', input.focus);
   lines.push('', '## Your reply',
     'Reply with JSON only: no prose and no code fences, nothing before or after the object.',
@@ -212,12 +220,13 @@ export async function runReviewGate(gate: ReviewGate, run: GateRun): Promise<Job
   const prompt = reviewPrompt({
     provider: pick.provider, title: run.title, brief: run.brief, writeScope: run.writeScope, baseCommit: run.baseCommit,
     diff: await reviewDiff(run.worktree, run.baseCommit), earlier: run.earlier, screenshots, focus: gate.focus,
+    ...(gate.reviewerRole ? { role: gate.reviewerRole } : {}),
   });
   const promptFile = path.join(run.logDirectory, `${gate.id}-prompt.md`), replyFile = path.join(run.logDirectory, `${gate.id}-reply.txt`);
   await writeFile(promptFile, prompt, 'utf8');
   run.log?.(`[gates] ${gate.id}: ${name} is reviewing${pick.note ? ` (${pick.note})` : ''}`);
   const output = await run.runtime.runReviewer({
-    provider: pick.provider, executable: pick.executable, args: reviewArguments(pick.provider, pick.provider === 'codex' ? screenshots : []),
+    provider: pick.provider, executable: pick.executable, args: reviewArguments(pick.provider, pick.provider === 'codex' ? screenshots : [], !!gate.reviewerRole?.web),
     input: prompt, cwd: run.worktree, timeoutMs: reviewTimeoutMs, signal: run.signal, spawned: run.spawned,
   });
   await writeFile(replyFile, `${output.stdout}${output.stderr ? `\n--- stderr ---\n${output.stderr}` : ''}`, 'utf8');

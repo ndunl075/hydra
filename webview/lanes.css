@@ -56,6 +56,10 @@
 
 .lane-switched { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* Packs (docs/Packs_Plan.md, "How roles show"): the lane tile's role chip and unavailable-role note. */
+.lane-role-chip { font-size: 10.5px; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.lane-role-note { font-size: 10.5px; color: var(--error-text, #d1443c); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* The usage-limit banner and the onLimit:"switch" countdown (docs/Gates_Plan.md, section 2) */
 .lane-limit-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); flex-shrink: 0; flex-wrap: wrap; }
 .lane-limit-banner p { margin: 0; font-size: 12px; color: var(--text); }

@@ -401,7 +401,7 @@ test('a head\'s work goes through the gates in order; failures come back with th
     assert.equal(reviewer.specs.length, 2);
     const [spec] = reviewer.specs;
     assert.equal(spec!.provider, 'codex'); assert.equal(spec!.cwd, f.store.get(job_id)!.worktree);
-    assert.deepEqual(spec!.args, ['exec', '--json', '--sandbox', 'read-only', '-']);
+    assert.deepEqual(spec!.args, ['exec', '--json', '-c', "web_search='disabled'", '--sandbox', 'read-only', '-']);
     assert.match(spec!.input, /## The task\nJob gated\n\nDo the thing\.\n\nIt may change only: src\//);
     assert.match(spec!.input, /- unit \(command\): passed/); assert.match(spec!.input, /## What to focus on\nThe flag\./);
     assert.match(spec!.input, /\+export const fixed = true;/);

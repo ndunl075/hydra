@@ -93,7 +93,7 @@ test('after a restart, heads that were running are failed with the reason; queue
 test('job input from a provider is validated', () => {
   const parsed = parseJobInput({ title: ' Parser ', brief: 'Fix it', write_scope: ['./src', 'tests\\unit'], idempotency_key: 'x', limits: { wall_clock_minutes: 10, max_turns: 1000 } });
   assert.deepEqual(parsed.writeScope, ['src', 'tests/unit']);
-  assert.equal(parsed.provider, 'claude'); assert.equal(parsed.title, 'Parser');
+  assert.equal(parsed.provider, undefined, 'not given: the role\'s agent, else Claude, decided when the head is created'); assert.equal(parsed.title, 'Parser');
   assert.equal(parsed.limits?.wallClockMs, 600_000); assert.equal(parsed.limits?.maxTurns, 500);
   for (const scope of [['../x'], ['/etc'], ['C:\\Windows'], [], 'src']) assert.throws(() => parseWriteScope(scope));
   assert.throws(() => parseJobInput({ title: 'x', brief: 'y', write_scope: ['src'], idempotency_key: 'k', provider: 'gpt' }), /provider/);

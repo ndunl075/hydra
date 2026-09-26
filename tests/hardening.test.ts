@@ -171,8 +171,9 @@ test('1.4 git hardening: hydra_done refuses acceptance when .git/hooks changed m
     await writeFile(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\necho hi\n');
     const first = await helper.call('hydra_done', { summary: 'planted a hook' });
     assert.equal(first.result.accepted, false);
-    assert.match(first.result.message, /git configuration or hooks changed/);
+    assert.match(first.result.message, /git settings or hooks changed/);
     assert.match(first.result.message, /hooks\/pre-commit/);
+    assert.match(first.result.message, /If you didn't, don't try to fix them: call hydra_stuck/, 'a head that didn\'t cause it asks instead of guessing');
     await rm(path.join(hooksDir, 'pre-commit'));
     const second = await helper.call('hydra_done', { summary: 'undid it' });
     assert.equal(second.result.accepted, true);
@@ -181,7 +182,7 @@ test('1.4 git hardening: hydra_done refuses acceptance when .git/hooks changed m
   try {
     const { job_id } = await f.start('hook');
     const [head] = (await f.wait([job_id])).heads;
-    assert.equal(head.state, 'done'); assert.equal(head.attempts, 2);
+    assert.equal(head.state, 'done'); assert.equal(head.attempts, 1, 'the git settings check spends no attempt; only the accepted run counts');
   } finally { await f.close(); }
 });
 
@@ -299,3 +300,11 @@ test('the endpoint accepts a valid token and refuses an unknown one and a same-l
 });
 
 function f_repo(f: { repo: string }): string { return f.repo; }
+
+test('a head runs with background tasks off, so it waits for its commands instead of ending its turn', async () => {
+  const { headEnvironment } = await import('../src/core/helperRunner');
+  const env = headEnvironment({ PATH: 'x' }, { PACK_VAR: 'y' });
+  assert.equal(env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+  assert.equal(env.DISABLE_AUTOUPDATER, '1');
+  assert.deepEqual([env.PATH, env.PACK_VAR], ['x', 'y']);
+});

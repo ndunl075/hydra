@@ -351,18 +351,19 @@ export class HelperService {
     const note = await this.tamperNote(job);
     const changedFiles = (await git(worktree, ['diff', '--name-only', '-z', '--no-renames', base, commit, '--'])).split('\0').filter(Boolean);
     const outside = changedFiles.filter(file => !inScope(file, job.writeScope));
+    // 1.4: the git metadata a head shares with the main checkout (config, hooks, …) must not move.
+    // Checked before anything runs. It spends no attempt: the change may not be the head's (you,
+    // or another lane, can change them too), so the head restores what it changed or asks.
+    if (job.gitMetaAtStart) {
+      const changedMeta = await gitMetaFingerprint(worktree).then(now => gitMetaChanges(job.gitMetaAtStart!, now), () => []);
+      if (changedMeta.length) {
+        return { accepted: false, message: `The repository's git settings or hooks changed while you worked: ${changedMeta.join(', ')}. Hydra won't accept work while they differ, because git runs them outside your worktree. If you changed them, put them back exactly as they were, then call hydra_done again. If you didn't, don't try to fix them: call hydra_stuck with this message and wait for the lead.` };
+      }
+    }
     await this.options.store.transition(jobId, 'checking');
     this.changed();
     const attempts = job.attempts + 1;
     if (outside.length) return this.checkFailed(jobId, attempts, maxAttempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`, [], note);
-    // 1.4: the git metadata a head shares with the main checkout (config, hooks, …) must not move.
-    // Checked before the gates and counted as an attempt when it does, like the scope check above.
-    if (job.gitMetaAtStart) {
-      const changedMeta = await gitMetaFingerprint(worktree).then(now => gitMetaChanges(job.gitMetaAtStart!, now), () => []);
-      if (changedMeta.length) {
-        return this.checkFailed(jobId, attempts, maxAttempts, `Your repository's git configuration or hooks changed while you worked (${changedMeta.join(', ')}). Hydra's repository config and hooks must not be changed: undo it, then call hydra_done again.`, [], note);
-      }
-    }
     // 1.1: the gate floor — the snapshot's own definition for every gate id it already had, plus
     // any gate added to today's config since (see gateFloor's own comment for the full rule).
     const floor = gateFloor(job.gatesAtStart, gates);

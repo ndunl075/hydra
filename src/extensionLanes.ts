@@ -498,9 +498,10 @@ export class LanesController implements vscode.Disposable {
         }
         // Gates (docs/Gates_Plan.md, "Merge"): after the commit-first refusals, before the merge
         // confirmation, when this project's gates.json says lanes: "onMerge" and there are gates.
+        // 1.4: planted git config or hooks first, before the gates run anything in the worktree.
+        if (!await this.gitMetaBefore(lane, interactive, 'Merge with these changes', 'Merging runs git in your main checkout, which would run them.')) return undefined;
         const gated = await this.gatesBefore(service, lane, interactive, 'Merge anyway?', 'Merge anyway');
         if (!gated) return undefined; // cancelled, sent to the lane, or gates couldn't run and this was interactive
-        if (!await this.gitMetaBefore(lane, interactive, 'Merge anyway', 'Merging runs git in your main checkout, which would run them.')) return undefined;
         const gatesNote = gated.note;
         if (interactive) {
           const pick = await vscode.window.showInformationMessage(`Merge lane ${lane.name} into ${lane.target}?`, { modal: true, detail: `${plural(check.commits, 'commit')}, ${plural(check.files, 'file')}. Merges cleanly.${gatesNote}` }, 'Merge');
@@ -621,9 +622,9 @@ export class LanesController implements vscode.Disposable {
       const committed = await this.run(service, lane, 'commit', true, {}) as { commit?: string } | undefined;
       return committed?.commit ? this.markJobDone(service, service.get(lane.id) ?? lane, true, options) : undefined;
     }
+    if (!await this.gitMetaBefore(lane, interactive, 'Mark done with these changes', 'Marking the job done runs git in this lane\'s worktree, which would run them.')) return undefined;
     const gated = await this.gatesBefore(service, lane, interactive, 'Mark the job done anyway?', 'Mark done anyway');
     if (!gated) return undefined;
-    if (!await this.gitMetaBefore(lane, interactive, 'Mark done anyway', 'Marking the job done runs git in this lane\'s worktree, which would run them.')) return undefined;
     let note = options.message;
     if (interactive) {
       note = await vscode.window.showInputBox({

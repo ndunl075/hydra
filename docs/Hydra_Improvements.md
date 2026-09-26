@@ -207,6 +207,13 @@ Built in `hydra-wt/hardening` (branch `feat/hardening`), one Sonnet subagent, pe
   - `url.*.insteadOf` and `remote.*.pushurl`.
 
   It also holds `info/attributes` and every hook file. It is capped at 64 entries: past that, the rest share one entry, which still changes when any of them does. Changes are named, for example `config (core.fsmonitor)`.
+- **Found in the live checks, and fixed:**
+  - **The git-settings check no longer spends an attempt.** It runs before anything else, and it tells the head to restore only what it changed itself, or else call `hydra_stuck`.
+    - Live, a head was refused twice for a hook it hadn't made. Its own delete was blocked, and it asked the lead.
+    - The change may come from you or another lane, so it shouldn't burn the head's three attempts.
+    - A change you want to keep means cancelling the head and starting it again, which records a new fingerprint.
+  - **A lane's Merge and Mark job done check git settings before the gates**, with their own button, "Merge with these changes". Live, the warning came after the gates' own "Merge anyway" prompt, so there were two near-identical prompts in a row.
+  - **Heads run with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`** (`headEnvironment` in `helperRunner.ts`). Live, a head started a 60-second wait in the background and ended its turn to wait for it. A `-p` session ends with its turn, so the head stopped without calling `hydra_done` and failed.
 - **Left for Step 2:** when Hydra commits a head's work in its worktree, the repository's hooks run as Hydra. That's no worse than today, since a head can already run anything, but once Step 2 confines heads it would be a way out. Step 2 must run Hydra's commits in head worktrees with hooks off.
 - `Job.gatesAtStart`/`gitMetaAtStart`/`tamperAtStart` are validated for shape and size only when a job store loads (caps: at most 24 gates in a snapshot, ~256 KB, 64 git-metadata entries), not deeply re-validated field by field — consistent with how `parseStoreFile` already treats the rest of a loaded `Job` (its `JobCheckResult`s, for example) as Hydra's own prior output rather than untrusted input.
 

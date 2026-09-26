@@ -100,10 +100,19 @@ function logger(file: string, secret?: string) {
   return (kind: string, data: unknown) => { queue = queue.then(() => appendFile(file, redact(JSON.stringify({ at: Date.now(), kind, data })) + '\n')).catch(() => undefined); };
 }
 
+/**
+ * A head's environment. Background tasks are off: a head that started a long command in the
+ * background and ended its turn to wait for it stopped without calling hydra_done, since a
+ * `-p` session ends with its turn (found in the Step 1 live checks, docs/Hydra_Improvements.md).
+ */
+export function headEnvironment(base: NodeJS.ProcessEnv, roleEnv?: Record<string, string>): NodeJS.ProcessEnv {
+  return { ...base, ...roleEnv, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
+}
+
 function spawnLogged(spec: HelperRunSpec, args: string[], log: (kind: string, data: unknown) => void, onLine: (message: Record<string, unknown>) => void): ChildProcess {
   const launch = processLaunch(spec.executable, args);
   // A role's Codex servers read some variables by name (R4): Hydra puts them in the head's own environment, never on its command line.
-  const child = spawn(launch.executable, launch.args, { cwd: spec.worktree, env: { ...process.env, ...spec.role?.env, DISABLE_AUTOUPDATER: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+  const child = spawn(launch.executable, launch.args, { cwd: spec.worktree, env: headEnvironment(process.env, spec.role?.env), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
   if (child.pid) spec.spawned?.(child.pid);
   let buffer = '';
   child.stdout!.setEncoding('utf8');

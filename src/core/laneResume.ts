@@ -57,7 +57,10 @@ async function claudeHasConversation(worktree: string, options: LaneConversation
   let entries: ConversationDirEntry[];
   try { entries = await fs.readdir(projectsDir); }
   catch (error) { return isNotFound(error) ? false : true; }
-  const folder = entries.find(entry => entry.isDirectory && (isWindows(options.platform) ? entry.name.toLowerCase() === wanted.toLowerCase() : entry.name === wanted));
+  // Claude Code shortens a very long encoded folder name (and adds a suffix), so past 200
+  // characters its first 200 must match; erring towards "found" only means resuming as today.
+  const same = (a: string, b: string) => isWindows(options.platform) ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const folder = entries.find(entry => entry.isDirectory && (same(entry.name, wanted) || (wanted.length > 200 && same(entry.name.slice(0, 200), wanted.slice(0, 200)))));
   if (!folder) return false;
   try {
     const files = await fs.readdir(path.join(projectsDir, folder.name));
@@ -67,7 +70,9 @@ async function claudeHasConversation(worktree: string, options: LaneConversation
 
 /** Day folders (`YYYY/MM/DD`) on or after `since`, oldest first, as full paths. */
 async function codexDayDirs(sessionsDir: string, since: Date, fs: ConversationFs): Promise<string[]> {
-  const sinceKey = [since.getFullYear(), since.getMonth() + 1, since.getDate()].map((part, index) => String(part).padStart(index === 0 ? 4 : 2, '0')).join('/');
+  // A day early: Codex may name its day folders in UTC while `since` is local time.
+  const from = new Date(since.getTime() - 24 * 60 * 60 * 1000);
+  const sinceKey = [from.getFullYear(), from.getMonth() + 1, from.getDate()].map((part, index) => String(part).padStart(index === 0 ? 4 : 2, '0')).join('/');
   const years = (await fs.readdir(sessionsDir)).filter(entry => entry.isDirectory && /^\d{4}$/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name));
   const dirs: string[] = [];
   for (const year of years) {

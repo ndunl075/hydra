@@ -73,8 +73,9 @@ test('laneHasConversation: Codex — present on or after "since", an older day f
   try {
     const worktree = path.join(home, 'work', 'repo.worktrees', 'lane-1');
     const since = new Date('2026-09-25T00:00:00');
-    // A day before the lane existed: even with a matching cwd, it doesn't count.
-    await codexSession(home, '2026/09/24', 'rollout-old.jsonl', worktree);
+    // Two days before the lane existed: even with a matching cwd, it doesn't count. (The day
+    // before still does, since Codex may name its day folders in UTC.)
+    await codexSession(home, '2026/09/23', 'rollout-old.jsonl', worktree);
     assert.equal(await laneHasConversation('codex', worktree, since, { home, env: noEnv, platform: 'linux' }), false, 'only an older day folder exists');
     // On the lane's own day, but for a different cwd.
     await codexSession(home, '2026/09/25', 'rollout-other.jsonl', path.join(home, 'work', 'repo.worktrees', 'lane-2'));
@@ -124,5 +125,17 @@ test('laneHasConversation: Codex ignores a first line that isn\'t JSON, or has n
     assert.equal(await laneHasConversation('codex', worktree, since, { home, env: noEnv, platform: 'linux' }), false);
     await writeFile(path.join(dir, 'rollout-good.jsonl'), `${JSON.stringify({ type: 'session_meta', payload: { id: '2', cwd: worktree } })}\n`);
     assert.equal(await laneHasConversation('codex', worktree, since, { home, env: noEnv, platform: 'linux' }), true);
+  } finally { await close(); }
+});
+
+test('laneHasConversation: Claude — a very long encoded folder name that Claude Code shortened still matches by its first 200 characters', async () => {
+  const { home, close } = await fakeHome();
+  try {
+    const worktree = path.join(home, 'work', 'x'.repeat(260), 'lane-1');
+    const encoded = worktree.replace(/[^A-Za-z0-9]/g, '-');
+    const shortened = `${encoded.slice(0, 200)}-abc123`;
+    await mkdir(path.join(home, '.claude', 'projects', shortened), { recursive: true });
+    await writeFile(path.join(home, '.claude', 'projects', shortened, 'session.jsonl'), '{}\n');
+    assert.equal(await laneHasConversation('claude', worktree, new Date(0), { home, env: noEnv, platform: 'linux' }), true);
   } finally { await close(); }
 });

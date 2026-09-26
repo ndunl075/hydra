@@ -696,6 +696,6 @@ Built in five phases on 2026-09-25. Each phase below records where its work live
 - **Timing of `hydra_active_roles`:** the lane bridge's call was seen, but a lead chat's startup wasn't timed.
 
 **Not done:**
-- **A role that goes away mid-session:** an open Claude lane isn't told (phases 2 and 4).
-- **The file watcher** covers the project's `.hydra` only. A change in your packs folder needs **Reload**.
 - **Heads can write outside their worktree** through Bash or PowerShell (R8). Pack copies are re-hashed at every use, but a head could still edit the lead folder's `gates.json` or `packs.json`. This predates Packs.
+
+Fixed on 2026-09-26 (docs/Heads.md, live-check findings): a role that goes away mid-session now tells a **running** lane right away (`LaneService.activeRolesChanged`, wired from `rolesChanged` in `src/extension.ts`), with the note cleared once the role is active again; an exited lane still gets the ordinary note at its next launch. The file watcher now also covers your packs folder when it exists (`src/extension.ts`'s `setupPacksFolderWatcher`, debounced ~500ms), so a pack you add or edit there no longer needs **Reload**.

@@ -203,7 +203,7 @@ Heads are Hydra's agents. **Lanes** are yours: each lane is a real `claude` or `
   - **Continue** restarts the same lane with the other agent, in the same worktree, with a handoff. Uncommitted work is untouched.
   - **⋯ → Switch to…** does the same whenever you like.
   - With `hydra.lanes.onLimit: "switch"`, the lane switches by itself after a 10-second countdown you can cancel.
-- **Restarting Hydra** ends the lanes' terminal sessions but keeps their worktrees. **Resume** continues the conversation (`claude --continue`, `codex resume --last`); **Start fresh** begins a new one. If the CLI never began a conversation (it stopped at its own update or folder-trust prompt), Resume opens an empty one; use **Start fresh**.
+- **Restarting Hydra** ends the lanes' terminal sessions but keeps their worktrees. **Resume** continues the conversation (`claude --continue`, `codex resume --last`); **Start fresh** begins a new one. If the CLI never began a conversation in that worktree (it stopped at its own update or folder-trust prompt, or you quit before sending anything), Resume checks first and starts fresh instead, with a note on the tile: "No earlier conversation to resume, so the lane started fresh."
 - **On the canvas:** every open lane is a node, heads it started grow from it, and lanes that would conflict are joined by a red dashed line. Click a lane to jump to its terminal.
 
 The **Hydra panel** (the Hydra icon in the activity bar) lists your lanes, running heads and plans, with **New lane**, **New plan** and **Open Agents view** at the top. A plan shows its progress ("Running · 2 of 4 done · 1 lane waiting"), and a plan lane names its plan.
@@ -218,7 +218,7 @@ A **pack** bundles what one kind of work needs: **roles** for lanes, heads and p
 
 - **Which packs exist:**
   - Hydra ships **Coding** (Builder, UI builder and Reviewer roles, a `code-review` gate, and Playwright for the UI builder) and **Research** (Researcher and Fact-checker, and a `fact-check` gate).
-  - Your own packs are folders in `~/.hydra/packs` (the `hydra.packs.folder` setting).
+  - Your own packs are folders in `~/.hydra/packs` (the `hydra.packs.folder` setting). Hydra watches that folder when it exists, so adding or editing a pack there refreshes roles, the Packs page and Settings → Gates without pressing Reload.
   - A project can carry packs in `.hydra/packs/<id>/`.
 - **Turning one on:**
   - **Hydra Settings → Packs → Turn on** first shows everything the pack would run: each command, each server and the roles that use it, each role's instructions, and each skill's files.

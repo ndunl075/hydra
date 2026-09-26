@@ -387,32 +387,43 @@ export class LanesController implements vscode.Disposable {
 
   // ---- Commands ----
 
-  /** `hydra.newLane`: provider, name, goal, then the lane starts and the Lanes view shows it. */
+  /** `hydra.newLane`: a Role step first when roles are active, then provider, name and goal (docs/Packs_Plan.md, "Picking a role"). */
   private async newLane(): Promise<void> {
     const service = this.requireService();
     if (!service.terminalsAvailable) { void vscode.window.showErrorMessage(`Hydra: ${terminalsUnavailable}`); return; }
     const config = vscode.workspace.getConfiguration('hydra');
     const preferred = config.get<Provider>('defaultProvider', 'claude') === 'codex' ? 'codex' : 'claude';
+    const roles = await this.host.roles?.roles(this.repository ?? '').catch(() => []) ?? [];
+    const steps = roles.length ? 4 : 3;
+    let role: { ref: string; provider: Provider } | undefined;
+    if (roles.length) {
+      const roleItems = [{ label: 'No role', role: undefined as { ref: string; provider: Provider } | undefined },
+        ...roles.map(candidate => ({ label: candidate.title, description: candidate.packTitle, role: { ref: candidate.ref, provider: candidate.provider } }))];
+      const pickedRole = await vscode.window.showQuickPick(roleItems, { title: `New lane (1/${steps})`, placeHolder: 'Role, optional', ignoreFocusOut: true });
+      if (!pickedRole) return;
+      role = pickedRole.role;
+    }
     const providers = await Promise.all((['claude', 'codex'] as const).map(async provider => ({ provider, available: (await findProvider(provider, config.get<string>(`${provider}Path`) || undefined).catch(() => ({ available: false }))).available })));
-    const items = providers.sort((a, b) => Number(b.provider === preferred) - Number(a.provider === preferred))
-      .map(({ provider, available }) => ({ label: providerLabel(provider), description: available ? (provider === preferred ? 'Default' : '') : 'Not installed', provider }));
-    const picked = await vscode.window.showQuickPick(items, { title: 'New lane (1/3)', placeHolder: 'Which agent runs in this lane?', ignoreFocusOut: true });
+    const defaultProvider = role?.provider ?? preferred;
+    const items = providers.sort((a, b) => Number(b.provider === defaultProvider) - Number(a.provider === defaultProvider))
+      .map(({ provider, available }) => ({ label: providerLabel(provider), description: available ? (provider === defaultProvider ? 'Default' : '') : 'Not installed', provider }));
+    const picked = await vscode.window.showQuickPick(items, { title: `New lane (${roles.length ? 2 : 1}/${steps})`, placeHolder: 'Which agent runs in this lane?', ignoreFocusOut: true });
     if (!picked) return;
     const taken = new Set(service.lanes().map(lane => lane.name.toLowerCase()));
     let number = service.lanes().length + 1;
     while (taken.has(`lane ${number}`)) number++;
     const name = await vscode.window.showInputBox({
-      title: 'New lane (2/3)', prompt: 'Name the lane', value: `Lane ${number}`, ignoreFocusOut: true,
+      title: `New lane (${roles.length ? 3 : 2}/${steps})`, prompt: 'Name the lane', value: `Lane ${number}`, ignoreFocusOut: true,
       validateInput: value => { try { parseLaneName(value); return undefined; } catch (error) { return describe(error); } },
     });
     if (name === undefined) return;
     const goal = await vscode.window.showInputBox({
-      title: 'New lane (3/3)', prompt: `Goal, optional: what should ${picked.label} do? Leave it empty to start without a prompt.`, ignoreFocusOut: true,
+      title: `New lane (${steps}/${steps})`, prompt: `Goal, optional: what should ${picked.label} do? Leave it empty to start without a prompt.`, ignoreFocusOut: true,
       validateInput: value => value.length <= laneGoalMax ? undefined : `Keep the goal under ${laneGoalMax} characters.`,
     });
     if (goal === undefined) return;
     const lane = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Starting lane ${name.trim()}…` },
-      () => service.create({ name, provider: picked.provider, goal }));
+      () => service.create({ name, provider: picked.provider, goal, ...(role ? { role: role.ref } : {}) }));
     await this.show('lanes', lane.id);
   }
 

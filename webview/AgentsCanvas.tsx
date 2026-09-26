@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientMessage, HelperJobView, LaneView, Provider } from '../src/core/model';
+import type { ClientMessage, HelperJobView, LaneView, Provider, SnapshotRole } from '../src/core/model';
 import { buildCanvas, elapsedLabel, gateChip, headStatus, isActive, layout, type CanvasHead, type CanvasLead, type CanvasPlanJob, type CanvasPlanNode } from '../src/core/agentsCanvas';
 // Type-only (see the note in agentsCanvas.ts): plans.ts's storage code must never
 // enter this browser bundle, so only PlanJob's shape crosses this boundary.
@@ -21,6 +21,13 @@ const curve = (x1: number, y1: number, x2: number, y2: number) => { const mid = 
 /** A conflict edge bows out to the left of both lane leads, clear of the head columns to their right. */
 const conflictCurve = (x1: number, y1: number, x2: number, y2: number) => { const bow = 46; return `M${x1} ${y1} C${x1 - bow} ${y1} ${x2 - bow} ${y2} ${x2} ${y2}`; };
 
+/** A lane's role title, from its record (pack+role ids) matched against the active roles list. */
+function laneRoleOf(laneId: string | undefined, lanes: readonly LaneView[], roles: readonly SnapshotRole[]): string | undefined {
+  const lane = laneId ? lanes.find(item => item.id === laneId) : undefined;
+  if (!lane?.role) return undefined;
+  return roles.find(role => role.pack === lane.role!.pack && role.id === lane.role!.role)?.title;
+}
+
 interface Ghost { head: CanvasHead; to: { x: number; y: number }; until: number }
 interface LeadGhost { lead: CanvasLead; until: number }
 /** A chat stays briefly after its last head, so the heads visibly fold back into it. */
@@ -30,7 +37,7 @@ const leadGraceMs = 1200;
 export interface JobPopoverState { planId: string; job: PlanJob; x: number; y: number }
 interface JobMenuState { planId: string; job: PlanJob; x: number; y: number }
 
-export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = [], planJobs = {}, defaultProvider, onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
+export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = [], planJobs = {}, defaultProvider, roles = [], onAction, onPlan = () => {}, onStopAll, openNewPlanAt, onOpenLane, focusHead }: {
   heads: readonly HelperJobView[];
   /** Finished heads the tray's Clear button has hidden (docs/Lanes_And_Planner_Plan.md, "Canvas tidy-up"). */
   dismissedTray?: readonly string[];
@@ -40,6 +47,8 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
   /** Each plan's job statuses (docs/Plan_Lanes_Plan.md, section 4), by plan id, once it has run. */
   planJobs?: Readonly<Record<string, readonly PlanJobView[]>>;
   defaultProvider?: Provider;
+  /** The active packs' roles (docs/Packs_Plan.md, "Picking a role"), for the job popover and the role labels below. */
+  roles?: readonly SnapshotRole[];
   onAction: (action: HeadAction, jobId: string) => void;
   onPlan?: (message: ClientMessage) => void;
   onStopAll?: () => void;
@@ -279,7 +288,7 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
                   role="button" tabIndex={0} aria-label={`Lane ${lead.label}. ${lead.status || ''}. Opens the Lanes view.`}
                   onClick={() => onOpenLane?.(lead.laneId!)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenLane?.(lead.laneId!); } }}>
                   <span className="canvas-lead-logo">{lead.provider ? <ProviderLogo provider={lead.provider} /> : <span aria-hidden="true">◆</span>}</span>
-                  <span className="canvas-lead-copy"><em>Lane</em><b>{lead.label}</b><span>{lead.status}</span></span>
+                  <span className="canvas-lead-copy"><em>{laneRoleOf(lead.laneId, lanes, roles) ? `Lane · ${laneRoleOf(lead.laneId, lanes, roles)}` : 'Lane'}</em><b>{lead.label}</b><span>{lead.status}</span></span>
                 </div>
               : <div key={lead.key} className={`canvas-lead provider-${lead.provider || 'unknown'}`} style={{ transform: `translate(${lead.x}px, ${lead.y}px)` }} title={lead.label}>
                   <span className="canvas-lead-logo">{lead.provider ? <ProviderLogo provider={lead.provider} /> : <span aria-hidden="true">◆</span>}</span>
@@ -297,7 +306,7 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
             {model.plans.map(node => <PlanLeadNode key={node.plan.id} node={node} defaultProvider={defaultProvider} onPlan={onPlan} />)}
             {model.plans.flatMap(node => node.jobs.map(item => {
               // A job added after the plan ran (+ Job) is still a draft: editable, like a draft plan's jobs.
-              if (!item.view || item.view.status === 'draft') return <PlanJobNode key={item.id} item={item}
+              if (!item.view || item.view.status === 'draft') return <PlanJobNode key={item.id} item={item} roles={roles}
                 onOpen={() => openJobPopover(item.planId, item.job, item.x, item.y)}
                 onMenu={(x, y) => openJobMenu(item.planId, item.job, x, y)}
                 onHandleDown={startDependencyDrag(item.planId, item.job.key)} onHandleUp={endDependencyDrag} />;
@@ -355,8 +364,8 @@ export function AgentsCanvas({ heads, dismissedTray = [], plans = [], lanes = []
       <button role="menuitem" className="danger" onClick={() => { setJobMenu(undefined); onPlan({ type: 'planDeleteJob', id: jobMenu.planId, key: jobMenu.job.key }); }}>Delete</button>
     </div>}
     {runningJobMenu && <RunningJobMenu state={runningJobMenu} onOpenLane={onOpenLane} onPlan={onPlan} onClose={() => setRunningJobMenu(undefined)} />}
-    {jobPopover && <JobEditPopover key={`${jobPopover.planId}:${jobPopover.job.key}`} state={jobPopover} onCancel={() => setJobPopover(undefined)}
-      onSave={(title, brief, provider, runAs) => { onPlan({ type: 'planSaveJob', id: jobPopover.planId, key: jobPopover.job.key, title, brief, provider, runAs }); setJobPopover(undefined); }} />}
+    {jobPopover && <JobEditPopover key={`${jobPopover.planId}:${jobPopover.job.key}`} state={jobPopover} roles={roles} onCancel={() => setJobPopover(undefined)}
+      onSave={(title, brief, provider, runAs, role) => { onPlan({ type: 'planSaveJob', id: jobPopover.planId, key: jobPopover.job.key, title, brief, provider, runAs, role }); setJobPopover(undefined); }} />}
   </section>;
 }
 
@@ -376,7 +385,7 @@ function HeadNode({ item, now, fresh, from, selected, onSelect, onOpen, onMenu, 
     <div className="canvas-node-card">
       <div className="canvas-node-top">
         <span className="canvas-node-logo"><ProviderLogo provider={head.provider} /></span>
-        <span className="canvas-node-kind">{head.provider === 'codex' ? 'Codex head' : 'Claude head'}</span>
+        <span className="canvas-node-kind">{head.provider === 'codex' ? 'Codex head' : 'Claude head'}{head.role ? ` · ${head.role.title}` : ''}</span>
         <span className={`canvas-state state-${head.state}`}><i aria-hidden="true" />{status}</span>
       </div>
       <strong className="canvas-node-title" title={head.title}>{head.title}</strong>
@@ -440,14 +449,17 @@ function PlanLeadNode({ node, defaultProvider, onPlan }: { node: CanvasPlanNode;
 }
 
 /** A draft job: dashed, since nothing has run yet. Click (or Enter) edits it; the handle drags a dependency onto another job. */
-function PlanJobNode({ item, onOpen, onMenu, onHandleDown, onHandleUp }: {
-  item: CanvasPlanJob; onOpen: () => void; onMenu: (x: number, y: number) => void;
+function PlanJobNode({ item, roles = [], onOpen, onMenu, onHandleDown, onHandleUp }: {
+  item: CanvasPlanJob; roles?: readonly SnapshotRole[]; onOpen: () => void; onMenu: (x: number, y: number) => void;
   onHandleDown: (event: React.PointerEvent) => void; onHandleUp: (event: React.PointerEvent) => void;
 }) {
   const job = item.job, providerLabel = job.provider === 'codex' ? 'Codex' : job.provider === 'claude' ? 'Claude' : 'Auto';
   const kind = job.runAs === 'lane' ? 'Draft job · Lane' : 'Draft job';
+  // Packs (docs/Packs_Plan.md, "How roles show"): the draft job pill reads "Builder · Claude" when it has a role.
+  const roleTitle = job.role ? roles.find(role => role.ref === job.role)?.title : undefined;
+  const pill = roleTitle ? `${roleTitle} · ${providerLabel}` : providerLabel;
   return <div className="canvas-node canvas-plan-job" data-plan-job={item.id} style={{ transform: `translate(${item.x}px, ${item.y}px)` }}
-    role="button" tabIndex={0} aria-label={`${job.title}, draft ${job.runAs === 'lane' ? 'lane job' : 'job'}, ${providerLabel}. Enter to edit; Shift+F10 for more.`}
+    role="button" tabIndex={0} aria-label={`${job.title}, draft ${job.runAs === 'lane' ? 'lane job' : 'job'}, ${pill}. Enter to edit; Shift+F10 for more.`}
     onClick={onOpen}
     onKeyDown={event => {
       if (event.key === 'Enter') { event.preventDefault(); onOpen(); }
@@ -455,7 +467,7 @@ function PlanJobNode({ item, onOpen, onMenu, onHandleDown, onHandleUp }: {
     }}
     onContextMenu={event => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}>
     <div className="canvas-node-card">
-      <div className="canvas-node-top"><span className="canvas-node-kind">{kind}</span><span className="canvas-state"><i aria-hidden="true" />{providerLabel}</span></div>
+      <div className="canvas-node-top"><span className="canvas-node-kind">{kind}</span><span className="canvas-state"><i aria-hidden="true" />{pill}</span></div>
       <strong className="canvas-node-title" title={job.title}>{job.title}</strong>
       <p className="canvas-node-detail" title={job.brief}>{job.brief}</p>
       <button className="canvas-plan-handle" aria-label={`Drag onto another job to make it depend on "${job.title}"`}
@@ -554,19 +566,31 @@ function RunningJobMenu({ state, onOpenLane, onPlan, onClose }: {
 /** A job that has a head, a lane, a result or an outcome has started (docs/Plan_Lanes_Plan.md, section 1): its Run as can't change any more. Duplicated from plans.ts's jobStarted, which this browser bundle can't import (see the note atop this file). */
 const jobHasStarted = (job: Pick<PlanJob, 'jobId' | 'laneId' | 'result' | 'outcome'>): boolean => !!(job.jobId || job.laneId || job.result || job.outcome);
 
-/** The job-edit popover: title, brief, provider (Auto/Claude/Codex) and, for a job that hasn't started, Run as (Head/Lane). */
-export function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverState; onSave: (title: string, brief: string, provider: Provider | undefined, runAs: PlanJobRunAs) => void; onCancel: () => void }) {
+/** The job-edit popover: title, brief, provider (Auto/Claude/Codex), Role, and, for a job that hasn't started, Run as (Head/Lane). */
+export function JobEditPopover({ state, roles = [], onSave, onCancel }: {
+  state: JobPopoverState; roles?: readonly SnapshotRole[];
+  onSave: (title: string, brief: string, provider: Provider | undefined, runAs: PlanJobRunAs, role: string | undefined) => void;
+  onCancel: () => void;
+}) {
   const [title, setTitle] = useState(state.job.title);
   const [brief, setBrief] = useState(state.job.brief);
   const [provider, setProvider] = useState<'' | Provider>(state.job.provider || '');
   const [runAs, setRunAs] = useState<PlanJobRunAs>(state.job.runAs ?? 'head');
+  const [role, setRole] = useState(state.job.role ?? '');
   const started = jobHasStarted(state.job);
+  // Keep the job's own role selectable even if its pack has since gone away, so it isn't silently dropped by opening the popover.
+  const options = state.job.role && !roles.some(candidate => candidate.ref === state.job.role) ? [{ ref: state.job.role, packTitle: '', title: `${state.job.role} (not active)` } as SnapshotRole, ...roles] : roles;
   return <div className="canvas-menu canvas-job-popover" role="dialog" aria-label={`Edit "${state.job.title}"`} style={{ left: state.x, top: state.y }}
     onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onCancel(); } }}>
     <label>Title<input value={title} onChange={event => setTitle(event.target.value)} maxLength={80} autoFocus /></label>
     <label>Brief<textarea value={brief} onChange={event => setBrief(event.target.value)} maxLength={4000} rows={3} /></label>
+    <label>Role<select value={role} disabled={!options.length} onChange={event => setRole(event.target.value)}>
+      <option value="">No role</option>
+      {options.map(candidate => <option key={candidate.ref} value={candidate.ref}>{candidate.packTitle ? `${candidate.title} (${candidate.packTitle})` : candidate.title}</option>)}
+    </select></label>
     <label>Provider<select value={provider} onChange={event => setProvider(event.target.value as '' | Provider)}>
-      <option value="">Auto</option><option value="claude">Claude</option><option value="codex">Codex</option>
+      <option value="">Auto{role ? ` (${options.find(candidate => candidate.ref === role)?.provider === 'codex' ? 'Codex' : 'Claude'})` : ''}</option>
+      <option value="claude">Claude</option><option value="codex">Codex</option>
     </select></label>
     <div className="canvas-job-popover-field"><span id="job-popover-runas">Run as</span>
       {started
@@ -578,7 +602,7 @@ export function JobEditPopover({ state, onSave, onCancel }: { state: JobPopoverS
       {!started && runAs === 'lane' && <p className="canvas-job-popover-hint">You drive it in a terminal. Its brief becomes the lane's goal.</p>}
     </div>
     <div className="canvas-newplan-actions">
-      <button className="primary" disabled={!title.trim() || !brief.trim()} onClick={() => onSave(title.trim(), brief.trim(), provider || undefined, runAs)}>Save</button>
+      <button className="primary" disabled={!title.trim() || !brief.trim()} onClick={() => onSave(title.trim(), brief.trim(), provider || undefined, runAs, role)}>Save</button>
       <button className="text-button" onClick={onCancel}>Cancel</button>
     </div>
   </div>;

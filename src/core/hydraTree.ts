@@ -1,4 +1,4 @@
-import type { HelperJobView, LaneView, Provider } from './model';
+import type { HelperJobView, LaneView, Provider, SnapshotRole } from './model';
 import type { Plan } from './plans';
 import { isActive } from './agentsCanvas';
 // Type-only, same rule as agentsCanvas.ts: planRunner.ts's PlanJobView is plain data the extension computes.
@@ -46,10 +46,12 @@ function planProgressLine(plan: Plan, views: readonly PlanJobView[] | undefined)
   return plan.state === 'done' ? progress : `Running · ${progress}${laneWaiting ? ` · ${laneWaiting} ${laneWaiting === 1 ? 'lane' : 'lanes'} waiting` : ''}`;
 }
 
-export function buildHydraTree(lanes: readonly LaneView[], heads: readonly HelperJobView[], plans: readonly Plan[], planJobs: Readonly<Record<string, readonly PlanJobView[]>> = {}): HydraTree {
+export function buildHydraTree(lanes: readonly LaneView[], heads: readonly HelperJobView[], plans: readonly Plan[], planJobs: Readonly<Record<string, readonly PlanJobView[]>> = {}, roles: readonly SnapshotRole[] = []): HydraTree {
   const laneItems: TreeLaneItem[] = openLanes(lanes).map(lane => {
     const conflicts = !!lane.sync?.conflicts.length;
-    const description = [providerName(lane.provider), lane.branch, lane.planJob ? `Plan: ${lane.planJob.planTitle}` : undefined, conflicts ? 'conflicts' : undefined].filter(Boolean).join(' · ');
+    // Packs (docs/Packs_Plan.md, "How roles show"): "Codex · Reviewer · lane/x".
+    const roleTitle = lane.role ? roles.find(role => role.pack === lane.role!.pack && role.id === lane.role!.role)?.title : undefined;
+    const description = [providerName(lane.provider), roleTitle, lane.branch, lane.planJob ? `Plan: ${lane.planJob.planTitle}` : undefined, conflicts ? 'conflicts' : undefined].filter(Boolean).join(' · ');
     return { id: lane.id, label: lane.name, description, state: lane.state, conflicts, dirty: !!lane.sync?.dirty };
   });
   const headItems: TreeHeadItem[] = heads.filter(isActive).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(head => ({

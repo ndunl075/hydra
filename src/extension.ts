@@ -447,6 +447,7 @@ class Manager {
       const roles = await this.packs.roles(this.packsLeadFolder);
       this.roles = roles.map(role => ({ ref: role.ref, pack: role.pack, packTitle: role.packTitle, id: role.id, title: role.title, description: role.description, provider: role.provider }));
     } catch (error) { this.roles = []; this.output.appendLine(`[packs] roles: ${this.describe(error)}`); }
+    this.tree.update({ roles: this.roles });
     await this.publish();
   }
   /**

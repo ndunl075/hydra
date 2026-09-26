@@ -1,5 +1,5 @@
 import React from 'react';
-import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneView, Provider } from '../src/core/model';
+import type { ClientMessage, HelperJobView, LaneLimitOfferView, LaneView, Provider, SnapshotRole } from '../src/core/model';
 import type { Plan } from '../src/core/plans';
 import type { JobCheckResult } from '../src/core/jobs';
 import type { PlanJobView } from '../src/core/planRunner';
@@ -17,7 +17,7 @@ export type AgentsViewName = 'canvas' | 'lanes';
  */
 export function AgentsBody({
   view, onViewChange, heads, dismissedTray, plans, lanes, planJobs, terminals, defaultProvider, laneError, laneFocus, onLaneFocused,
-  laneLimits, laneSwitchCountdowns, laneGates, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
+  laneLimits, laneSwitchCountdowns, laneGates, roles, onAction, onPlan, onStopAll, openNewPlanAt, onOpenLane, onSend, focusHead,
 }: {
   view: AgentsViewName;
   onViewChange: (view: AgentsViewName) => void;
@@ -30,6 +30,8 @@ export function AgentsBody({
   planJobs?: Readonly<Record<string, readonly PlanJobView[]>>;
   terminals: boolean;
   defaultProvider?: Provider;
+  /** The active packs' roles (docs/Packs_Plan.md, "Picking a role"), for the New lane card and the job popover. */
+  roles?: readonly SnapshotRole[];
   laneError?: string;
   laneFocus?: string;
   onLaneFocused: () => void;
@@ -52,11 +54,11 @@ export function AgentsBody({
       <button role="tab" aria-selected={view === 'lanes'} className={view === 'lanes' ? 'on' : ''} onClick={() => onViewChange('lanes')}>Lanes <span className="agents-view-count">{(lanes || []).length}</span></button>
     </div>
     <div className="agents-view-pane" hidden={view !== 'canvas'}>
-      <AgentsCanvas heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} planJobs={planJobs} defaultProvider={defaultProvider} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
+      <AgentsCanvas heads={heads} dismissedTray={dismissedTray} plans={plans} lanes={lanes} planJobs={planJobs} defaultProvider={defaultProvider} roles={roles} onAction={onAction} onPlan={onPlan} onStopAll={onStopAll} openNewPlanAt={openNewPlanAt} onOpenLane={onOpenLane} focusHead={focusHead} />
     </div>
     <div className="agents-view-pane" hidden={view !== 'lanes'}>
       <LanesView lanes={lanes || []} terminals={terminals} defaultProvider={defaultProvider} laneError={laneError} focus={laneFocus} onSend={onSend} onFocused={onLaneFocused}
-        laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} laneGates={laneGates} />
+        laneLimits={laneLimits} laneSwitchCountdowns={laneSwitchCountdowns} laneGates={laneGates} roles={roles} />
     </div>
   </div>;
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientMessage, LaneAction, LaneLimitOfferView, LaneOfferButtonId, LanePlanJobView, LaneView, Provider } from '../src/core/model';
+import type { ClientMessage, LaneAction, LaneLimitOfferView, LaneOfferButtonId, LanePlanJobView, LaneView, Provider, SnapshotRole } from '../src/core/model';
 import type { JobCheckResult } from '../src/core/jobs';
 import { otherProvider } from '../src/core/limitEvents';
 import { gateChip } from '../src/core/agentsCanvas';
@@ -112,18 +112,41 @@ function LaneSwitchCountdownBanner({ countdown, onCancel }: { countdown: LaneSwi
   </div>;
 }
 
-interface NewLaneForm { name: string; provider: Provider; goal: string }
+interface NewLaneForm { name: string; provider: Provider; goal: string; role?: string }
+/** "Reviewer" from an active pack's roles, grouped by pack (docs/Packs_Plan.md, "Picking a role"). */
+export const groupRolesByPack = (roles: readonly SnapshotRole[]): { packTitle: string; roles: readonly SnapshotRole[] }[] => {
+  const groups: { packTitle: string; roles: SnapshotRole[] }[] = [];
+  for (const role of roles) {
+    const group = groups.find(item => item.packTitle === role.packTitle);
+    if (group) group.roles.push(role); else groups.push({ packTitle: role.packTitle, roles: [role] });
+  }
+  return groups;
+};
 
 /** The inline "New lane" card at the top of the grid. */
-export function NewLaneCard({ initial, error, onStart, onCancel }: { initial: NewLaneForm; error?: string; onStart: (form: NewLaneForm) => void; onCancel: () => void }) {
+export function NewLaneCard({ initial, error, roles = [], onStart, onCancel }: { initial: NewLaneForm; error?: string; roles?: readonly SnapshotRole[]; onStart: (form: NewLaneForm) => void; onCancel: () => void }) {
   const [form, setForm] = useState(initial);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') onCancel(); };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
   }, [onCancel]);
+  const grouped = groupRolesByPack(roles);
   return <div className="lane-new" role="dialog" aria-label="New lane">
     <label>Name<input value={form.name} maxLength={40} autoFocus onChange={event => { const name = event.target.value; setForm(current => ({ ...current, name })); }} /></label>
+    <label>Role
+      <select value={form.role ?? ''} disabled={!roles.length} title={!roles.length ? 'Turn on a pack in Settings → Packs' : undefined}
+        onChange={event => {
+          const ref = event.target.value || undefined;
+          const picked = roles.find(role => role.ref === ref);
+          setForm(current => ({ ...current, role: ref, ...(picked ? { provider: picked.provider } : {}) }));
+        }}>
+        <option value="">No role</option>
+        {grouped.map(group => <optgroup key={group.packTitle} label={group.packTitle}>
+          {group.roles.map(role => <option key={role.ref} value={role.ref}>{role.title}</option>)}
+        </optgroup>)}
+      </select>
+    </label>
     {/* Not a <label>: a label forwards any click inside it to its first button, so Codex could never be chosen. */}
     <div className="lane-new-field"><span id="lane-new-agent">Agent</span>
       <div className="lane-new-provider" role="radiogroup" aria-labelledby="lane-new-agent">
@@ -168,11 +191,12 @@ function GateChips({ results, running }: { results: readonly JobCheckResult[]; r
   </div>;
 }
 
-function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates, onSend, onFocused }: {
+function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates, roles = [], onSend, onFocused }: {
   lane: LaneView; laneName: (id: string) => string | undefined; focused: boolean;
   limitOffer?: LaneLimitOfferView; switchCountdown?: LaneSwitchCountdown;
   /** A gates run in progress on this lane; undefined once it's finished (the lane's own lastGates then has the chips). */
   gates?: { done: JobCheckResult[]; running?: string };
+  roles?: readonly SnapshotRole[];
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -183,6 +207,8 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
   const merges = !!sync && !sync.dirty && sync.targetConflicts.length === 0 && sync.changedFiles.length > 0 && lane.state !== 'merged';
   const lastSwitch = lane.switches?.at(-1);
   const other = otherProvider(lane.provider);
+  // Packs (docs/Packs_Plan.md, "How roles show"): the role chip, "Reviewer", tooltip "Coding pack · Codex by default".
+  const role = lane.role ? roles.find(candidate => candidate.pack === lane.role!.pack && candidate.id === lane.role!.role) : undefined;
 
   useEffect(() => {
     if (!focused || !ref.current) return;
@@ -203,11 +229,13 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
     <header className="lane-tile-head">
       <span className={`lane-dot state-${lane.state}`} aria-hidden="true" /><span className="sr-only">{laneStateLabel[lane.state]}</span>
       <b className="lane-name" title={lane.name}>{lane.name}</b>
+      {role && <span className="lane-role-chip" title={`${role.packTitle} pack · ${providerLabel(role.provider)} by default`}>{role.title}</span>}
       <span className="lane-provider"><ProviderLogo provider={lane.provider} /></span>
       <code className="lane-branch" title={lane.branch}>{lane.branch}</code>
       {lastSwitch && <span className="lane-switched" title={`${new Date(lastSwitch.at).toLocaleString()}`}>
         {lastSwitch.reason === 'limit' ? `Continued from ${providerLabel(lastSwitch.from)} (limit)` : `Switched from ${providerLabel(lastSwitch.from)}`}
       </span>}
+      {lane.roleNote && <span className="lane-role-note" role="note">{lane.roleNote}</span>}
       <div className="lane-chips">
         {lane.planJob && <PlanChip planJob={lane.planJob} />}
         {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}{conflict.files[0] ? ` · ${conflict.files[0]}` : ''}</Chip>}
@@ -284,10 +312,12 @@ function ExitedLaneRow({ lane, laneName, expanded, onToggle, onSend }: {
   </div>;
 }
 
-export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, laneLimits, laneSwitchCountdowns, laneGates, onSend, onFocused }: {
+export function LanesView({ lanes, terminals, defaultProvider, laneError, focus, laneLimits, laneSwitchCountdowns, laneGates, roles = [], onSend, onFocused }: {
   lanes: readonly LaneView[]; terminals: boolean; defaultProvider?: Provider; laneError?: string; focus?: string;
   laneLimits?: Readonly<Record<string, LaneLimitOfferView>>; laneSwitchCountdowns?: Readonly<Record<string, LaneSwitchCountdown>>;
   laneGates?: Readonly<Record<string, { done: JobCheckResult[]; running?: string }>>;
+  /** The active packs' roles (docs/Packs_Plan.md, "Picking a role"), for the New lane card's Role select. */
+  roles?: readonly SnapshotRole[];
   onSend: (message: ClientMessage) => void; onFocused: () => void;
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -320,12 +350,12 @@ export function LanesView({ lanes, terminals, defaultProvider, laneError, focus,
     {!terminals
       ? <div className="lanes-empty" role="status">{terminalsUnavailableMessage}</div>
       : <div className="lanes-grid">
-        {showForm && <NewLaneCard initial={{ name: nextName, provider: defaultProvider === 'codex' ? 'codex' : 'claude', goal: '' }} error={laneError}
+        {showForm && <NewLaneCard initial={{ name: nextName, provider: defaultProvider === 'codex' ? 'codex' : 'claude', goal: '' }} error={laneError} roles={roles}
           onCancel={() => setShowForm(false)}
-          onStart={form => { starting.current = lanes.length; onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}) }); }} />}
-        {running.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} onSend={onSend} onFocused={onFocused} />)}
+          onStart={form => { starting.current = lanes.length; onSend({ type: 'laneNew', name: form.name.trim(), provider: form.provider, ...(form.goal.trim() ? { goal: form.goal.trim() } : {}), ...(form.role ? { role: form.role } : {}) }); }} />}
+        {running.map(lane => <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} roles={roles} onSend={onSend} onFocused={onFocused} />)}
         {exited.map(lane => expanded.has(lane.id)
-          ? <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} onSend={onSend} onFocused={onFocused} />
+          ? <LaneTile key={lane.id} lane={lane} laneName={laneName} focused={focus === lane.id} limitOffer={laneLimits?.[lane.id]} switchCountdown={laneSwitchCountdowns?.[lane.id]} gates={laneGates?.[lane.id]} roles={roles} onSend={onSend} onFocused={onFocused} />
           : <ExitedLaneRow key={lane.id} lane={lane} laneName={laneName} expanded={false} onToggle={() => toggle(lane.id)} onSend={onSend} />)}
         {!lanes.length && !showForm && <p className="lanes-empty-hint">No lanes yet. Start one to run a real Claude Code or Codex terminal in its own worktree. <button className="text-button" onClick={() => onSend({ type: 'learn' })}>Learn how</button></p>}
       </div>}

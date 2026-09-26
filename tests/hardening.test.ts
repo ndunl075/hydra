@@ -198,11 +198,19 @@ test('gitMetaFingerprint changes when a hook is added or core.fsmonitor is set',
     assert.deepEqual(gitMetaChanges(before, afterHook), ['hooks/post-checkout']);
     await git(root, ['config', 'core.fsmonitor', 'false']);
     const afterConfig = await gitMetaFingerprint(root);
-    assert.deepEqual(gitMetaChanges(afterHook, afterConfig), ['config']);
+    assert.deepEqual(gitMetaChanges(afterHook, afterConfig), ['config (core.fsmonitor)']);
     // A *.sample hook is never part of the fingerprint.
     await writeFile(path.join(root, '.git', 'hooks', 'pre-commit.sample'), '#!/bin/sh\n');
     const afterSample = await gitMetaFingerprint(root);
     assert.deepEqual(gitMetaChanges(afterConfig, afterSample), []);
+    // Everyday git rewrites the rest of .git/config: branch tracking after a push -u, a new remote.
+    await git(root, ['remote', 'add', 'upstream', 'https://example.invalid/repo.git']);
+    await git(root, ['config', 'branch.main.remote', 'upstream']); await git(root, ['config', 'branch.main.merge', 'refs/heads/main']);
+    assert.deepEqual(gitMetaChanges(afterSample, await gitMetaFingerprint(root)), [], 'tracking and remotes are not tampering');
+    // What can run a program or redirect git is: an alias, a filter, a pushurl, an include.
+    await git(root, ['config', 'alias.st', '!echo hi']); await git(root, ['config', 'filter.x.smudge', 'cat']);
+    await git(root, ['config', 'remote.upstream.pushurl', 'https://example.invalid/other.git']); await git(root, ['config', 'include.path', 'extra.cfg']);
+    assert.deepEqual(gitMetaChanges(afterSample, await gitMetaFingerprint(root)), ['config (alias.st)', 'config (filter.x.smudge)', 'config (include.path)', 'config (remote.upstream.pushurl)']);
   } finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
 

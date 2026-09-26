@@ -182,4 +182,34 @@ Step 3 is done when every control in `docs/THREAT_MODEL.md` names a test that ex
 
 ## As built
 
-Not started.
+### Step 1 (2026-09-26)
+
+Built in `hydra-wt/hardening` (branch `feat/hardening`), one Sonnet subagent, per the plan's "When to use subagents" table.
+
+**Where it lives:**
+- 1.1 gate floor: `Job.gatesAtStart`, `Job.gitMetaAtStart`, `Job.tamperAtStart` and the caps on them (`src/core/jobs.ts`); `HelperService.headStartSnapshot`/`HelperService.done` (`src/core/helperService.ts`); the pure union rule is `gateFloor` in `jobs.ts`.
+- 1.2 fenced review: `reviewPrompt` in `src/core/gates/review.ts`.
+- 1.3 clean terminal input: `terminalText` in `src/core/lanePty.ts`; `LaneService.typeText` in `src/core/laneService.ts`; used by `sendGatesToLane` in `src/extensionLanes.ts` (both the typed text and its clipboard fallback).
+- 1.4 git hardening: `-c core.fsmonitor=false` in `src/core/git.ts`; `gitMetaFingerprint`/`gitMetaChanges` also in `git.ts`; `Job.gitMetaAtStart` (`jobs.ts`) checked in `HelperService.done`; `Lane.gitMeta` (`src/core/lanes.ts`, set in `LaneService.create`) checked by a new `HydraExtensionLanes.gitMetaBefore`, called from the `merge` case and `markJobDone` in `src/extensionLanes.ts`.
+- 1.5 constant-time token check: `src/core/helperEndpoint.ts` (`digestsMatch`, the caller record's own `digest` field).
+- 1.6 tamper note: `HelperService.headStartSnapshot`/`tamperNote` (`helperService.ts`); `JobResult.note` (`jobs.ts`); surfaced in `hydra_get_head` (`HelperService.describe`) and the `hydra_done` acceptance message.
+
+**Changes from the plan, and why:**
+- The plan's table sketches the gate floor as "run the union of the snapshot and today's gates." The exact rule implemented (and the one the tests check) is narrower and stricter: for a gate id already in the snapshot, the snapshot's own definition always runs, even if that id is still present in today's config with a different (weaker) command — not just "the snapshot's gates plus new ones." This matches the fuller spec in this file's "The six fixes" section, which is more precise than the summary table.
+- 1.4's lane-side message text differs between Merge ("Merging runs git in your main checkout, which would run them.") and Mark job done ("Marking the job done runs git in this lane's worktree, which would run them.") — the brief's example wording was written for Merge; Mark job done doesn't merge into the main checkout, so it needed its own accurate reason.
+- The tamper note (1.6) is attached to a head's result on acceptance and on its final failed attempt; it is not attached to the two earlier failed-attempt messages (scope, git-metadata, gate failures) before the last one, since those already return promptly with their own reason and the head gets another attempt regardless.
+- `Job.gatesAtStart`/`gitMetaAtStart`/`tamperAtStart` are validated for shape and size only when a job store loads (caps: at most 24 gates in a snapshot, ~256 KB, 64 git-metadata entries), not deeply re-validated field by field — consistent with how `parseStoreFile` already treats the rest of a loaded `Job` (its `JobCheckResult`s, for example) as Hydra's own prior output rather than untrusted input.
+
+**Tests** (`tests/hardening.test.ts`, run with a temporary esbuild+node:test runner, never the full gate):
+- `hardening.test.ts`: 12 tests, all passing — gate floor (dropped/weakened/added gate, no snapshot), the tamper note, `hydra_done` refusing a planted git hook (naming it, then accepting once undone), `gitMetaFingerprint`/`gitMetaChanges` (hook added, `core.fsmonitor` set, `*.sample` ignored), every git call carrying `-c core.fsmonitor=false` (a planted fsmonitor hook never runs), `reviewPrompt`'s per-call nonce and fencing, `terminalText`'s stripping, and the endpoint's valid/unknown/same-length-wrong-token behaviour.
+- `tests/gates.test.ts`: 16 tests, all passing after updating two prompt-text assertions for the new fence lines around a failed earlier gate's output/summary.
+- `tests/helperService.test.ts`: 21 tests, all passing (no changes needed).
+- `tests/jobs.test.ts`, `tests/lanes.test.ts`, `tests/lanesView.test.ts`, `tests/packs.test.ts`, `tests/packsLaunch.test.ts`, `tests/core.test.ts`, `tests/laneGit.test.ts`: all passing (no changes needed).
+- `tests/helperEndpoint.test.ts`: 6 of 7 passing; "the lead check reads the real connection owner and its parents" fails inside this Claude Code session because it reads the real process tree — the known, pre-existing failure this plan's rules call out, not something Step 1 touched or should "fix" here.
+- Not run here (by the rules for every subagent): the full `npm test`, `npm run test:smoke`, and the integration test.
+
+**What the live checks must look at** (per the plan's "Step 1" row):
+- A head told to edit `.hydra/gates.json` (drop or weaken a gate) and add a git hook: confirm its gates still run as they were at start, `hydra_done` is refused for the hook with the file named, and it's accepted once the hook is undone.
+- "Send to lane" with colored/ANSI test output: confirm it lands as plain text with no stray escape sequences, and that a lane's own keystrokes (arrow keys, etc.) still work normally through `input`.
+- A lane's Merge and Mark job done after a planted hook: confirm the interactive modal names the file with Cancel as the default, and that `hydra.lanes.action` refuses outright instead of asking.
+- The endpoint with real tokens end to end (not just the unit test): a lead and a head token both still work through the real bridge.

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes, createHash } from 'node:crypto';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, stat as fsStat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { OwnershipLock } from './core/ownership';
 import { git, repositoryRoot } from './core/worktrees';
@@ -127,6 +127,8 @@ class Manager {
   private roles: SnapshotRole[] = [];
   /** Set once startHelpers finds it; the folder `hydra.packs.*` commands and the roles refresh use by default. */
   private packsLeadFolder?: string;
+  /** Watches your packs folder (hydra.packs.folder), so a pack added or edited there refreshes without Reload. */
+  private packsFolderWatcher?: vscode.FileSystemWatcher;
   constructor(private readonly context: vscode.ExtensionContext) {
     this.settingsImport = new SettingsImport(context);
     this.accounts = new ProviderAccounts(context, this.settingsImport.available);
@@ -219,9 +221,12 @@ class Manager {
     });
     command('hydra.packs.addFolder', async (source: unknown) => {
       if (typeof source !== 'string' || !source) throw new Error('Pass the folder to add.');
-      return structuredClone(await this.packs.addFolder(source));
+      const installed = await this.packs.addFolder(source);
+      // addFolder makes your packs folder if it didn't exist yet, so the watcher may need to start now.
+      await this.setupPacksFolderWatcher();
+      return structuredClone(installed);
     });
-    command('hydra.packs.reload', async () => { await this.rolesChanged(); return true; });
+    command('hydra.packs.reload', async () => { await this.setupPacksFolderWatcher(); await this.rolesChanged(); return true; });
     command('hydra.helperConnections', () => this.helperConnections());
     command('hydra.connectHelpers', async (provider: ConnectableProvider) => ({ warning: await this.connectHelpers(provider), connections: await this.helperConnections() }));
     command('hydra.disconnectHelpers', async (provider: ConnectableProvider) => { await this.disconnectHelpers(provider); return this.helperConnections(); });
@@ -270,6 +275,8 @@ class Manager {
     this.status.show();
     this.context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
       if (!event.affectsConfiguration('hydra')) return;
+      // Packs: a changed packs folder re-creates the watcher on the new location (or none at all).
+      if (event.affectsConfiguration('hydra.packs.folder')) void this.setupPacksFolderWatcher().catch(error => this.report(error));
       // Preference-only settings (the head cap) are read fresh wherever they are
       // used, so they only republish. Any other Hydra setting, including ones
       // added later, clears provider checks and refreshes.
@@ -433,6 +440,32 @@ class Manager {
     const onPacksChange = () => void this.rolesChanged();
     packsWatcher.onDidChange(onPacksChange); packsWatcher.onDidCreate(onPacksChange); packsWatcher.onDidDelete(onPacksChange);
     this.context.subscriptions.push(packsWatcher);
+    await this.setupPacksFolderWatcher();
+  }
+  /**
+   * Your packs folder (hydra.packs.folder, default ~/.hydra/packs): watched too, so a pack you
+   * add or edit there refreshes roles, the Packs page and Settings → Gates' "From packs" without
+   * pressing Reload (docs/Packs_Plan.md, "Not done"). Debounced, like the packs.json watcher above
+   * isn't (a pack folder can see several files change at once). Never creates the folder just to
+   * watch it: with no folder there yet, this simply watches nothing until Reload, addFolder or a
+   * setting change calls it again.
+   */
+  private async setupPacksFolderWatcher(): Promise<void> {
+    this.packsFolderWatcher?.dispose();
+    this.packsFolderWatcher = undefined;
+    const folder = this.packs.places().user;
+    if (!folder) return;
+    const found = await fsStat(folder).then(info => info.isDirectory(), () => false);
+    if (!found) return;
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(folder), '**'));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const debounced = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = undefined; void this.rolesChanged(); }, 500);
+    };
+    watcher.onDidChange(debounced); watcher.onDidCreate(debounced); watcher.onDidDelete(debounced);
+    this.packsFolderWatcher = watcher;
+    this.context.subscriptions.push(watcher);
   }
   /** The folder `hydra.packs.*` commands act on: the one given, else this window's lead folder. */
   private async packsFolder(folder?: unknown): Promise<string> {
@@ -455,6 +488,8 @@ class Manager {
       this.roles = roles.map(role => ({ ref: role.ref, pack: role.pack, packTitle: role.packTitle, id: role.id, title: role.title, description: role.description, provider: role.provider }));
     } catch (error) { this.roles = []; this.output.appendLine(`[packs] roles: ${this.describe(error)}`); }
     this.tree.update({ roles: this.roles });
+    // A running lane whose role just went away (or came back) hears about it now, not only at its next launch.
+    await this.lanes.activeRolesChanged().catch(error => this.output.appendLine(`[lanes] active roles: ${this.describe(error)}`));
     await this.publish();
   }
   /**

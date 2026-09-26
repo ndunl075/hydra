@@ -171,6 +171,8 @@ export class LanesController implements vscode.Disposable {
     return this.service.describe(you);
   }
   openWorktrees(): string[] { return this.service?.openWorktrees() ?? []; }
+  /** Packs (docs/Packs_Plan.md): the active roles changed. Tell running lanes right away, instead of only at their next launch. */
+  async activeRolesChanged(): Promise<void> { await this.service?.activeRolesChanged(); this.changed(); }
   /** For ClaudeChatLimits (src/extensionLimits.ts): this window's open lanes, for owning a chat cwd or a lane id. */
   laneWorktreeEntries(): { id: string; worktree: string }[] { return this.service?.lanes().map(lane => ({ id: lane.id, worktree: lane.worktree })) ?? []; }
   /** For the Codex account-limit fan-out (src/extension.ts): this window's running lanes of one provider. */

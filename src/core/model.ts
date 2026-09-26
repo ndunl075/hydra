@@ -162,6 +162,8 @@ export type LaneView = Lane & {
   sync?: LaneSyncView; running: boolean; planJob?: LanePlanJobView;
   /** Packs (docs/Packs_Plan.md, "Lanes"): why its role wasn't available at its last start, for the tile. `role` itself is the record's. */
   roleNote?: string;
+  /** Restarting Hydra (docs/Heads.md): set when Resume found no earlier conversation and started fresh instead. */
+  resumeNote?: string;
 };
 export type LaneAction = 'commit' | 'merge' | 'update' | 'pr' | 'close' | 'resume' | 'restart' | 'diff' | 'openWindow' | 'refresh' | 'switchProvider' | 'runGates' | 'evidence'
   // ---- Plan lanes (docs/Plan_Lanes_Plan.md, section 5) ----

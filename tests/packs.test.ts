@@ -225,6 +225,15 @@ test('packs.json: round trip, unknown keys, duplicates, and skipGates naming a g
     assert.equal(await readFile(path.join(root, '.hydra', 'packs.json'), 'utf8'), formatPacksFile(file));
     assert.deepEqual(await readPacksFile(root), { file, exists: true });
     assert.deepEqual((await readdir(path.join(root, '.hydra'))).sort(), ['packs.json'], 'the atomic write leaves no temporary file');
+    // A CRLF checkout keeps its line endings, and an unchanged file isn't written again.
+    const crlf = formatPacksFile(file).replace(/\n/g, '\r\n');
+    await writeFile(path.join(root, '.hydra', 'packs.json'), crlf);
+    const before = (await stat(path.join(root, '.hydra', 'packs.json'))).mtimeMs;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await writePacksFile(root, file);
+    assert.equal((await stat(path.join(root, '.hydra', 'packs.json'))).mtimeMs, before, 'the same packs: not written');
+    await writePacksFile(root, withPack(file, 'seo', true));
+    assert.equal(await readFile(path.join(root, '.hydra', 'packs.json'), 'utf8'), formatPacksFile(withPack(file, 'seo', true)).replace(/\n/g, '\r\n'));
     await writeFile(path.join(root, '.hydra', 'packs.json'), '{ "version": 1, ');
     await assert.rejects(readPacksFile(root), /isn't valid JSON/);
   } finally { await close(); }

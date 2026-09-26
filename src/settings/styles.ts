@@ -33,6 +33,10 @@ body { margin: 0; color: var(--vscode-foreground); background: var(--vscode-edit
 .row-text .row-title { font-size: 13px; }
 .row-text .row-desc { font-size: 12px; color: var(--vscode-descriptionForeground); line-height: 1.5; margin-top: 2px; }
 .row-action { flex: none; display: flex; align-items: center; gap: 8px; }
+/* Pack cards: the text keeps room to read, and the buttons move below it when the page is narrow. */
+.pk-card > .row { flex-wrap: wrap; }
+.pk-card > .row > .row-text { flex: 1 1 260px; }
+.pk-card .chip { white-space: nowrap; }
 .row[hidden] { display: none; }
 mark { background: var(--vscode-editor-findMatchHighlightBackground, #ea5c0055); color: inherit; border-radius: 2px; }
 button { cursor: pointer; font: inherit; border-radius: 4px; padding: 6px 12px; border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }

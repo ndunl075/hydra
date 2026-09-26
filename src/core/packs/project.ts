@@ -35,7 +35,14 @@ export async function readPacksFile(folder: string): Promise<{ file: PacksFile; 
 /** Write packs.json atomically, as 2-space JSON with a trailing newline. */
 export async function writePacksFile(folder: string, file: PacksFile): Promise<void> {
   const target = packsFile(folder);
-  const text = formatPacksFile(parsePacksFile(JSON.parse(formatPacksFile(file))));
+  let text = formatPacksFile(parsePacksFile(JSON.parse(formatPacksFile(file))));
+  // A committed file checked out with CRLF keeps its line endings, and one that already says this
+  // isn't written again, so turning on a pack a teammate listed leaves the checkout clean.
+  const current = await readFile(target, 'utf8').catch(() => undefined);
+  if (current !== undefined) {
+    if (current.replace(/^﻿/, '').replace(/\r\n/g, '\n') === text) return;
+    if (current.includes('\r\n')) text = text.replace(/\n/g, '\r\n');
+  }
   await mkdir(path.dirname(target), { recursive: true });
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, text, 'utf8');

@@ -238,9 +238,9 @@ export const packsPage: SettingsPage = {
       if (message?.type === 'packsTurnOnDone') { open.delete(message.id); }
       if (message?.type === 'mcpTestResult' && pending.has(message.token)) { pending.get(message.token)(message.result); pending.delete(message.token); }
       if (message?.type === 'status') {
+        // The settings status bar shows every confirmation; an action's error also shows here, in red.
         const errorEl = document.getElementById('pk-error');
-        errorEl.hidden = false; errorEl.textContent = message.text;
-        setTimeout(() => { errorEl.hidden = true; }, 4000);
+        if (message.error) { errorEl.hidden = false; errorEl.textContent = message.text; } else errorEl.hidden = true;
       }
     });
   })();
@@ -256,7 +256,7 @@ export const packsPage: SettingsPage = {
         try {
           await vscode.commands.executeCommand('hydra.packs.setEnabled', undefined, id, on);
           await ctx.post({ type: 'status', text: on ? `Turned on the ${id} pack.` : `Turned off the ${id} pack.` });
-        } catch (error) { await ctx.post({ type: 'status', text: error instanceof Error ? error.message : String(error) }); }
+        } catch (error) { await ctx.post({ type: 'status', error: true, text: error instanceof Error ? error.message : String(error) }); }
         await postState(ctx);
         return true;
       }
@@ -265,7 +265,7 @@ export const packsPage: SettingsPage = {
         try {
           await vscode.commands.executeCommand('hydra.packs.skipGate', undefined, id, gate, skip);
           await ctx.post({ type: 'status', text: skip ? `Skipped "${gate}" in this project.` : `"${gate}" runs again in this project.` });
-        } catch (error) { await ctx.post({ type: 'status', text: error instanceof Error ? error.message : String(error) }); }
+        } catch (error) { await ctx.post({ type: 'status', error: true, text: error instanceof Error ? error.message : String(error) }); }
         await postState(ctx);
         return true;
       }
@@ -275,14 +275,14 @@ export const packsPage: SettingsPage = {
           try {
             await vscode.commands.executeCommand('hydra.packs.addFolder', picked[0].fsPath);
             await ctx.post({ type: 'status', text: 'Added the pack. Reload to see it.' });
-          } catch (error) { await ctx.post({ type: 'status', text: error instanceof Error ? error.message : String(error) }); }
+          } catch (error) { await ctx.post({ type: 'status', error: true, text: error instanceof Error ? error.message : String(error) }); }
         }
         await postState(ctx);
         return true;
       }
       case 'packsOpenFolder': {
         try { await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(await ctx.packs.userFolder())); }
-        catch (error) { await ctx.post({ type: 'status', text: error instanceof Error ? error.message : String(error) }); }
+        catch (error) { await ctx.post({ type: 'status', error: true, text: error instanceof Error ? error.message : String(error) }); }
         return true;
       }
       case 'packsReload':
@@ -301,7 +301,7 @@ export const packsPage: SettingsPage = {
           await ctx.packs.turnOn(root, id, hash);
           await ctx.post({ type: 'status', text: savedNote });
           await ctx.post({ type: 'packsTurnOnDone', id });
-        } catch (error) { await ctx.post({ type: 'status', text: error instanceof Error ? error.message : String(error) }); }
+        } catch (error) { await ctx.post({ type: 'status', error: true, text: error instanceof Error ? error.message : String(error) }); }
         await postState(ctx);
         return true;
       }

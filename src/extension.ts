@@ -490,6 +490,9 @@ class Manager {
     this.tree.update({ roles: this.roles });
     // A running lane whose role just went away (or came back) hears about it now, not only at its next launch.
     await this.lanes.activeRolesChanged().catch(error => this.output.appendLine(`[lanes] active roles: ${this.describe(error)}`));
+    // An open Settings → Packs and Settings → Gates follow too: a pack added to your packs folder, or a
+    // hand-edited packs.json, shows there without pressing Reload.
+    await this.settings.refreshPages(['packs', 'gates']).catch(() => undefined);
     await this.publish();
   }
   /**

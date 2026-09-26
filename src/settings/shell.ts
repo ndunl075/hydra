@@ -57,6 +57,12 @@ export class AppearanceSettings implements vscode.Disposable {
       }
     });
   }
+  /** Re-post some pages' state to an open Settings panel, when something outside it changed (a packs folder or packs.json edit). */
+  async refreshPages(ids: readonly string[]): Promise<void> {
+    const panel = this.panel;
+    if (!panel) return;
+    for (const page of this.pages) if (ids.includes(page.id)) await page.onReady?.(this.pageContext(panel));
+  }
   private pageContext(panel: vscode.WebviewPanel): SettingsContext {
     return {
       extensionUri: this.context.extensionUri,

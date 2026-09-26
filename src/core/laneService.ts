@@ -1,6 +1,8 @@
 import { lstat, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import path from 'node:path';
+import { laneHasConversation, type LaneConversationOptions } from './laneResume';
 import { git, gitMetaFingerprint, gitRun, type GitMetaFingerprint } from './git';
 import { isWindowsShim, processLaunch, shimSafe } from './process';
 import { RoleUnavailable, codexDeveloperInstructions, roleFirstPrompt, roleLaunch, type RoleLaunch, type RoleSource } from './packs/launch';
@@ -184,6 +186,12 @@ export interface LaneServiceOptions {
   gates?: GatesLoader;
   /** The active packs' roles (PackService). Without it, a lane's role is never available and its tile says so. */
   roles?: RoleSource;
+  /**
+   * Resume when the CLI never began a conversation (docs/Heads.md, "Restarting Hydra"): where
+   * `laneHasConversation` looks. Defaults to the real home, this window's env and platform. Tests
+   * override `home` with a temp fake home, never the real `~/.claude` or `~/.codex`.
+   */
+  conversation?: { home?: () => string; platform?: NodeJS.Platform; fs?: LaneConversationOptions['fs'] };
 }
 
 /** How a plan lane starts (docs/Plan_Lanes_Plan.md, "Starting a lane job"). */
@@ -246,6 +254,8 @@ export class LaneService {
   private readonly gateRuns = new Map<string, AbortController>();
   /** Packs: why a lane's role wasn't available at its last launch, for its tile: "Role Reviewer isn't available: the Coding pack is off." */
   private readonly roleNotes = new Map<string, string>();
+  /** Item 1 (docs/Heads.md, "Restarting Hydra"): set when a Resume found no earlier conversation and started fresh instead. Cleared at the lane's next launch. */
+  private readonly resumeNotes = new Map<string, string>();
   constructor(private readonly options: LaneServiceOptions) { this.syncer = new LaneSync(options.now); }
 
   get terminalsAvailable(): boolean { return !!this.options.pty; }
@@ -262,8 +272,8 @@ export class LaneService {
   openWorktrees(): string[] { return this.lanes().map(lane => lane.worktree); }
   views(): LaneView[] {
     return this.lanes().map(lane => {
-      const sync = this.results.get(lane.id), roleNote = this.roleNotes.get(lane.id);
-      return { ...lane, ...(sync ? { sync: structuredClone(sync) } : {}), running: !!this.terminals.get(lane.id)?.running, ...(roleNote ? { roleNote } : {}) };
+      const sync = this.results.get(lane.id), roleNote = this.roleNotes.get(lane.id), resumeNote = this.resumeNotes.get(lane.id);
+      return { ...lane, ...(sync ? { sync: structuredClone(sync) } : {}), running: !!this.terminals.get(lane.id)?.running, ...(roleNote ? { roleNote } : {}), ...(resumeNote ? { resumeNote } : {}) };
     });
   }
 
@@ -308,11 +318,20 @@ export class LaneService {
     return this.options.store.get(id)!;
   }
 
-  /** Continue the lane's last conversation in a new terminal. */
+  /**
+   * Continue the lane's last conversation in a new terminal. Item 1 (docs/Heads.md, "Restarting
+   * Hydra"): first checks whether the CLI actually began one in this worktree. Without one,
+   * Resume would open an empty session and lose the lane's goal, so this starts fresh instead
+   * (the same launch as Start fresh) and leaves a short note on the tile. Lanes started by
+   * HYDRA_TEST_LANE_COMMAND keep today's behaviour, since nothing real ever wrote a conversation.
+   */
   async resume(id: unknown): Promise<void> {
     await this.exclusive(id, async lane => {
       if (this.terminals.get(lane.id)?.running) throw new Error(`Lane ${lane.name} is already running.`);
-      await this.relaunch(lane, true);
+      if (this.options.testCommand?.()) { await this.relaunch(lane, true); return; }
+      const has = await laneHasConversation(lane.provider, lane.worktree, new Date(lane.createdAt), this.conversationOptions()).catch(() => true);
+      await this.relaunch(lane, has);
+      if (!has) { this.resumeNotes.set(lane.id, 'No earlier conversation to resume, so the lane started fresh.'); this.changed(); }
     });
   }
 
@@ -492,6 +511,32 @@ export class LaneService {
   /** A lane's record, closed or not, while the store keeps it: a plan reads how its lane ended. */
   record(id: string): Lane | undefined { return isLaneId(id) ? this.options.store.get(id) : undefined; }
 
+  /**
+   * Packs (docs/Packs_Plan.md, "Not done"): the active roles changed while a lane may still be
+   * running. A **running** lane whose role is no longer active gets a note right away, instead of
+   * waiting for its next launch; a running lane whose role became active again has the note
+   * cleared. An exited lane is untouched — it still gets the ordinary note (`laneRole`, above) at
+   * its next Resume or Start fresh.
+   */
+  async activeRolesChanged(): Promise<void> {
+    if (!this.options.roles) return;
+    let changed = false;
+    for (const lane of this.lanes()) {
+      if (!lane.role || !this.terminals.get(lane.id)?.running) continue;
+      const ref = laneRoleRef(lane.role);
+      try {
+        await this.options.roles.resolve(lane.repository, ref);
+        if (this.roleNotes.delete(lane.id)) changed = true;
+      } catch (error) {
+        const title = error instanceof RoleUnavailable ? error.title : lane.role.role;
+        const reason = error instanceof RoleUnavailable ? error.reason : describe(error);
+        const note = `Role ${title} isn't available now: ${reason}. This session keeps it until you Start fresh.`.slice(0, 300);
+        if (this.roleNotes.get(lane.id) !== note) { this.roleNotes.set(lane.id, note); changed = true; }
+      }
+    }
+    if (changed) this.changed();
+  }
+
   /** Cancel a gates run in progress on this lane, if any: closing the lane, or a fresh Run gates/Merge. */
   cancelGates(id: unknown): void {
     const key = typeof id === 'string' ? id : '';
@@ -515,7 +560,7 @@ export class LaneService {
       const result = await closeLaneWorktree(lane, mode, this.roots(lane), this.lanes().map(open => open.worktree));
       await rm(this.mcpConfigFile(lane.id), { force: true }).catch(() => undefined);
       await this.options.store.update(lane.id, { state: 'closed', closedAs: mode });
-      this.terminals.delete(lane.id); this.sizes.delete(lane.id); this.results.delete(lane.id);
+      this.terminals.delete(lane.id); this.sizes.delete(lane.id); this.results.delete(lane.id); this.roleNotes.delete(lane.id); this.resumeNotes.delete(lane.id);
       this.options.log?.(`[lanes] ${lane.id} closed (${mode})${result.unlinked.length ? `; unlinked ${result.unlinked.length} link(s) first` : ''}`);
       this.changed(); this.schedule(); void this.sync().catch(() => undefined);
       return result;
@@ -573,6 +618,7 @@ export class LaneService {
    * prompt is then the preamble plus the handoff. The lane's role is resolved again every time.
    */
   private async launch(lane: Lane, resume: boolean, executable?: string, handoff?: { from: Provider; markdown: string }): Promise<void> {
+    this.resumeNotes.delete(lane.id);
     const pty = this.options.pty;
     if (!pty) throw new Error(terminalsUnavailable);
     const testCommand = this.options.testCommand?.();
@@ -707,6 +753,16 @@ export class LaneService {
     return lane;
   }
   private mcpConfigFile(id: string): string { return path.join(this.options.configDirectory, `${id}.mcp.json`); }
+  /** Item 1: laneHasConversation's environment. Tests override `conversation.home` with a temp fake home. */
+  private conversationOptions(): LaneConversationOptions {
+    const conversation = this.options.conversation;
+    return {
+      home: conversation?.home?.() ?? homedir(),
+      env: this.options.env?.() ?? process.env,
+      platform: conversation?.platform ?? process.platform,
+      ...(conversation?.fs ? { fs: conversation.fs } : {}),
+    };
+  }
   private planOf(id: string): { plan?: { title: string; job: string; dependents: number } } { const plan = this.options.planOf?.(id); return plan ? { plan } : {}; }
   private now(): Date { return this.options.now?.() ?? new Date(); }
   private changed(): void { if (!this.disposed) this.options.onChange?.(); }

@@ -236,6 +236,7 @@ function LaneTile({ lane, laneName, focused, limitOffer, switchCountdown, gates,
         {lastSwitch.reason === 'limit' ? `Continued from ${providerLabel(lastSwitch.from)} (limit)` : `Switched from ${providerLabel(lastSwitch.from)}`}
       </span>}
       {lane.roleNote && <span className="lane-role-note" role="note">{lane.roleNote}</span>}
+      {lane.resumeNote && <span className="lane-role-note" role="note">{lane.resumeNote}</span>}
       <div className="lane-chips">
         {lane.planJob && <PlanChip planJob={lane.planJob} />}
         {conflict && <Chip tone="warning" title={sync!.conflicts.flatMap(item => item.files).join(', ')}>Conflicts with {laneName(conflict.laneId) || 'another lane'}{conflict.files[0] ? ` · ${conflict.files[0]}` : ''}</Chip>}

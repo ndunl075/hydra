@@ -1,11 +1,11 @@
 import { lstat, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { git, gitRun } from './git';
+import { git, gitMetaFingerprint, gitRun, type GitMetaFingerprint } from './git';
 import { isWindowsShim, processLaunch, shimSafe } from './process';
 import { RoleUnavailable, codexDeveloperInstructions, roleFirstPrompt, roleLaunch, type RoleLaunch, type RoleSource } from './packs/launch';
 import { createWorktree, defaultWorktreeRoot } from './worktrees';
-import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalsUnavailable, type PtyModule } from './lanePty';
+import { LaneTerminal, minCols, maxCols, minRows, maxRows, terminalText, terminalsUnavailable, type PtyModule } from './lanePty';
 import { LaneSync, laneDiffBase, syncIntervalMs } from './laneSync';
 import { checkMerge, closeLaneWorktree, commitLane, laneDirty, laneFullyMerged, mergeLane, pushLane, updateLane, type CloseMode, type MergeCheck } from './laneFinish';
 import { isLaneId, isSafeBranchName, laneBranch, laneContinuePrompt, laneFolder, laneJobFolder, lanePreamble, laneRolePrompt, laneRoleRef, newLaneId, parseLaneInput, type Lane, type LaneGatesRecord, type LanePlanLink, type LanePreambleOther, type LanePromptRole, type LaneStore, type LaneSwitchReason } from './lanes';
@@ -282,12 +282,16 @@ export class LaneService {
     if (!isSafeBranchName(current)) throw new Error(`Hydra can't start a lane from the branch "${current}". Use a branch named with letters, numbers and . _ / - only.`);
     let id: string; do { id = newLaneId(); } while (this.options.store.get(id));
     const created = await createWorktree(this.options.repository, input.name, id, this.options.worktreeRoot(), options.baseCommit, { branch: laneBranch(input.name, id), folder: laneFolder(id) });
+    // 1.4 (docs/Hydra_Improvements.md): best effort, like a head's equivalent snapshot — a repository
+    // Hydra can't fingerprint (a very unusual .git layout) simply gets no git-metadata check later.
+    const gitMeta: GitMetaFingerprint | undefined = await gitMetaFingerprint(created.worktree).catch(() => undefined);
     const lane: Lane = {
       id, name: input.name, provider: input.provider, ...(input.goal ? { goal: input.goal } : {}), ...(input.role ? { role: input.role } : {}),
       repository: this.options.repository, worktree: created.worktree, branch: created.branch, baseCommit: created.baseCommit,
       target: isSafeBranchName(created.integrationTarget) ? created.integrationTarget : current,
       createdAt: this.now().toISOString(), state: 'running',
       ...(options.plan ? { plan: options.plan } : {}),
+      ...(gitMeta ? { gitMeta } : {}),
     };
     this.busy.add(id);
     try {
@@ -353,6 +357,14 @@ export class LaneService {
     terminal.write(data);
     return true;
   }
+
+  /**
+   * 1.3 (docs/Hydra_Improvements.md): Hydra's own text into a lane, never the user's keystrokes
+   * (those go through `input` unchanged, since arrow keys and the like are escape sequences on
+   * purpose). Used for "Send to lane" and anywhere else Hydra types text it didn't write itself,
+   * such as a gate's command output, into a lane's terminal.
+   */
+  typeText(id: unknown, text: string): boolean { return this.input(id, terminalText(text)); }
 
   resize(id: unknown, cols: number, rows: number): void {
     if (!isLaneId(id) || !this.exists(id)) throw new Error('That lane isn\'t open in this window.');

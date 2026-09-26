@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { toolAllowed, type HelperRole } from './helperTools';
 import type { Provider } from './model';
@@ -32,10 +32,18 @@ const asProvider = (value: unknown): Provider | undefined => value === 'claude' 
 export interface HelperCallResponse { ok: boolean; result?: unknown; error?: string }
 
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
+/**
+ * 1.5 (docs/Hydra_Improvements.md): besides the map lookup by digest, the presented token's own
+ * digest is compared against the digest kept on the caller record with `timingSafeEqual`, so a
+ * match never turns on how quickly `Map.get` (whose own timing behaviour Hydra doesn't control)
+ * happened to find the entry. Both sides are always 64 hex characters (sha256), so the length
+ * check never leaks anything either.
+ */
+const digestsMatch = (a: string, b: string): boolean => a.length === b.length && timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
 export class HelperEndpoint {
   private server?: http.Server;
-  private readonly callers = new Map<string, HelperCaller>();
+  private readonly callers = new Map<string, HelperCaller & { digest: string }>();
   private readonly calls = new Map<string, number[]>();
   private listening = 0;
   private sessionAttempts: number[] = [];
@@ -63,7 +71,8 @@ export class HelperEndpoint {
   /** A new random token for this caller. Only its hash is kept. */
   issue(caller: HelperCaller): string {
     const token = randomBytes(32).toString('base64url');
-    this.callers.set(digest(token), { ...caller });
+    const key = digest(token);
+    this.callers.set(key, { ...caller, digest: key });
     return token;
   }
   revoke(token: string): void { this.callers.delete(digest(token)); this.calls.delete(digest(token)); }
@@ -107,7 +116,8 @@ export class HelperEndpoint {
       const auth = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(request.headers.authorization || '');
       const key = auth ? digest(auth[1]!) : undefined;
       const caller = key ? this.callers.get(key) : undefined;
-      if (!key || !caller) return reply(401, { ok: false, error: 'Unknown Hydra token.' });
+      if (!key || !caller || !digestsMatch(key, caller.digest)) return reply(401, { ok: false, error: 'Unknown Hydra token.' });
+      const { digest: _callerDigest, ...publicCaller } = caller;
       const window = 60_000, limit = this.options.callsPerMinute ?? 120, now = Date.now();
       const recent = (this.calls.get(key) || []).filter(at => now - at < window);
       if (recent.length >= limit) return reply(429, { ok: false, error: 'Too many Hydra calls; slow down.' });
@@ -121,7 +131,7 @@ export class HelperEndpoint {
       const args = parsed.arguments && typeof parsed.arguments === 'object' && !Array.isArray(parsed.arguments) ? parsed.arguments as Record<string, unknown> : {};
       const controller = new AbortController();
       response.on('close', () => { if (!response.writableEnded) controller.abort(); });
-      try { reply(200, { ok: true, result: await this.handler({ ...caller }, parsed.tool, args, controller.signal) }); }
+      try { reply(200, { ok: true, result: await this.handler({ ...publicCaller }, parsed.tool, args, controller.signal) }); }
       catch (error) { reply(200, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
     } catch (error) {
       reply(500, { ok: false, error: error instanceof Error ? error.message : String(error) });

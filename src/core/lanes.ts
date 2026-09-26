@@ -4,6 +4,7 @@ import path from 'node:path';
 import { replaceAtomic } from './atomicFile';
 import type { Provider } from './model';
 import type { JobCheckResult } from './jobs';
+import type { GitMetaFingerprint } from './git';
 
 /**
  * Hydra lanes (docs/Lanes_And_Planner_Plan.md, section 1). A lane is a git
@@ -48,6 +49,8 @@ export interface Lane {
   // ---- Packs (docs/Packs_Plan.md, "Lanes") ----
   /** The role it was started with. Resolved again at every launch; when it is gone, the lane runs without it and its tile says why. */
   role?: LaneRole;
+  /** 1.4 (docs/Hydra_Improvements.md): the git metadata fingerprint (gitMetaFingerprint) of the shared .git when this lane started. Compared again at Merge and at Mark job done; a change is a warning (interactive) or a refusal (hydra.lanes.action). */
+  gitMeta?: GitMetaFingerprint;
 }
 /** A lane's role: a pack's id and one of its roles' ids ("coding" and "reviewer"). */
 export interface LaneRole { pack: string; role: string }
@@ -217,6 +220,7 @@ export function validateLane(value: unknown): Lane {
   }
   if (lane.mergedHead !== undefined && (typeof lane.mergedHead !== 'string' || !fullSha.test(lane.mergedHead))) throw new Error(`${where} has an invalid merged commit.`);
   if (lane.closedAs !== undefined && !laneCloseModes.includes(lane.closedAs)) throw new Error(`${where} has an invalid close mode.`);
+  const gitMeta = validateGitMeta(lane.gitMeta, where);
   return {
     id: lane.id, name, provider: lane.provider, ...(goal ? { goal } : {}),
     repository: lane.repository!, worktree: lane.worktree!, branch: lane.branch, baseCommit: lane.baseCommit, target: lane.target,
@@ -226,7 +230,22 @@ export function validateLane(value: unknown): Lane {
     ...(lastGates ? { lastGates } : {}),
     ...(plan ? { plan } : {}), ...(lane.mergedHead ? { mergedHead: lane.mergedHead } : {}), ...(lane.closedAs ? { closedAs: lane.closedAs } : {}),
     ...(role ? { role } : {}),
+    ...(gitMeta ? { gitMeta } : {}),
   };
+}
+
+/** `lane.gitMeta` (1.4): a plain map of relative path to a sha256 hex digest, bounded like the equivalent check on a head job (src/core/jobs.ts). */
+function validateGitMeta(value: unknown, where: string): GitMetaFingerprint | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${where} has an invalid git metadata fingerprint.`);
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) throw new Error(`${where} has too many git metadata entries.`);
+  const result: Record<string, string> = {};
+  for (const [name, digest] of entries) {
+    if (typeof name !== 'string' || !name || name.length > 300 || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) throw new Error(`${where} has an invalid git metadata entry.`);
+    result[name] = digest;
+  }
+  return result;
 }
 
 /** `lane.plan`, field by field (docs/Plan_Lanes_Plan.md): ids and keys by pattern, titles and scope by length. */

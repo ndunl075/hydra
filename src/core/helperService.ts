@@ -1,10 +1,11 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { git } from './git';
+import { git, gitMetaChanges, gitMetaFingerprint, type GitMetaFingerprint } from './git';
 import { isWindowsShim } from './process';
 import { roleLaunch, type RoleLaunch, type RoleSource } from './packs/launch';
 import { createWorktree } from './worktrees';
-import { defaultMaxAttempts, finalJobStates, gateBlocks, gateKind, gateState, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobStore } from './jobs';
+import { defaultMaxAttempts, finalJobStates, gateBlocks, gateFloor, gateKind, gateState, maxBriefLength, parseJobInput, type Job, type JobCheckResult, type JobGatesSnapshot, type JobStore, type TamperSnapshot } from './jobs';
 import { freshDirectory, gateFailureMessage, loadGates, runGateList, type GateContext, type GateRuntime, type GatesConfig, type GatesLoader } from './gates';
 import { dependencyBase, dependencyBrief, dependencyNoun, type DependencyResult } from './headStart';
 import type { HelperCaller, HelperEndpoint } from './helperEndpoint';
@@ -211,7 +212,11 @@ export class HelperService {
     // base is known now: hydra_get_head shows it at once, and results that conflict refuse the start.
     const inputBase = inputs.length && !input.dependsOn?.length && !repeat ? await dependencyBase(this.options.leadFolder, input.title, inputs) : undefined;
     const withInputs = inputs.length ? { ...input, inputs: [...inputs] } : input;
-    const { job, created } = await this.options.store.create(this.options.leadKey, lead && laneName ? { ...withInputs, leadLabel: laneName } : withInputs, lead);
+    // Step 1 hardening (docs/Hydra_Improvements.md): a snapshot of the gates, the git metadata and
+    // the .hydra files a repeated idempotency key would reuse an existing job for anyway, so it's
+    // skipped there — `store.create` returns that job untouched before looking at these fields.
+    const snapshot = repeat ? {} : await this.headStartSnapshot();
+    const { job, created } = await this.options.store.create(this.options.leadKey, lead && laneName ? { ...withInputs, leadLabel: laneName, ...snapshot } : { ...withInputs, ...snapshot }, lead);
     // A dependent starts from what it waits for, so its base is known only when it starts.
     const dependent = job.dependsOn.length > 0 || !!job.inputs?.length;
     if (created && (!dependent || inputBase)) await this.options.store.update(job.id, { baseCommit: inputBase ?? head });
@@ -227,6 +232,36 @@ export class HelperService {
         ? 'Your lane has uncommitted changes. The head starts from the lane\'s last commit and will not see them; commit first if it needs them.'
         : 'Your folder has uncommitted changes. The head starts from the last commit and will not see them; commit first if it needs them.' } : {}),
     };
+  }
+
+  // ---- Step 1 hardening (docs/Hydra_Improvements.md) ----
+
+  /**
+   * What a fresh head's job record carries from the moment it's created, so its later `hydra_done`
+   * can't be talked down by changes the head itself makes to the lead's `.hydra` files or to git's
+   * shared metadata: 1.1's gates snapshot, 1.4's git metadata fingerprint and 1.6's file hashes.
+   * Each piece is best-effort and independent: one failing (an unreadable gates.json, a repository
+   * with no git yet) never stops the others, and simply leaves that one check off for this head,
+   * exactly as if Step 1 hadn't run for it.
+   */
+  private async headStartSnapshot(): Promise<{ gatesAtStart?: JobGatesSnapshot; gitMetaAtStart?: GitMetaFingerprint; tamperAtStart?: TamperSnapshot }> {
+    const snapshot: { gatesAtStart?: JobGatesSnapshot; gitMetaAtStart?: GitMetaFingerprint; tamperAtStart?: TamperSnapshot } = {};
+    try {
+      const gates: Awaited<ReturnType<GatesLoader>> = await (this.options.gates ?? loadGates)(this.options.leadFolder);
+      snapshot.gatesAtStart = { gates: gates.gates, notRun: gates.notRun ?? [] };
+    } catch { /* no snapshot: hydra_done falls back to today's config only, as it always has */ }
+    try { snapshot.gitMetaAtStart = await gitMetaFingerprint(this.options.leadFolder); } catch { /* best effort: no git-metadata check for this head */ }
+    try { snapshot.tamperAtStart = await hydraFileHashes(this.options.leadFolder); } catch { /* best effort: no tamper note for this head */ }
+    return snapshot;
+  }
+
+  /** 1.6: whether any of .hydra/gates.json, checks.json or packs.json changed since this head started. */
+  private async tamperNote(job: Job): Promise<string | undefined> {
+    if (!job.tamperAtStart) return undefined;
+    let now: TamperSnapshot;
+    try { now = await hydraFileHashes(this.options.leadFolder); } catch { return undefined; }
+    const changed = now.gatesJson !== job.tamperAtStart.gatesJson || now.checksJson !== job.tamperAtStart.checksJson || now.packsJson !== job.tamperAtStart.packsJson;
+    return changed ? 'The project\'s gates changed while this head ran; the gates from its start still ran.' : undefined;
   }
 
   // ---- Packs (docs/Packs_Plan.md, "Heads") ----
@@ -310,16 +345,31 @@ export class HelperService {
     let gates: Awaited<ReturnType<GatesLoader>>;
     try { gates = await (this.options.gates ?? loadGates)(this.options.leadFolder); }
     catch (error) { return { accepted: false, message: `Hydra can't check your work: ${error instanceof Error ? error.message : String(error)} That isn't your fault. Call hydra_stuck and ask the lead to fix it, then call hydra_done again.` }; }
+    // 1.1: maxAttempts always comes from today's config, never the start-of-run snapshot below —
+    // Settings -> Gates changes apply to heads started after they're made, never mid-run.
     const maxAttempts = gates.maxAttempts ?? defaultMaxAttempts;
+    const note = await this.tamperNote(job);
     const changedFiles = (await git(worktree, ['diff', '--name-only', '-z', '--no-renames', base, commit, '--'])).split('\0').filter(Boolean);
     const outside = changedFiles.filter(file => !inScope(file, job.writeScope));
+    // 1.4: the git metadata a head shares with the main checkout (config, hooks, …) must not move.
+    // Checked before anything runs. It spends no attempt: the change may not be the head's (you,
+    // or another lane, can change them too), so the head restores what it changed or asks.
+    if (job.gitMetaAtStart) {
+      const changedMeta = await gitMetaFingerprint(worktree).then(now => gitMetaChanges(job.gitMetaAtStart!, now), () => []);
+      if (changedMeta.length) {
+        return { accepted: false, message: `The repository's git settings or hooks changed while you worked: ${changedMeta.join(', ')}. Hydra won't accept work while they differ, because git runs them outside your worktree. If you changed them, put them back exactly as they were, then call hydra_done again. If you didn't, don't try to fix them: call hydra_stuck with this message and wait for the lead.` };
+      }
+    }
     await this.options.store.transition(jobId, 'checking');
     this.changed();
     const attempts = job.attempts + 1;
-    if (outside.length) return this.checkFailed(jobId, attempts, maxAttempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`);
-    // The scope check first, then the gates in order (docs/Gates_Plan.md, "Heads").
+    if (outside.length) return this.checkFailed(jobId, attempts, maxAttempts, `These files are outside your write scope (${job.writeScope.join(', ') || '(whole repository)'}):\n${outside.join('\n')}\nUndo those changes in a new commit, then call hydra_done again.`, [], note);
+    // 1.1: the gate floor — the snapshot's own definition for every gate id it already had, plus
+    // any gate added to today's config since (see gateFloor's own comment for the full rule).
+    const floor = gateFloor(job.gatesAtStart, gates);
+    // The scope and git-metadata checks first, then the gates in order (docs/Gates_Plan.md, "Heads").
     // A listed pack that can't run reports its gates as not run (docs/Packs_Plan.md); those never block.
-    const checks = [...gates.gates.length ? await runGateList(gates.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [], ...gates.notRun ?? []];
+    const checks = [...floor.gates.length ? await runGateList(floor.gates, worktree, base, await this.gateContext(job, attempts, signal)) : [], ...floor.notRun];
     if (this.options.store.get(jobId)?.state !== 'checking') return { accepted: false, message: 'This head was stopped. Stop now.' };
     if (signal?.aborted) {
       // The head's call ended mid-check: not its failure, so no attempt is spent.
@@ -327,18 +377,18 @@ export class HelperService {
       this.changed();
       return { accepted: false, message: 'The gates were interrupted. Call hydra_done again.' };
     }
-    if (checks.some(gateBlocks)) return this.checkFailed(jobId, attempts, maxAttempts, gateFailureMessage(checks), checks);
+    if (checks.some(gateBlocks)) return this.checkFailed(jobId, attempts, maxAttempts, gateFailureMessage(checks), checks, note);
     await this.options.store.update(jobId, { attempts, maxAttempts });
-    await this.options.store.transition(jobId, 'done', undefined, { result: { summary, commit, changedFiles, checks } });
+    await this.options.store.transition(jobId, 'done', undefined, { result: { summary, commit, changedFiles, checks, ...(note ? { note } : {}) } });
     this.changed();
-    return { accepted: true, message: 'Accepted. Your work is recorded for the lead. Stop now.' };
+    return { accepted: true, message: `Accepted. Your work is recorded for the lead.${note ? ` ${note}` : ''} Stop now.` };
   }
 
-  private async checkFailed(jobId: string, attempts: number, maxAttempts: number, message: string, checks: JobCheckResult[] = []) {
+  private async checkFailed(jobId: string, attempts: number, maxAttempts: number, message: string, checks: JobCheckResult[] = [], note?: string) {
     const job = this.options.store.get(jobId)!;
     await this.options.store.update(jobId, { attempts, maxAttempts });
     if (attempts >= maxAttempts) {
-      await this.options.store.transition(jobId, 'failed', `Gates failed ${attempts} ${attempts === 1 ? 'time' : 'times'}.`, { result: { summary: 'Not accepted: its gates kept failing.', commit: (await git(job.worktree!, ['rev-parse', 'HEAD'])).trim(), changedFiles: [], checks } });
+      await this.options.store.transition(jobId, 'failed', `Gates failed ${attempts} ${attempts === 1 ? 'time' : 'times'}.`, { result: { summary: 'Not accepted: its gates kept failing.', commit: (await git(job.worktree!, ['rev-parse', 'HEAD'])).trim(), changedFiles: [], checks, ...(note ? { note } : {}) } });
       this.changed();
       void this.stopRun(jobId);
       return { accepted: false, message: `${message}\n\nThat was the last attempt (${attempts} of ${maxAttempts}). Stop now; the lead will see the failure.` };
@@ -617,7 +667,7 @@ export class HelperService {
       ...(job.branch ? { branch: job.branch } : {}), ...(job.worktree ? { worktree: job.worktree } : {}), ...(job.baseCommit ? { base_commit: job.baseCommit } : {}),
       ...(job.progress ? { progress: job.progress } : {}), ...(job.question && job.state === 'blocked' ? { question: job.question } : {}),
       ...(job.reason && job.state !== 'running' ? { reason: job.reason } : {}),
-      ...(job.result ? { summary: job.result.summary, commit: job.result.commit, ...(detail ? { changed_files: job.result.changedFiles, checks: job.result.checks.map(describeGate) } : {}) } : {}),
+      ...(job.result ? { summary: job.result.summary, commit: job.result.commit, ...(job.result.note ? { note: job.result.note } : {}), ...(detail ? { changed_files: job.result.changedFiles, checks: job.result.checks.map(describeGate) } : {}) } : {}),
       ...(detail ? { write_scope: job.writeScope, attempts: job.attempts, max_attempts: job.maxAttempts } : {}),
     };
   }
@@ -626,6 +676,20 @@ export class HelperService {
     for (const wake of [...this.waiters]) wake();
     this.options.onChange?.();
   }
+}
+
+/** SHA-256 of a file, or null when it doesn't exist. Used for 1.6's tamper note. */
+async function hashOptionalFile(file: string): Promise<string | null> {
+  try { return createHash('sha256').update(await readFile(file)).digest('hex'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+}
+/** 1.6 (docs/Hydra_Improvements.md): hashes of the lead's own .hydra/gates.json, checks.json and packs.json, so a head's result can say when one changed while it ran. */
+async function hydraFileHashes(folder: string): Promise<TamperSnapshot> {
+  const dir = path.join(folder, '.hydra');
+  const [gatesJson, checksJson, packsJson] = await Promise.all([
+    hashOptionalFile(path.join(dir, 'gates.json')), hashOptionalFile(path.join(dir, 'checks.json')), hashOptionalFile(path.join(dir, 'packs.json')),
+  ]);
+  return { gatesJson, checksJson, packsJson };
 }
 
 /** Commit everything in a helper's worktree, with the repository's identity or, if it has none, Hydra's. */

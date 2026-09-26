@@ -196,7 +196,10 @@ test('gates run in order (commands, screenshots, review), and required: false is
     assert.equal(pictures.length, 2);
     for (const picture of pictures) assert.ok(await exists(picture), picture);
     assert.deepEqual(spec!.args, ['exec', '--json', '-c', "web_search='disabled'", '-i', pictures[0]!, '-i', pictures[1]!, '--sandbox', 'read-only', '-']);
-    assert.match(spec!.input, /- lint \(command\): failed\. Exited with code 2\./);
+    // 1.2 (docs/Hydra_Improvements.md): the command's own output is fenced with the prompt's nonce.
+    const nonce = /<<<untrusted-([0-9a-f]{16})/.exec(spec!.input)?.[1];
+    assert.ok(nonce, 'the prompt carries a nonce');
+    assert.match(spec!.input, new RegExp(`- lint \\(command\\): failed\\n<<<untrusted-${nonce}\\nExited with code 2\\.\\n>>>end-untrusted-${nonce}`));
     assert.match(spec!.input, /- unit \(command\): passed/);
     assert.match(spec!.input, /They are attached to this message/);
     assert.match(spec!.input, /## What to focus on\nCheck the feature flag\./);
@@ -255,7 +258,10 @@ test('review: the exact read-only arguments, and the prompt with the diff cap, t
   assert.match(prompt, /## The task\nAdd the feature\n\nAdd src\/feature\.ts\.\n\nIt may change only: src\/, \(the whole repository\)/);
   assert.match(prompt, /`git diff aaaaaaaaaaaa\.\.HEAD`/);
   assert.match(prompt, /\(The diff was cut at 60 KB\. Read the changed files for the rest\.\)/);
-  assert.match(prompt, /- unit \(command\): passed\n- ui \(screenshots\): failed\. At 390 px the page logged console\.error: boom\n- old \(command\): failed\n  an old result/);
+  // 1.2 (docs/Hydra_Improvements.md): each gate's summary/output is fenced with the prompt's nonce.
+  const promptNonce = /<<<untrusted-([0-9a-f]{16})/.exec(prompt)?.[1];
+  assert.ok(promptNonce, 'the prompt carries a nonce');
+  assert.match(prompt, new RegExp(`- unit \\(command\\): passed\\n- ui \\(screenshots\\): failed\\n<<<untrusted-${promptNonce}\\nAt 390 px the page logged console\\.error: boom\\n>>>end-untrusted-${promptNonce}\\n- old \\(command\\): failed\\n<<<untrusted-${promptNonce}\\nan old result`));
   assert.match(prompt, /Open each of these images to see how the app renders:\n- C:\/logs\/ui-390\.png/);
   assert.match(prompt, /## What to focus on\nSecurity first\./);
   assert.match(prompt, /Reply with JSON only/);

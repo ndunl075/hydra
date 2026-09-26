@@ -504,12 +504,15 @@ test('lane service: a role reaches every launch; a Codex role that can\'t pass g
   const world = await packWorld({ manifest: kit([longRole]), extra: { 'roles/long.md': `${'Check the work carefully. '.repeat(200)}\n` } });
   const store = new LaneStore(path.join(world.root, 'lanes')); await store.load();
   const pty = fakePtyModule();
+  // Item 1 (docs/Heads.md, "Restarting Hydra"): a fake home, never the real ~/.claude.
+  const fakeHome = path.join(world.root, 'home');
   const service = new LaneService({
     store, repository: world.repo, worktreeRoot: () => path.join(world.root, 'worktrees'), pty,
     executable: async provider => `C:\\bin\\${provider}.exe`, connected: async () => true,
     bridge: provider => ({ command: 'hydra.exe', args: ['hydra-mcp.cjs'], env: { HYDRA_LEAD_PROVIDER: provider } }),
     helpersDir: path.join(world.root, 'helpers'), configDirectory: path.join(world.root, 'lanes', 'cfg'), syncIntervalMs: 60_000,
     env: () => ({ PATH: 'x', ...secrets }), roles: world.packs,
+    conversation: { home: () => fakeHome },
   });
   try {
     const claude = await service.create({ name: 'Build', provider: 'claude', role: 'kit/builder', goal: 'Build the cart.' });
@@ -519,8 +522,13 @@ test('lane service: a role reaches every launch; a Codex role that can\'t pass g
     const file = path.join(world.root, 'lanes', 'cfg', `${claude.id}.mcp.json`);
     assert.deepEqual(Object.keys(JSON.parse(await readFile(file, 'utf8')).mcpServers), ['kit-local']);
     await pty.spawned[0]!.exit(0); await new Promise(resolve => setTimeout(resolve, 20));
+    // A conversation on disk for Build's worktree, so Resume behaves ordinarily (--continue).
+    const encodedClaude = claude.worktree.replace(/[^A-Za-z0-9]/g, '-');
+    await mkdir(path.join(fakeHome, '.claude', 'projects', encodedClaude), { recursive: true });
+    await writeFile(path.join(fakeHome, '.claude', 'projects', encodedClaude, 'session.jsonl'), '{}\n');
     await service.resume(claude.id);
     assert.equal(pty.spawned[1]!.args[0], '--continue'); assert.ok(pty.spawned[1]!.args.includes('--append-system-prompt-file'), 'Resume resolves the role again');
+    assert.equal(service.views().find(view => view.id === claude.id)?.resumeNote, undefined);
 
     const long = await service.create({ name: 'Long', provider: 'codex', role: 'kit/long' });
     const longArgs = pty.spawned[2]!.args;
@@ -540,6 +548,40 @@ test('lane service: a role reaches every launch; a Codex role that can\'t pass g
     assert.equal(described.lanes.find(lane => lane.id === claude.id)!.role, 'kit/builder');
     assert.match(described.lanes.find(lane => lane.id === ghost.id)!.roleNote!, /isn't available/);
     assert.equal(service.views().find(view => view.id === claude.id)!.roleNote, undefined);
+  } finally { await service.dispose(); await world.close(); }
+});
+
+test('item 2: a running lane whose role\'s pack is turned off hears about it right away, and again when it comes back', async () => {
+  const world = await packWorld();
+  const store = new LaneStore(path.join(world.root, 'lanes')); await store.load();
+  const pty = fakePtyModule();
+  const service = new LaneService({
+    store, repository: world.repo, worktreeRoot: () => path.join(world.root, 'worktrees'), pty,
+    executable: async provider => `C:\\bin\\${provider}.exe`, connected: async () => true,
+    bridge: provider => ({ command: 'hydra.exe', args: ['hydra-mcp.cjs'], env: { HYDRA_LEAD_PROVIDER: provider } }),
+    helpersDir: path.join(world.root, 'helpers'), configDirectory: path.join(world.root, 'lanes', 'cfg'), syncIntervalMs: 60_000,
+    env: () => ({ PATH: 'x' }), roles: world.packs,
+  });
+  try {
+    const lane = await service.create({ name: 'Build', provider: 'claude', role: 'kit/builder', goal: 'Build the cart.' });
+    assert.equal(service.views().find(view => view.id === lane.id)?.roleNote, undefined, 'the role is active: no note yet');
+    // Turning the pack off while the lane keeps running: the tile hears about it without a relaunch.
+    await world.packs.setEnabled(world.repo, 'kit', false);
+    await service.activeRolesChanged();
+    assert.equal(service.views().find(view => view.id === lane.id)?.roleNote, 'Role Builder isn\'t available now: the Kit pack is off. This session keeps it until you Start fresh.');
+    assert.equal(pty.spawned[0]!.args.includes('--plugin-dir'), true, 'the running session itself is untouched');
+    // A second pass while it's still off changes nothing (idempotent, no spurious onChange noise expected downstream).
+    await service.activeRolesChanged();
+    assert.equal(service.views().find(view => view.id === lane.id)?.roleNote, 'Role Builder isn\'t available now: the Kit pack is off. This session keeps it until you Start fresh.');
+    // Turning it back on clears the note (already allowed from packWorld's turnOn).
+    await world.packs.setEnabled(world.repo, 'kit', true);
+    await service.activeRolesChanged();
+    assert.equal(service.views().find(view => view.id === lane.id)?.roleNote, undefined);
+    // An exited lane is untouched: it keeps today's behaviour (the note at its next launch), not this live update.
+    await pty.spawned[0]!.exit(0); await new Promise(resolve => setTimeout(resolve, 20));
+    await world.packs.setEnabled(world.repo, 'kit', false);
+    await service.activeRolesChanged();
+    assert.equal(service.views().find(view => view.id === lane.id)?.roleNote, undefined, 'exited: no live update');
   } finally { await service.dispose(); await world.close(); }
 });
 

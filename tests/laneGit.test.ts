@@ -257,6 +257,9 @@ test('the lane service starts, streams, resumes, coordinates and closes lanes ov
   await store.load();
   const changes: number[] = [], data: [string, string][] = [], killed: number[] = [];
   let connected = false;
+  // Item 1 (docs/Heads.md, "Restarting Hydra"): a fake home, never the real ~/.claude, with a
+  // conversation already on disk for "Lane 1" so its ordinary Resume (--continue) still applies.
+  const fakeHome = path.join(f.root, 'home');
   const service = new LaneService({
     store, repository: f.repo, worktreeRoot: () => undefined, pty,
     executable: async provider => provider === 'claude' ? path.join(f.root, 'bin', 'claude.exe') : path.join(f.root, 'bin', 'codex.exe'),
@@ -267,6 +270,7 @@ test('the lane service starts, streams, resumes, coordinates and closes lanes ov
     onChange: () => changes.push(Date.now()), onData: (lane, chunk) => data.push([lane, chunk]),
     killTree: async pid => { killed.push(pid); }, syncIntervalMs: 60_000,
     env: () => ({ PATH: 'x' }),
+    conversation: { home: () => fakeHome },
   });
   try {
     await assert.rejects(service.create({ name: 'Bad & name', provider: 'claude' }), /lane name/);
@@ -316,9 +320,14 @@ test('the lane service starts, streams, resumes, coordinates and closes lanes ov
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual([store.get(one.id)!.state, store.get(one.id)!.exitCode], ['exited', 0]);
     assert.equal(service.input(one.id, 'x'), false, 'input to an exited lane is ignored');
+    const encodedOne = one.worktree.replace(/[^A-Za-z0-9]/g, '-');
+    const oneProject = path.join(fakeHome, '.claude', 'projects', encodedOne);
+    await mkdir(oneProject, { recursive: true });
+    await writeFile(path.join(oneProject, 'session.jsonl'), '{}\n');
     await service.resume(one.id);
     const resumed = pty.spawned[2]!;
-    assert.deepEqual(resumed.args, ['--continue'], 'connected now, so no --mcp-config');
+    assert.deepEqual(resumed.args, ['--continue'], 'connected now, so no --mcp-config, since a real conversation is on disk');
+    assert.equal(service.views().find(view => view.id === one.id)?.resumeNote, undefined, 'a real conversation: no fallback note');
     assert.deepEqual([store.get(one.id)!.state, store.get(one.id)!.exitCode], ['running', undefined]);
     assert.deepEqual([resumed.options!.cols, resumed.options!.rows], [120, 40], 'the last size the UI sent');
     resumed.emit('again');

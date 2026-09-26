@@ -212,6 +212,31 @@ In the Lanes view, running lanes come first. Exited lanes are compact rows with 
 
 New to all this? **Hydra: Learn Heads, Lanes, Plans and Gates** opens a short walkthrough. It also opens by itself the first time you open the Agents view, and the empty Agents and Lanes views link to it.
 
+## Packs
+
+A **pack** bundles what one kind of work needs: **roles** for lanes, heads and plan jobs, **gates**, **MCP servers** and **skills** ([Packs_Plan.md](Packs_Plan.md)).
+
+- **Which packs exist:**
+  - Hydra ships **Coding** (Builder, UI builder and Reviewer roles, a `code-review` gate, and Playwright for the UI builder) and **Research** (Researcher and Fact-checker, and a `fact-check` gate).
+  - Your own packs are folders in `~/.hydra/packs` (the `hydra.packs.folder` setting).
+  - A project can carry packs in `.hydra/packs/<id>/`.
+- **Turning one on:**
+  - **Hydra Settings → Packs → Turn on** first shows everything the pack would run: each command, each server and the roles that use it, each role's instructions, and each skill's files.
+  - The button at the end of that review writes `.hydra/packs.json`, which you can commit.
+  - Nothing from a pack runs before that.
+  - A pack that isn't from Hydra says so, and is pinned to the files you reviewed: if any file changes, it stops until you review it again.
+- **A teammate's `packs.json`:** Hydra asks once per project ("This project uses the Coding pack…"). Until you allow it on your machine, its gates show as **not run**.
+- **Roles:**
+  - Pick one in **New lane**, in a plan job's popover, or with `role` on `hydra_start_head`. A lead's instructions list the active ones.
+  - A role sets the agent's instructions, its skills and MCP servers, and, for heads, web access.
+  - Claude lanes get it with `--append-system-prompt-file` and `--plugin-dir`; Codex gets developer instructions. Everything is passed per process, and your Claude Code and Codex settings are never changed.
+  - A Reviewer or Fact-checker may finish without changing anything; its summary is the result.
+- **Gates:**
+  - A pack's gates join `gates.json`. Your own gate with the same id wins.
+  - **Skip in this project** turns one off.
+  - Chips say "From the Coding pack". Settings → Gates lists them under **From packs**.
+- **Windows:** a server command such as `npx` runs through `cmd.exe`, as Claude Code's docs advise.
+
 ## Security
 
 - **Local endpoint:** Hydra listens on `127.0.0.1` only, on a random port. Requests with a foreign `Host` or any `Origin` are refused, which blocks web pages. Oversized and flooding requests are refused too.

@@ -1,6 +1,6 @@
 # Packs
 
-Status: **plan** (2026-09-25).
+Status: **built** (2026-09-25). See "As built" at the end.
 
 ## Goal
 
@@ -495,7 +495,7 @@ Tried live on 2026-09-25 with Claude Code 2.1.282 and Codex 0.154.0.
 
 ## As built
 
-Not finished. When it is, record where it lives, the changes from the plan, what was verified live, and what's not done.
+Built in five phases on 2026-09-25. Each phase below records where its work lives and how it differs from the plan. Phase 5 records the live checks.
 
 ### Phase 1 (2026-09-25)
 
@@ -635,3 +635,67 @@ Not finished. When it is, record where it lives, the changes from the plan, what
 5. The file watcher: hand-editing `.hydra/packs.json` outside Hydra (a teammate's pull, or an editor save) refreshes the Packs page, the role pickers and the Hydra panel without needing Reload.
 6. A lane and a plan job actually started with a role: the tile chip, the canvas labels, the panel description and the draft pill all agree with what the head or lane actually runs as (cross-check against phase 2's live checks 2-3).
 7. The planner, run with a pack active, actually assigns `role` to a job sometimes, and a plan started from that job launches with it.
+
+### Phase 5 (2026-09-25)
+
+**Verified live.** The checks ran in an isolated probe window with the real CLIs, on a scratch repository:
+- The probe's packs folder pointed at a scratch folder.
+- A test user pack (Probe) had one role on Haiku, a `{node}` MCP server whose env reads `${PROBE_VALUE}`, a `{node}` command gate and one skill.
+- To spare Codex usage, Codex only answered one question and listed its servers.
+
+1. **Turning on Coding:**
+   - The review panel listed its roles, the gate and when it runs, the Playwright command with the npm note, and the skills.
+   - **Turn on** wrote `.hydra/packs.json`, and the card moved to On.
+   - The user pack showed the third-party warning and **Trust and turn on**. **Test** started its server and listed its tool.
+2. **Role instructions:**
+   - A Claude lane as Prober answered with the role code from `--append-system-prompt-file`. It still did after Resume, which got `--continue` and the role's flags again.
+   - A Codex lane as Prober got `developer_instructions` through `codex.cmd` with "it’s" and "don’t" intact, answered with the role code, and needed no first prompt.
+3. **Skills:**
+   - The Claude lane loaded the pack's skill from `--plugin-dir`. It answered with a phrase that only the `SKILL.md` holds.
+   - The Researcher head's file followed the `cite-sources` skill.
+4. **MCP servers:**
+   - The Claude lane's `--mcp-config` file held only the `${PROBE_VALUE}` reference, and the tool returned the value. The file was passed even though Claude is connected.
+   - Coding's Playwright server, a bare `npx`, connected in a Claude lane and in a Codex lane (25 tools each).
+   - Your Claude MCP servers, `~/.claude/settings.json` and `~/.codex/config.toml` were unchanged, apart from Codex's own folder-trust entry, which was removed afterwards.
+5. **Web access:**
+   - A head as Researcher got `WebSearch`, `WebFetch`, `Skill` and its plugin, and fetched example.com.
+   - A head with no role got none of them and wrote "CANNOT FETCH".
+6. **Gates:**
+   - On a Codex lane's Merge, `code-review` (Coding, reviewed by Claude) and `probe-check` (the test pack) ran. The chips read "From the Coding pack" and "From the Probe pack".
+   - Heads ran `probe-check` too.
+7. **A changed pack:**
+   - Editing the test pack made it **Changed**, and Settings → Gates listed its gate as not run, with the reason.
+   - **Review changes**, then **Trust and turn on**, restored it.
+8. **A fresh clone with the committed `packs.json`:**
+   - Every pack read **Needs your OK**, and the notification said "This project uses the Coding pack. Nothing from it runs until you review it."
+   - **Review** opened Settings → Packs.
+   - Allowing Coding there left the checkout clean.
+
+**Also seen live:**
+- **Skip in this project** wrote `skipGates`, and Settings → Gates showed "Skipped in this project".
+- The lane bridge called `hydra_active_roles` at startup.
+- A head's `.mcp.json` was gone after it ended.
+- The draft pill read "Researcher · Claude", and the head card "Claude head · Researcher".
+
+**Found and fixed live:**
+- **Bare commands on Windows:** a bare server command such as `npx` is a `.cmd` shim that neither CLI starts by itself. It now runs through `%SystemRoot%\System32\cmd.exe /d /c`, and a part cmd.exe would read as syntax leaves the server out with a note (`serverCommand`).
+- **Plan heads with no write scope:** a plan head job with no write scope, such as one added by hand, was started with `['']`, which `hydra_start_head` refuses. It now gets `['.']`, the whole repository (`planHeadInput`). This was already on main.
+- **Gate tooltips** named the pack by its id. Pack gates now carry the pack's title as well.
+- **Settings → Gates:** the "From packs" group didn't refresh after a change on the Packs page, and left out gates that won't run.
+- **Pack cards:** their text was squeezed by the buttons. The "Saved in .hydra/packs.json…" note went into the red error line, where the next refresh hid it.
+- **CRLF checkouts:** `packs.json` was rewritten even when nothing changed, so a CRLF checkout looked modified.
+- **`hydra.packs.*` commands** accepted any folder. They now take only a folder open in the window.
+
+**Not verified live:**
+- **Add pack from folder…** needs the native folder picker, which the probe can't drive safely. Copying a folder in and pressing **Reload** was verified.
+- **A Builder head using `test-first`:** skills in heads were verified with the Researcher.
+- **`code-review` on a head:** it uses the same loader as lanes, and was skipped to spare Codex usage.
+- **R9's web review:** the Research pack's `fact-check` gate was skipped for the same reason.
+- **The planner assigning roles:** unit-tested.
+- **The longest Codex command line** through the shim, against cmd.exe's 8191 characters.
+- **Timing of `hydra_active_roles`:** the lane bridge's call was seen, but a lead chat's startup wasn't timed.
+
+**Not done:**
+- **A role that goes away mid-session:** an open Claude lane isn't told (phases 2 and 4).
+- **The file watcher** covers the project's `.hydra` only. A change in your packs folder needs **Reload**.
+- **Heads can write outside their worktree** through Bash or PowerShell (R8). Pack copies are re-hashed at every use, but a head could still edit the lead folder's `gates.json` or `packs.json`. This predates Packs.
